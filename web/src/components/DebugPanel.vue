@@ -81,11 +81,17 @@ async function run() {
     const text = await res.text();
     if (!res.ok) {
       responseText.value = text || `HTTP ${res.status}`;
-      hint.value = "后端返回错误（可仅使用本地校验）";
+      hint.value = "后端返回错误";
       return;
     }
-    responseText.value = text;
-    hint.value = "后端执行成功";
+    try {
+      const parsed = JSON.parse(text) as { ok?: boolean; result?: unknown; error?: string };
+      responseText.value = JSON.stringify(parsed, null, 2);
+      hint.value = parsed.ok === false ? "Starlark 执行失败" : "后端执行成功";
+    } catch {
+      responseText.value = text;
+      hint.value = "后端执行成功";
+    }
   } catch {
     responseText.value = JSON.stringify(
       {

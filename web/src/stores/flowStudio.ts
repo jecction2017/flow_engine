@@ -8,6 +8,13 @@ import type {
   SubflowNode,
 } from "@/types/flow";
 import {
+  createFlow as apiCreateFlow,
+  deleteFlow as apiDeleteFlow,
+  fetchFlowList,
+  fetchFlowRaw,
+  saveFlow as apiSaveFlow,
+} from "@/api/flows";
+import {
   defaultStrategies,
   emptyLoop,
   emptySubflow,
@@ -76,6 +83,11 @@ function isNonSync(mode: string | undefined): boolean {
 export const useFlowStudioStore = defineStore("flowStudio", () => {
   const doc = ref<FlowDocument>(clone(SAMPLE));
   const selection = ref<Selection>({ kind: "flow" });
+  /** 当前绑定的服务端流程 id（对应 ``flows/{id}.yaml``） */
+  const activeFlowId = ref<string | null>(null);
+  const serverFlowsDir = ref<string | null>(null);
+  const flowList = ref<{ id: string; name: string }[]>([]);
+  const apiError = ref<string | null>(null);
 
   const strategiesList = computed(() =>
     Object.keys(doc.value.strategies).sort(),
@@ -222,6 +234,54 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     ensureDefaultStrategies();
     touch();
     select({ kind: "flow" });
+    activeFlowId.value = null;
+  }
+
+  function loadDocument(data: FlowDocument, flowId: string | null = null) {
+    doc.value = clone(data);
+    ensureDefaultStrategies();
+    touch();
+    select({ kind: "flow" });
+    activeFlowId.value = flowId;
+  }
+
+  async function refreshFlowList() {
+    try {
+      const res = await fetchFlowList();
+      serverFlowsDir.value = res.flows_dir;
+      flowList.value = res.flows.map((f) => ({ id: f.id, name: f.name }));
+      apiError.value = null;
+    } catch (e) {
+      apiError.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadFlowFromServer(flowId: string) {
+    const raw = (await fetchFlowRaw(flowId)) as unknown as FlowDocument;
+    loadDocument(raw, flowId);
+  }
+
+  async function saveFlowToServer() {
+    const id = activeFlowId.value;
+    if (!id) {
+      throw new Error("未选择流程文件（请先打开或新建）");
+    }
+    await apiSaveFlow(id, doc.value);
+    await refreshFlowList();
+  }
+
+  async function createFlowOnServer(id: string, name?: string) {
+    await apiCreateFlow(id, name);
+    await refreshFlowList();
+    await loadFlowFromServer(id);
+  }
+
+  async function deleteFlowOnServer(flowId: string) {
+    await apiDeleteFlow(flowId);
+    await refreshFlowList();
+    if (activeFlowId.value === flowId) {
+      activeFlowId.value = null;
+    }
   }
 
   function modeOf(ref: string): string {
@@ -290,6 +350,16 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     removeNode,
     exportJson,
     importJson,
+    loadDocument,
+    activeFlowId,
+    serverFlowsDir,
+    flowList,
+    apiError,
+    refreshFlowList,
+    loadFlowFromServer,
+    saveFlowToServer,
+    createFlowOnServer,
+    deleteFlowOnServer,
     parallelEdgeAfter,
     parallelGroupRanges,
     parallelRailRole,

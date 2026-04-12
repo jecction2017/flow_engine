@@ -1,0 +1,33 @@
+# 默认示例流程（可通过 Flow Studio 编辑后「保存到服务器」写回）
+name: demo_flow
+version: "1.0.0"
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+  async_io:
+    name: async_io
+    mode: async
+    concurrency: 8
+    timeout: 120
+  worker:
+    name: worker
+    mode: thread
+    concurrency: 4
+    timeout: 60
+initial_context:
+  alert:
+    id: ALT-1
+    severity: HIGH
+nodes:
+  - type: task
+    name: ingest
+    id: ingest
+    strategy_ref: default_sync
+    wait_before: false
+    script: |
+      {"summary": {"id": resolve("$.global.alert.id"), "severity": resolve("$.global.alert.severity")}}
+    boundary:
+      inputs: {}
+      outputs:
+        summary: $.global.summary

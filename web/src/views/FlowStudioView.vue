@@ -5,17 +5,36 @@
         <span class="logo">◇</span>
         <div>
           <div class="title">Flow Studio</div>
-          <div class="subtitle">流程拓扑 · 策略 · 节点调试</div>
+          <div class="subtitle">
+            流程拓扑 · 策略 · 节点调试
+            <span v-if="store.serverFlowsDir" class="dir-hint" :title="store.serverFlowsDir"> · YAML 目录已连接</span>
+          </div>
         </div>
       </div>
       <div class="actions">
-        <button type="button" class="btn ghost" @click="download">导出 JSON</button>
-        <label class="btn ghost">
-          导入
-          <input hidden type="file" accept="application/json" @change="onImport" />
-        </label>
+        <div class="grp" title="对应服务端 flows 目录下的 YAML 文件">
+          <select v-model="selectedId" class="sel" @change="onSelectFlow">
+            <option value="" disabled>选择 flows/*.yaml…</option>
+            <option v-for="f in store.flowList" :key="f.id" :value="f.id">
+              {{ f.name }} ({{ f.id }})
+            </option>
+          </select>
+          <button type="button" class="btn ghost" title="重新扫描 flows 目录" @click="refresh">刷新</button>
+          <button type="button" class="btn primary" :disabled="!store.activeFlowId || saving" @click="save">
+            {{ saving ? "保存中…" : "保存到服务器" }}
+          </button>
+          <button type="button" class="btn ghost" @click="newFlow">新建流程</button>
+        </div>
+        <div class="grp">
+          <button type="button" class="btn ghost" @click="download">导出 JSON</button>
+          <label class="btn ghost">
+            导入
+            <input hidden type="file" accept="application/json" @change="onImport" />
+          </label>
+        </div>
       </div>
     </header>
+    <p v-if="store.apiError" class="api-err">API: {{ store.apiError }}（请先执行 <code>flow-api</code> 或 <code>python -m flow_engine.http_api</code>）</p>
 
     <div class="body">
       <aside class="left">
@@ -29,11 +48,69 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
 
 const store = useFlowStudioStore();
+const selectedId = ref("");
+const saving = ref(false);
+
+watch(
+  () => store.activeFlowId,
+  (v) => {
+    selectedId.value = v ?? "";
+  },
+  { immediate: true },
+);
+
+onMounted(async () => {
+  await store.refreshFlowList();
+  try {
+    if (store.flowList.some((f) => f.id === "demo_flow")) {
+      await store.loadFlowFromServer("demo_flow");
+    } else if (store.flowList.length > 0) {
+      await store.loadFlowFromServer(store.flowList[0].id);
+    }
+  } catch {
+    /* 离线时使用内置示例 */
+  }
+});
+
+async function refresh() {
+  await store.refreshFlowList();
+}
+
+async function onSelectFlow() {
+  if (!selectedId.value) return;
+  try {
+    await store.loadFlowFromServer(selectedId.value);
+  } catch (e) {
+    alert(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function save() {
+  saving.value = true;
+  try {
+    await store.saveFlowToServer();
+  } catch (e) {
+    alert(e instanceof Error ? e.message : String(e));
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function newFlow() {
+  const id = prompt("新流程 id（字母、数字、下划线、短横线）", `flow_${Date.now()}`);
+  if (!id?.trim()) return;
+  try {
+    await store.createFlowOnServer(id.trim());
+  } catch (e) {
+    alert(e instanceof Error ? e.message : String(e));
+  }
+}
 
 function download() {
   const blob = new Blob([store.exportJson()], { type: "application/json" });
@@ -71,12 +148,14 @@ function onImport(ev: Event) {
 
 .top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 86%, transparent);
   backdrop-filter: blur(10px);
+  flex-wrap: wrap;
 }
 
 .brand {
@@ -109,10 +188,34 @@ function onImport(ev: Event) {
   margin-top: 2px;
 }
 
+.dir-hint {
+  color: var(--success);
+  font-size: 11px;
+}
+
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.grp {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.sel {
+  min-width: 200px;
+  max-width: 280px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #fff;
 }
 
 .btn {
@@ -124,10 +227,38 @@ function onImport(ev: Event) {
   font-size: 12px;
   cursor: pointer;
   box-shadow: var(--shadow);
+  white-space: nowrap;
+}
+
+.btn.primary {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn.primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .btn.ghost:hover {
   border-color: var(--border-strong);
+}
+
+.api-err {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #b45309;
+  background: color-mix(in srgb, #fbbf24 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #f59e0b 25%, transparent);
+}
+
+.api-err code {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #fff8;
 }
 
 .body {
