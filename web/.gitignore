@@ -1,3 +1,39 @@
 node_modules
 dist
 *.local
+
+# 字节码 & 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 包构建产物
+*.egg-info/
+*.egg
+build/
+dist/
+*.wheel
+
+# 测试 & 覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# 虚拟环境
+venv/
+env/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志 & 数据库
+*.log
+*.sqlite3
