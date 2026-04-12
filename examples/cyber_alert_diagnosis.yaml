@@ -1,0 +1,185 @@
+# Simulated cybersecurity alert triage & diagnosis:
+# ingest/normalize -> parallel per-IOC enrichment with barriers -> intel fusion -> decision -> closure.
+name: cyber_alert_diagnosis
+version: "1.0.0"
+
+initial_context:
+  alert:
+    id: "ALT-2026-0412-01"
+    severity: "HIGH"
+    title: "Suspicious outbound connection"
+    source_ip: "203.0.113.44"
+    dest_ip: "198.51.100.7"
+    indicators:
+      - type: "ip"
+        value: "198.51.100.7"
+      - type: "domain"
+        value: "cdn.example.invalid"
+      - type: "hash"
+        value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+  async_enrich:
+    name: async_enrich
+    mode: async
+    concurrency: 4
+    timeout: 120
+  thread_intel:
+    name: thread_intel
+    mode: thread
+    concurrency: 2
+    timeout: 60
+
+hooks:
+  on_start: |
+    _ = 1
+  on_complete: |
+    _ = 1
+  on_failure: |
+    _ = 1
+
+nodes:
+  - name: normalize_alert
+    id: normalize_alert
+    type: task
+    strategy_ref: default_sync
+    wait_before: false
+    script: |
+      {
+        "summary": {
+          "id": resolve("$.global.alert.id"),
+          "severity": resolve("$.global.alert.severity"),
+          "title": resolve("$.global.alert.title"),
+        }
+      }
+    boundary:
+      inputs: {}
+      outputs:
+        summary: "$.global.summary"
+
+  - name: seed_enrichment_table
+    id: seed_enrichment_table
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"rows": []}
+    boundary:
+      outputs:
+        rows: "$.global.enrichment_rows"
+
+  - name: enrich_loop
+    id: enrich_loop
+    type: loop
+    strategy_ref: default_sync
+    alias: enrich_loop
+    iterable: "resolve(\"$.global.alert.indicators\")"
+    hooks:
+      on_iteration_start: |
+        _ = 1
+      on_iteration_end: |
+        _ = 1
+    children:
+      - name: async_indicator_enrich
+        id: async_indicator_enrich
+        type: task
+        strategy_ref: async_enrich
+        wait_before: false
+        script: |
+          item = resolve("$.item")
+          reputation = (
+            "malicious" if item["type"] == "ip" else (
+              "suspicious" if item["type"] == "domain" else "clean"
+            )
+          )
+          {"row": {"ioc": item, "reputation": reputation}}
+        boundary:
+          inputs: {}
+          outputs:
+            row: "$.global.scratch_row"
+
+      - name: merge_indicator
+        id: merge_indicator
+        type: task
+        strategy_ref: default_sync
+        wait_before: true
+        script: |
+          rows = resolve("$.global.enrichment_rows")
+          row = resolve("$.global.scratch_row")
+          {"rows": rows + [row]}
+        boundary:
+          inputs: {}
+          outputs:
+            rows: "$.global.enrichment_rows"
+
+  - name: fuse_thread_intel
+    id: fuse_thread_intel
+    type: task
+    strategy_ref: thread_intel
+    wait_before: true
+    script: |
+      def count_malicious(rows):
+        n = 0
+        for r in rows:
+          if r["reputation"] == "malicious":
+            n = n + 1
+        return n
+      rows = resolve("$.global.enrichment_rows")
+      malicious = count_malicious(rows)
+      verdict = "escalate" if malicious > 0 else "monitor"
+      {"intel": {"malicious_hits": malicious, "verdict": verdict}}
+    boundary:
+      inputs: {}
+      outputs:
+        intel: "$.global.intel"
+
+  - name: decide_response
+    id: decide_response
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    condition: "resolve(\"$.global.intel.verdict\") == \"escalate\""
+    script: |
+      {
+        "case": {
+          "status": "opened",
+          "playbook": "isolate_host_and_block_ioc",
+          "owner": "soc-oncall",
+        }
+      }
+    boundary:
+      outputs:
+        case: "$.global.case"
+
+  - name: benign_path
+    id: benign_path
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    condition: "resolve(\"$.global.intel.verdict\") != \"escalate\""
+    script: |
+      {"case": {"status": "closed", "reason": "no_malicious_ioc"}}
+    boundary:
+      outputs:
+        case: "$.global.case"
+
+  - name: close_loop
+    id: close_loop
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    script: |
+      {
+        "report": {
+          "alert_id": resolve("$.global.alert.id"),
+          "summary": resolve("$.global.summary"),
+          "intel": resolve("$.global.intel"),
+          "case": resolve("$.global.case"),
+          "closed": True,
+        }
+      }
+    boundary:
+      outputs:
+        report: "$.global.final_report"
