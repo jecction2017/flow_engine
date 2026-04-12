@@ -237,6 +237,41 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     return isNonSync(modeOf(a.strategy_ref)) && isNonSync(modeOf(b.strategy_ref));
   }
 
+  /** 合并连续的隐式并行边，得到若干 [start, end] 闭区间（每组至少 2 个节点） */
+  function parallelGroupRanges(siblings: FlowNode[]): Array<{ start: number; end: number }> {
+    const ranges: Array<{ start: number; end: number }> = [];
+    const n = siblings.length;
+    let i = 0;
+    while (i < n) {
+      if (i < n - 1 && parallelEdgeAfter(siblings, i)) {
+        const start = i;
+        let j = i;
+        while (j < n - 1 && parallelEdgeAfter(siblings, j)) {
+          j++;
+        }
+        ranges.push({ start, end: j });
+        i = j + 1;
+      } else {
+        i++;
+      }
+    }
+    return ranges;
+  }
+
+  /** 左侧连线轨道：首/中/末段，用于画竖线连接同一并行组 */
+  function parallelRailRole(
+    siblings: FlowNode[],
+    index: number,
+  ): "none" | "first" | "middle" | "last" {
+    for (const r of parallelGroupRanges(siblings)) {
+      if (index < r.start || index > r.end) continue;
+      if (index === r.start) return "first";
+      if (index === r.end) return "last";
+      return "middle";
+    }
+    return "none";
+  }
+
   return {
     doc,
     selection,
@@ -256,6 +291,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     exportJson,
     importJson,
     parallelEdgeAfter,
+    parallelGroupRanges,
+    parallelRailRole,
     modeOf,
     nodeId,
     emptyTask,

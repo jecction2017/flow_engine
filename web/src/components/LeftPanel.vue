@@ -34,7 +34,7 @@
     <section class="block grow">
       <div class="block-title row">
         <span>节点拓扑</span>
-        <span class="hint">相邻非同步且无屏障 → 并行带</span>
+        <span class="hint">左侧竖线连接同一隐式并行组</span>
       </div>
 
       <div class="toolbar">

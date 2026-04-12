@@ -7,6 +7,16 @@
           :class="{ active: isActive([...pathPrefix, i]) }"
           @click="store.select({ kind: 'node', path: [...pathPrefix, i] })"
         >
+          <div class="rail-cell" :class="{ 'rail-on': railRole(i) !== 'none' }">
+            <template v-if="railRole(i) !== 'none'">
+              <div class="rail-track" :class="railRole(i)" aria-hidden="true" />
+              <span
+                v-if="railRole(i) === 'first'"
+                class="rail-hint"
+                title="隐式并行组：相邻节点均为非 sync 策略，且下一节点未设 wait_before 屏障"
+              >∥</span>
+            </template>
+          </div>
           <div class="indent" :style="{ width: 10 + depth * 12 + 'px' }" />
           <span class="glyph">{{ glyph(n) }}</span>
           <div class="meta">
@@ -41,16 +51,6 @@
         </div>
       </div>
 
-      <div
-        v-if="i < nodes.length - 1 && store.parallelEdgeAfter(nodes, i)"
-        class="parallel"
-        title="相邻非同步策略且右侧节点未设置 wait_before 屏障时，形成隐式并行派发"
-      >
-        <span class="line" />
-        <span class="tag">隐式并行</span>
-        <span class="line" />
-      </div>
-
       <div v-if="n.type === 'loop' || n.type === 'subflow'" class="nest">
         <FlowTreeItem :nodes="n.children" :path-prefix="[...pathPrefix, i]" :depth="depth + 1" />
       </div>
@@ -59,18 +59,37 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { FlowNode } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import FlowTreeItem from "./FlowTreeItem.vue";
 
-defineProps<{
+const props = defineProps<{
   nodes: FlowNode[];
   pathPrefix: number[];
   depth: number;
 }>();
 
 const store = useFlowStudioStore();
+
+type Rail = "none" | "first" | "middle" | "last";
+
+const railRoles = computed(() => {
+  const roles: Record<number, Rail> = {};
+  for (const r of store.parallelGroupRanges(props.nodes)) {
+    if (r.end <= r.start) continue;
+    for (let k = r.start; k <= r.end; k++) {
+      if (k === r.start) roles[k] = "first";
+      else if (k === r.end) roles[k] = "last";
+      else roles[k] = "middle";
+    }
+  }
+  return roles;
+});
+
+function railRole(i: number): Rail {
+  return railRoles.value[i] ?? "none";
+}
 
 const menuOpen = ref(false);
 const menuPath = ref<number[] | null>(null);
@@ -138,12 +157,62 @@ function doDelete() {
 
 .row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 6px;
   padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid transparent;
   cursor: pointer;
+}
+
+.rail-cell {
+  position: relative;
+  width: 20px;
+  flex-shrink: 0;
+  align-self: stretch;
+  min-height: 34px;
+}
+
+.rail-cell.rail-on {
+  width: 22px;
+}
+
+.rail-track {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #2563eb, #6366f1);
+  box-shadow: 0 0 0 1px color-mix(in srgb, #2563eb 22%, transparent);
+  pointer-events: none;
+}
+
+.rail-track.first {
+  top: 50%;
+  bottom: 0;
+}
+
+.rail-track.middle {
+  top: 0;
+  bottom: 0;
+}
+
+.rail-track.last {
+  top: 0;
+  bottom: 50%;
+}
+
+.rail-hint {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #2563eb;
+  line-height: 1;
+  pointer-events: auto;
+  z-index: 1;
 }
 
 .row:hover {
@@ -158,6 +227,11 @@ function doDelete() {
 
 .indent {
   flex: 0 0 auto;
+  align-self: center;
+}
+
+.row > .glyph {
+  align-self: center;
 }
 
 .glyph {
@@ -170,6 +244,7 @@ function doDelete() {
 .meta {
   min-width: 0;
   flex: 1;
+  align-self: center;
 }
 
 .name {
@@ -219,6 +294,7 @@ function doDelete() {
   gap: 4px;
   opacity: 0;
   transition: opacity 0.12s ease;
+  align-self: center;
 }
 
 .row:hover .mini {
@@ -234,33 +310,6 @@ function doDelete() {
   cursor: pointer;
   line-height: 1;
   font-size: 14px;
-}
-
-.parallel {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0 6px;
-  margin-left: 8px;
-}
-
-.line {
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
-  border-top: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-.tag {
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
 }
 
 .nest {
