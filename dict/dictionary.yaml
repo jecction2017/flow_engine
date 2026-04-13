@@ -1,0 +1,11 @@
+app:
+  name: flow-engine
+  http:
+    timeout_sec: 30
+middleware:
+  kafka:
+    brokers:
+    - localhost:9092
+business:
+  feature_flags:
+    enable_beta: false

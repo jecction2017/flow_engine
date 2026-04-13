@@ -32,6 +32,7 @@ from flow_engine.models import (
     SubflowNode,
     TaskNode,
 )
+from flow_engine.data_dict import tree_copy
 from flow_engine.resources import GlobalConcurrencyGate, StrategyExecutors, asyncio_main_cancel, install_signal_handlers
 from flow_engine.starlark_glue import (
     apply_outputs,
@@ -72,6 +73,8 @@ class FlowRuntime:
         self.ctx = ContextStack()
         if flow.initial_context:
             self.ctx.global_ns.update(flow.initial_context)
+        if "dictionary" not in self.ctx.global_ns:
+            self.ctx.global_ns["dictionary"] = tree_copy()
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}
         self._root_tracker = TaskTracker()

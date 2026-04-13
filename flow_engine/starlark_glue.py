@@ -19,12 +19,9 @@ from flow_engine.context import ContextStack
 
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
-    mod = sl.Module()
-    inject_resolve(mod, ctx)
-    glb = _globals_extended()
-    ast = sl.parse("iter.star", f"({expr})")
-    val = sl.eval(mod, ast, glb)
-    return list(val)
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.eval_iterable_expr(expr, ctx)
 
 
 def _globals_extended() -> sl.Globals:
@@ -114,33 +111,15 @@ def run_task_script(
     ctx: ContextStack,
     boundary_inputs: dict[str, str],
 ) -> dict[str, Any]:
-    mod = sl.Module()
-    inject_context_paths(mod, ctx, boundary_inputs)
-    inject_resolve(mod, ctx)
-    _attach_builtins(mod)
-    glb = _globals_extended()
-    ast = sl.parse("task.star", script)
-    val = sl.eval(mod, ast, glb)
-    val = starlark_to_python(val)
-    if val is None:
-        return {}
-    if not isinstance(val, dict):
-        raise TypeError(f"Task script must evaluate to a dict, got {type(val).__name__}")
-    return val
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.eval_task_script(script, ctx, boundary_inputs)
 
 
 def run_hook_script(snippet: str | None, ctx: ContextStack, extra: dict[str, Any] | None = None) -> None:
-    if not snippet:
-        return
-    mod = sl.Module()
-    inject_resolve(mod, ctx)
-    if extra:
-        for k, v in extra.items():
-            mod[k] = v
-    _attach_builtins(mod)
-    glb = _globals_extended()
-    ast = sl.parse("hook.star", snippet)
-    sl.eval(mod, ast, glb)
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.run_hook_script(snippet, ctx, extra)
 
 
 def apply_outputs(
@@ -174,12 +153,16 @@ def _attach_process_builtins(mod: sl.Module) -> None:
 
 def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Executed inside a worker process; reconstructs minimal context from serialized inputs."""
+    from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
+
     script = payload["script"]
     flat = payload["flat_inputs"]
     mod = sl.Module()
     for var, pyval in flat.items():
         mod[var] = pyval
     _attach_process_builtins(mod)
+    for name, fn in PYTHON_BUILTINS.items():
+        mod.add_callable(name, fn)
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
     val = starlark_to_python(sl.eval(mod, ast, glb))

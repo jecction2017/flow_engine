@@ -1,2 +1,0 @@
-[console_scripts]
-flow-api = flow_engine.http_api:main

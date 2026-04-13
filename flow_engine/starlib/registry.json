@@ -1,0 +1,76 @@
+{
+  "version": "0.1",
+  "python_functions": [
+    {
+      "id": "python://demo/echo",
+      "starlark_name": "demo_echo",
+      "category": "demo",
+      "summary": "回显 dict，用于验证注册与补全元数据",
+      "signature": [{ "name": "payload", "type": "dict", "required": true }],
+      "returns": "dict",
+      "side_effects": "none"
+    },
+    {
+      "id": "python://demo/add",
+      "starlark_name": "demo_add",
+      "category": "demo",
+      "summary": "整数相加",
+      "signature": [
+        { "name": "a", "type": "int", "required": true },
+        { "name": "b", "type": "int", "required": true }
+      ],
+      "returns": "int",
+      "side_effects": "none"
+    },
+    {
+      "id": "python://http/simple_get",
+      "starlark_name": "http_simple_get",
+      "category": "integration",
+      "summary": "受控 HTTP GET（超时、仅 JSON/文本），MVP 占位",
+      "signature": [{ "name": "url", "type": "str", "required": true }],
+      "returns": "dict",
+      "side_effects": "network"
+    },
+    {
+      "id": "python://dict/get",
+      "starlark_name": "dict_get",
+      "category": "dictionary",
+      "summary": "按点路径读取数据字典（dictionary.yaml），缺省返回 default，等同 dict.get 语义",
+      "signature": [
+        { "name": "path", "type": "str", "required": true },
+        { "name": "default", "type": "any", "required": false }
+      ],
+      "returns": "any",
+      "side_effects": "disk"
+    },
+    {
+      "id": "python://lookup/query",
+      "starlark_name": "lookup_query",
+      "category": "lookup",
+      "summary": "查询 lookup 表（lookup/{namespace}.json）；filter 为等值 AND；空 filter 返回全部（有上限）",
+      "signature": [
+        { "name": "namespace", "type": "str", "required": true },
+        { "name": "filter", "type": "dict", "required": false }
+      ],
+      "returns": "list",
+      "side_effects": "disk"
+    },
+    {
+      "id": "python://user/list_scripts",
+      "starlark_name": "user_script_list",
+      "category": "user",
+      "summary": "列出 starlark_user 下用户 .star 相对路径",
+      "signature": [],
+      "returns": "list",
+      "side_effects": "disk"
+    }
+  ],
+  "internal_modules": [
+    {
+      "uri": "internal://lib/helpers.star",
+      "path": "internal/lib/helpers.star",
+      "exports": ["double_int", "prefix_key"],
+      "summary": "示例：纯 Starlark 可复用函数"
+    }
+  ]
+}

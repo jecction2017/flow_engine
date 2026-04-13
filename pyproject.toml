@@ -19,6 +19,7 @@ dev = ["pytest>=7", "pytest-asyncio>=0.23"]
 api = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
+  "openpyxl>=3.1",
 ]
 
 [project.scripts]
@@ -31,3 +32,6 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["flow_engine*"]
+
+[tool.setuptools.package-data]
+flow_engine = ["starlib/registry.json", "starlib/internal/**/*.star"]

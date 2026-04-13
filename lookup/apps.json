@@ -1,0 +1,11 @@
+{
+  "fields": ["appid", "appname", "desc", "owner"],
+  "rows": [
+    {
+      "appid": "demo-001",
+      "appname": "演示应用",
+      "desc": "lookup 示例数据",
+      "owner": "platform"
+    }
+  ]
+}

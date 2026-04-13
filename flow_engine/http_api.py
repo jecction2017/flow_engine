@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import traceback
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from flow_engine import data_dict
 from flow_engine.compiler import compile_flow
 from flow_engine.context import ContextStack
+from flow_engine.dict_store import DataDictError
 from flow_engine.loader import load_flow_from_yaml
 from flow_engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
 from flow_engine.starlark_glue import run_task_script
+from flow_engine.starlark_sdk.paths import user_scripts_root
+from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
+from flow_engine.starlark_sdk.registry_data import load_registry
+from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
+from flow_engine.lookup_import import rows_from_bytes
+from flow_engine.lookup_service import merge_imported_rows, put_table
+from flow_engine.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
 from flow_engine.yaml_store import FlowYamlStore, validate_flow_id
 
 store = FlowYamlStore()
@@ -29,6 +39,23 @@ class DebugNodeBody(BaseModel):
     script: str
     boundary_inputs: dict[str, str] = Field(default_factory=dict)
     initial_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class PutUserScriptBody(BaseModel):
+    content: str = Field(..., description="Starlark source")
+
+
+class PutDictRawBody(BaseModel):
+    content: str = Field(..., description="Full dictionary.yaml text")
+
+
+class PutDictSubtreeBody(BaseModel):
+    yaml: str = Field(..., description="YAML fragment for this subtree or root")
+
+
+class PutLookupBody(BaseModel):
+    fields: list[str] | None = None
+    rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def create_app() -> FastAPI:
@@ -122,6 +149,161 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Flow not found")
         store.delete(flow_id)
         return {"ok": True}
+
+    @app.get("/api/dict")
+    def get_data_dictionary() -> dict[str, Any]:
+        st = data_dict.store()
+        return {
+            "dict_dir": str(st.directory),
+            "tree": st.read_tree(),
+            "yaml": st.read_raw(),
+        }
+
+    @app.put("/api/dict")
+    def put_data_dictionary_raw(body: PutDictRawBody) -> dict[str, Any]:
+        try:
+            data_dict.store().write_raw(body.content)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True}
+
+    @app.get("/api/dict/subtree")
+    def get_dict_subtree(path: str = "") -> dict[str, Any]:
+        try:
+            y = data_dict.subtree_as_yaml(path)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"path": path, "yaml": y}
+
+    @app.put("/api/dict/subtree")
+    def put_dict_subtree(path: str = "", body: PutDictSubtreeBody = Body(...)) -> dict[str, Any]:
+        try:
+            data_dict.apply_subtree_yaml(path, body.yaml)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"YAML error: {e}") from e
+        return {"ok": True}
+
+    @app.delete("/api/dict/subtree")
+    def delete_dict_subtree(path: str = "") -> dict[str, Any]:
+        try:
+            data_dict.delete_path(path)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True}
+
+    @app.get("/api/dict/lookup")
+    def dict_lookup(path: str) -> dict[str, Any]:
+        v = data_dict.lookup(path, None)
+        return {"path": path, "value": v}
+
+    @app.get("/api/lookups")
+    def list_lookups() -> dict[str, Any]:
+        st = get_lookup_store()
+        return {"lookup_dir": str(st.directory), "namespaces": st.list_namespaces()}
+
+    @app.get("/api/lookups/{namespace}")
+    def get_lookup_table(namespace: str) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        st = get_lookup_store()
+        if not st.exists(namespace):
+            return {"fields": [], "rows": []}
+        return st.read_table(namespace)
+
+    @app.put("/api/lookups/{namespace}")
+    def put_lookup_table(namespace: str, body: PutLookupBody) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+            return put_table(namespace, body.model_dump(exclude_none=True))
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.delete("/api/lookups/{namespace}")
+    def delete_lookup_table(namespace: str) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        get_lookup_store().delete_namespace(namespace)
+        return {"ok": True}
+
+    @app.post("/api/lookups/{namespace}/import")
+    async def import_lookup_table(
+        namespace: str,
+        file: UploadFile = File(...),
+        mode: str = Form("replace"),
+        format: str = Form("auto"),  # noqa: A002
+    ) -> dict[str, Any]:
+        rows: list[Any] = []
+        try:
+            validate_lookup_namespace(namespace)
+            raw = await file.read()
+            rows = rows_from_bytes(raw, filename=file.filename or "", format=format)
+            merge_imported_rows(namespace, rows, mode=mode)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "imported": len(rows), "mode": mode}
+
+    @app.get("/api/lookups/{namespace}/query")
+    def query_lookup_http(
+        namespace: str,
+        filter_json: str = Query(default="{}", alias="filter"),
+    ) -> dict[str, Any]:
+        from flow_engine.lookup_service import lookup_query as run_lookup_query
+
+        try:
+            validate_lookup_namespace(namespace)
+            filt = json.loads(filter_json or "{}")
+            if not isinstance(filt, dict):
+                raise ValueError("filter must be a JSON object")
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        rows = run_lookup_query(namespace, filt)
+        return {"namespace": namespace, "filter": filt, "rows": rows}
+
+    @app.get("/api/starlark/registry")
+    def starlark_registry() -> dict[str, Any]:
+        return load_registry()
+
+    @app.get("/api/starlark/user/scripts")
+    def starlark_user_scripts() -> dict[str, Any]:
+        return {"scripts": user_script_list(), "root": str(user_scripts_root())}
+
+    @app.get("/api/starlark/internal/{path:path}")
+    def get_internal_script(path: str) -> dict[str, Any]:
+        try:
+            p = resolve_internal_script_file(path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Internal module not found")
+        return {"path": path, "content": p.read_text(encoding="utf-8")}
+
+    @app.get("/api/starlark/user/{tenant}/{path:path}")
+    def get_user_script(tenant: str, path: str) -> dict[str, Any]:
+        try:
+            p = resolve_user_script_file(tenant, path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Script not found")
+        return {"path": f"{tenant}/{path}", "content": p.read_text(encoding="utf-8")}
+
+    @app.put("/api/starlark/user/{tenant}/{path:path}")
+    def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:
+        try:
+            p = resolve_user_script_file(tenant, path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.content, encoding="utf-8", newline="\n")
+        return {"ok": True, "path": f"{tenant}/{path}"}
 
     @app.post("/api/debug/node")
     def debug_node(body: DebugNodeBody) -> JSONResponse:
