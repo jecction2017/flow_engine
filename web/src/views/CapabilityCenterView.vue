@@ -45,7 +45,7 @@
             >
               <span class="mono name">{{ f.starlark_name }}</span>
               <span class="meta">{{ f.category }} · {{ f.summary }}</span>
-              <span class="hint">点击查看详情（可编辑、可调试）</span>
+              <span class="hint">点击查看详情（只读，可调试）</span>
             </li>
           </ul>
         </section>
@@ -64,7 +64,7 @@
             >
               <span class="mono name">{{ m.uri }}</span>
               <span class="meta">{{ m.exports.join(", ") }}</span>
-              <span class="hint">点击查看源码（可编辑、可调试）</span>
+              <span class="hint">点击查看源码（只读，可调试）</span>
             </li>
           </ul>
         </section>
@@ -106,7 +106,12 @@
           </select>
         </div>
 
-        <CodeEditor :model-value="editorText" :height="420" @update:model-value="onEditorInput" />
+        <CodeEditor
+          :model-value="editorText"
+          :read-only="panelMode !== 'user'"
+          :height="420"
+          @update:model-value="onEditorInput"
+        />
         <div class="row dbg">
           <label class="lbl">调试上下文 JSON</label>
           <textarea v-model="ctxJson" class="area mono" rows="4" spellcheck="false" />
@@ -161,21 +166,22 @@ const scriptPathValid = computed(() => USER_SCRIPT_PATH_RE.test(scriptPath.value
 
 const panelHint = computed(() => {
   if (panelMode.value === "detail_python") {
-    return "Python 内置说明可在编辑器修改（便于复制/试写）；「保存脚本」只写入上方用户路径，不会回写 registry。";
+    return "Python 内置为只读展示；可复制内容。仍可用「调试当前编辑器」试跑当前展示文本。修改 registry /代码请改仓库。";
   }
   if (panelMode.value === "detail_internal") {
-    return "internal 源码可编辑并调试；保存仍只针对用户脚本路径。若要把修改写回包内文件请改仓库源码或后续加写入接口。";
+    return "internal 包内脚本只读；可复制。调试将执行当前展示内容。修改源码请改仓库 flow_engine/starlib。";
   }
   return "";
 });
 
 function onEditorInput(v: string) {
+  if (panelMode.value !== "user") return;
   editorText.value = v;
 }
 
 function formatPythonDetail(f: RegistryPythonFn): string {
   const lines = [
-    "# Python 内置函数（registry 元数据，可编辑；保存不会更新 registry）",
+    "# Python 内置函数（registry 元数据，只读）",
     "",
     JSON.stringify(f, null, 2),
     "",
