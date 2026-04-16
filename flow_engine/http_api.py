@@ -21,6 +21,7 @@ from flow_engine.starlark_glue import run_task_script
 from flow_engine.starlark_sdk.paths import user_scripts_root
 from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
 from flow_engine.starlark_sdk.registry_data import load_registry
+from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
 from flow_engine.lookup_import import rows_from_bytes
 from flow_engine.lookup_service import merge_imported_rows, put_table
@@ -56,6 +57,11 @@ class PutDictSubtreeBody(BaseModel):
 class PutLookupBody(BaseModel):
     fields: list[str] | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class StarlarkWarmupBody(BaseModel):
+    module_ids: list[str] = Field(default_factory=list, description='e.g. ["internal://lib/helpers.star"]')
+    script_samples: list[str] = Field(default_factory=list, description="optional script samples for AST warmup")
 
 
 def create_app() -> FastAPI:
@@ -270,6 +276,14 @@ def create_app() -> FastAPI:
     @app.get("/api/starlark/registry")
     def starlark_registry() -> dict[str, Any]:
         return load_registry()
+
+    @app.get("/api/starlark/runtime/stats")
+    def starlark_runtime_stats() -> dict[str, Any]:
+        return runtime_stats()
+
+    @app.post("/api/starlark/runtime/warmup")
+    def starlark_runtime_warmup(body: StarlarkWarmupBody) -> dict[str, Any]:
+        return warmup_runtime(body.module_ids, body.script_samples)
 
     @app.get("/api/starlark/user/scripts")
     def starlark_user_scripts() -> dict[str, Any]:
