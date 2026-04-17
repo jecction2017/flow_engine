@@ -23,6 +23,15 @@
           <button type="button" class="btn primary" :disabled="!store.activeFlowId || saving" @click="save">
             {{ saving ? "保存中…" : "保存到服务器" }}
           </button>
+          <button
+            type="button"
+            class="btn accent"
+            :disabled="!store.activeFlowId"
+            title="执行当前选中的流程（需先保存）"
+            @click="toggleRun"
+          >
+            ▶ 运行流程
+          </button>
           <button type="button" class="btn ghost" @click="newFlow">新建流程</button>
         </div>
         <div class="grp">
@@ -34,6 +43,13 @@
         </div>
       </div>
     </header>
+
+    <FlowRunPanel
+      :flow-id="store.activeFlowId"
+      :visible="runVisible"
+      :initial-context="store.doc.initial_context"
+      @close="runVisible = false"
+    />
     <p v-if="store.apiError" class="api-err">API: {{ store.apiError }}（请先执行 <code>flow-api</code> 或 <code>python -m flow_engine.http_api</code>）</p>
 
     <div class="body">
@@ -52,10 +68,16 @@ import { onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
+import FlowRunPanel from "@/components/FlowRunPanel.vue";
 
 const store = useFlowStudioStore();
 const selectedId = ref("");
 const saving = ref(false);
+const runVisible = ref(false);
+
+function toggleRun() {
+  runVisible.value = !runVisible.value;
+}
 
 watch(
   () => store.activeFlowId,
@@ -239,6 +261,21 @@ function onImport(ev: Event) {
 .btn.primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.btn.accent {
+  border-color: color-mix(in srgb, #10b981 35%, transparent);
+  background: #10b981;
+  color: #fff;
+}
+
+.btn.accent:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn.accent:hover:not(:disabled) {
+  background: #059669;
 }
 
 .btn.ghost:hover {

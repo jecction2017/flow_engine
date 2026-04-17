@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Coroutine, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class TaskTracker:
@@ -30,13 +33,25 @@ class TaskTracker:
         return t
 
     async def wait_all(self) -> None:
-        if not self._pending:
-            return
-        futs = list(self._pending)
-        results = await asyncio.gather(*futs, return_exceptions=True)
-        for r in results:
-            if isinstance(r, BaseException):
-                raise r
+        """Drain pending futures until empty, aggregating errors.
+
+        Repeats across snapshots so that tasks spawned during callbacks (e.g.
+        post-exec hooks scheduling follow-up work) are still awaited. On multi
+        failure, the first is raised while remaining exceptions are logged to
+        avoid silent loss.
+        """
+        first_exc: BaseException | None = None
+        while self._pending:
+            futs = list(self._pending)
+            results = await asyncio.gather(*futs, return_exceptions=True)
+            for r in results:
+                if isinstance(r, BaseException):
+                    if first_exc is None:
+                        first_exc = r
+                    else:
+                        logger.error("Additional tracker exception swallowed: %r", r)
+        if first_exc is not None:
+            raise first_exc
 
     @property
     def pending_count(self) -> int:

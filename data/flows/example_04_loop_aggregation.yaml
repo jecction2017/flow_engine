@@ -1,0 +1,83 @@
+# 典型流程 #4: 循环迭代聚合 —— 覆盖
+#   * loop 节点 + iterable 表达式
+#   * 迭代 frame：$.item 访问当前元素
+#   * copy_item=deep 保障跨迭代互不干扰
+#   * 循环内并发节点 + wait_before 屏障合并
+#   * 迭代内外 $.global 共享累加结果
+name: example_04_loop_aggregation
+version: "1.0.0"
+
+initial_context:
+  items:
+    - {sku: "A", qty: 2, price: 10}
+    - {sku: "B", qty: 1, price: 25}
+    - {sku: "C", qty: 3, price: 4}
+  totals:
+    rows: []
+    grand_total: 0
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+  async_io:
+    name: async_io
+    mode: async
+    concurrency: 4
+    timeout: 30
+
+nodes:
+  - name: compute_each
+    id: compute_each
+    type: loop
+    strategy_ref: default_sync
+    alias: each
+    iterable: 'resolve("$.global.items")'
+    copy_item: deep
+    children:
+      # 并发计算当前 item 的小计（async）
+      - name: calc_subtotal
+        id: calc_subtotal
+        type: task
+        strategy_ref: async_io
+        script: |
+          it = resolve("$.item")
+          {"row": {"sku": it["sku"], "subtotal": it["qty"] * it["price"]}}
+        boundary:
+          outputs:
+            row: "$.global.scratch_row"
+
+      # 同步合并：wait_before 确保上面的 async 完成后再读取
+      - name: accumulate
+        id: accumulate
+        type: task
+        strategy_ref: default_sync
+        wait_before: true
+        script: |
+          rows = resolve("$.global.totals.rows")
+          row = resolve("$.global.scratch_row")
+          grand = resolve("$.global.totals.grand_total")
+          {
+            "totals": {
+              "rows": rows + [row],
+              "grand_total": grand + row["subtotal"],
+            }
+          }
+        boundary:
+          outputs:
+            totals: "$.global.totals"
+
+  - name: finalize
+    id: finalize
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {
+        "report": {
+          "count": len(resolve("$.global.totals.rows")),
+          "grand_total": resolve("$.global.totals.grand_total"),
+        }
+      }
+    boundary:
+      outputs:
+        report: "$.global.report"

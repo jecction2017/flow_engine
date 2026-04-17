@@ -1,0 +1,78 @@
+# 典型流程 #2: 并发 fan-out + wait_before 屏障 —— 覆盖
+#   * async / thread 策略在相邻节点间的隐式并行
+#   * wait_before=true 作为屏障，等待前序未决任务结束
+#   * 并发地向 $.global.bucket.* 写入不同路径（ContextStack 内部有锁）
+#   * 聚合节点读取所有分片结果
+name: example_02_parallel_fanout
+version: "1.0.0"
+
+initial_context:
+  bucket: {}
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+  async_io:
+    name: async_io
+    mode: async
+    concurrency: 8
+    timeout: 30
+  worker:
+    name: worker
+    mode: thread
+    concurrency: 4
+    timeout: 30
+
+nodes:
+  # ---- 三个分片并发执行（相邻非 sync 节点 & 无 wait_before 即视为并行）----
+  - name: shard_a
+    id: shard_a
+    type: task
+    strategy_ref: async_io
+    script: |
+      {"v": {"k": "a", "value": 1}}
+    boundary:
+      outputs:
+        v: "$.global.bucket.a"
+
+  - name: shard_b
+    id: shard_b
+    type: task
+    strategy_ref: async_io
+    script: |
+      {"v": {"k": "b", "value": 2}}
+    boundary:
+      outputs:
+        v: "$.global.bucket.b"
+
+  - name: shard_c
+    id: shard_c
+    type: task
+    strategy_ref: worker
+    script: |
+      {"v": {"k": "c", "value": 3}}
+    boundary:
+      outputs:
+        v: "$.global.bucket.c"
+
+  # ---- 屏障节点：等全部 dispatch 的任务完成后再汇总 ----
+  - name: aggregate
+    id: aggregate
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    # 这个 Starlark 方言禁止顶层 for/if，控制流需封装在 def 函数里。
+    script: |
+      def _sum_values(b):
+        total = 0
+        for k in b.keys():
+          total = total + b[k]["value"]
+        return total
+
+      b = resolve("$.global.bucket")
+      {"sum": _sum_values(b), "keys": sorted(b.keys())}
+    boundary:
+      outputs:
+        sum: "$.global.aggregate.sum"
+        keys: "$.global.aggregate.keys"

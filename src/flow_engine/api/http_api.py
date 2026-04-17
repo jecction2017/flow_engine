@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import traceback
 from typing import Any
 
@@ -14,7 +16,8 @@ from pydantic import BaseModel, Field
 from flow_engine.engine.compiler import compile_flow
 from flow_engine.engine.context import ContextStack
 from flow_engine.engine.loader import load_flow_from_yaml
-from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
+from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
+from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import run_task_script
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import merge_imported_rows, put_table
@@ -62,6 +65,20 @@ class PutLookupBody(BaseModel):
 class StarlarkWarmupBody(BaseModel):
     module_ids: list[str] = Field(default_factory=list, description='e.g. ["internal://lib/helpers.star"]')
     script_samples: list[str] = Field(default_factory=list, description="optional script samples for AST warmup")
+
+
+class RunFlowBody(BaseModel):
+    """Payload for ``POST /api/flows/{id}/run``.
+
+    * ``initial_context`` overrides the YAML-declared initial_context (merged on
+      top of it when ``merge=True``, otherwise fully replaces it).
+    * ``timeout_sec`` caps the total run; if exceeded the flow is cancelled and
+      the server returns ``state: "TERMINATED"``.
+    """
+
+    initial_context: dict[str, Any] | None = None
+    merge: bool = True
+    timeout_sec: float = Field(default=30.0, ge=0.1, le=600.0)
 
 
 def create_app() -> FastAPI:
@@ -349,6 +366,71 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "name": flow.name, "version": flow.version}
+
+    @app.post("/api/flows/{flow_id}/run")
+    async def run_flow(
+        flow_id: str,
+        body: RunFlowBody | None = Body(default=None),
+    ) -> dict[str, Any]:
+        """Execute a stored flow in-process and return its final state.
+
+        The response exposes the data needed by Flow Studio to highlight every
+        node's terminal state as well as the resulting global namespace so the
+        caller can inspect the data flow without having to tail server logs.
+        """
+        body = body or RunFlowBody()
+        try:
+            validate_flow_id(flow_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not store.exists(flow_id):
+            raise HTTPException(status_code=404, detail="Flow not found")
+
+        try:
+            flow = load_flow_from_yaml(store.path_for(flow_id))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Load failed: {e}") from e
+
+        if body.initial_context is not None:
+            merged: dict[str, Any] = {}
+            if body.merge and flow.initial_context:
+                merged.update(flow.initial_context)
+            merged.update(body.initial_context)
+            flow.initial_context = merged
+
+        rt = FlowRuntime(flow)
+        started = time.monotonic()
+        timed_out = False
+        try:
+            res = await asyncio.wait_for(rt.run(), timeout=body.timeout_sec)
+        except asyncio.TimeoutError:
+            timed_out = True
+            res = None
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+
+        if timed_out or res is None:
+            # FlowRuntime already installed a cancel hook, but wait_for above
+            # only cancels the awaiting task; make sure we surface a timeout.
+            return {
+                "ok": False,
+                "state": "TERMINATED",
+                "message": f"Run exceeded {body.timeout_sec}s",
+                "elapsed_ms": elapsed_ms,
+                "node_state": {},
+                "global_ns": {},
+            }
+
+        ns = dict(res.context.global_ns)
+        ns.pop("dictionary", None)  # Do not echo the full dictionary snapshot.
+        node_state = {k: v.value if isinstance(v, NodeState) else str(v) for k, v in res.node_state.items()}
+        return {
+            "ok": res.state.value == "COMPLETED",
+            "state": res.state.value,
+            "message": res.message,
+            "elapsed_ms": elapsed_ms,
+            "node_state": node_state,
+            "global_ns": ns,
+        }
 
     return app
 

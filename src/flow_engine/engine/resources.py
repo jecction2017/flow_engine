@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import signal
@@ -57,15 +58,34 @@ class StrategyExecutors:
 
 
 _cancel_registry: list[Callable[[], Any]] = []
+_cancel_lock = threading.Lock()
+_signal_handlers_installed = False
 
 
-def register_cancel(fn: Callable[[], Any]) -> None:
-    _cancel_registry.append(fn)
+def register_cancel(fn: Callable[[], Any]) -> Callable[[], None]:
+    """Register a cancellation hook. Returns a deregister callable to avoid leaks
+    across repeated runs of the same process (e.g. test suites)."""
+    with _cancel_lock:
+        _cancel_registry.append(fn)
+
+    def _deregister() -> None:
+        with _cancel_lock:
+            try:
+                _cancel_registry.remove(fn)
+            except ValueError:
+                pass
+
+    return _deregister
+
+
+def _snapshot_cancel_hooks() -> list[Callable[[], Any]]:
+    with _cancel_lock:
+        return list(_cancel_registry)
 
 
 def _on_signal(signum: int, frame: Any) -> None:
     logger.warning("Signal %s received; propagating cancellation.", signum)
-    for fn in _cancel_registry:
+    for fn in _snapshot_cancel_hooks():
         try:
             fn()
         except Exception:  # noqa: BLE001
@@ -73,31 +93,43 @@ def _on_signal(signum: int, frame: Any) -> None:
 
 
 def install_signal_handlers() -> None:
+    """Idempotent: register signal + atexit hooks only once per process."""
+    global _signal_handlers_installed
+    if _signal_handlers_installed:
+        return
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             signal.signal(sig, _on_signal)
         except (AttributeError, ValueError):
-            # Windows may not support SIGTERM on all contexts
+            # Windows may not support SIGTERM on all contexts; the main-thread
+            # requirement of signal.signal also fails inside non-main threads.
             pass
 
     def _atexit() -> None:
-        for fn in _cancel_registry:
+        for fn in _snapshot_cancel_hooks():
             try:
                 fn()
             except Exception:  # noqa: BLE001
                 pass
 
     atexit.register(_atexit)
+    _signal_handlers_installed = True
 
 
-def asyncio_main_cancel(loop: asyncio.AbstractEventLoop) -> None:
-    """Register a hook that cancels all asyncio tasks (best-effort)."""
+def asyncio_main_cancel(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """Register a hook that cancels all asyncio tasks for `loop` (best-effort).
+
+    Returns a deregister callable so callers can tear the hook down when their
+    runtime ends, preventing unbounded accumulation over many `run()` calls.
+    """
 
     def _cancel() -> None:
         try:
+            if loop.is_closed():
+                return
             for t in asyncio.all_tasks(loop):
                 t.cancel()
         except RuntimeError:
             pass
 
-    register_cancel(_cancel)
+    return register_cancel(_cancel)

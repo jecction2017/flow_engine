@@ -1,0 +1,76 @@
+# 典型流程 #3: 条件分支 —— 覆盖
+#   * condition: 表达式控制节点跳过 / 执行
+#   * 节点状态 SKIPPED vs SUCCESS
+#   * 分支两路最终汇总到同一上下文路径
+name: example_03_conditional_branch
+version: "1.0.0"
+
+initial_context:
+  metric:
+    value: 85
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  - name: classify
+    id: classify
+    type: task
+    strategy_ref: default_sync
+    script: |
+      v = resolve("$.global.metric.value")
+      level = "critical" if v >= 90 else ("warning" if v >= 70 else "ok")
+      {"level": level}
+    boundary:
+      outputs:
+        level: "$.global.level"
+
+  - name: critical_branch
+    id: critical_branch
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.level") == "critical"'
+    script: |
+      {"decision": {"action": "page_oncall", "level": "critical"}}
+    boundary:
+      outputs:
+        decision: "$.global.decision"
+
+  - name: warning_branch
+    id: warning_branch
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.level") == "warning"'
+    script: |
+      {"decision": {"action": "notify_channel", "level": "warning"}}
+    boundary:
+      outputs:
+        decision: "$.global.decision"
+
+  - name: ok_branch
+    id: ok_branch
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.level") == "ok"'
+    script: |
+      {"decision": {"action": "noop", "level": "ok"}}
+    boundary:
+      outputs:
+        decision: "$.global.decision"
+
+  - name: seal
+    id: seal
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {
+        "summary": {
+          "level": resolve("$.global.level"),
+          "action": resolve("$.global.decision.action"),
+        }
+      }
+    boundary:
+      outputs:
+        summary: "$.global.summary"

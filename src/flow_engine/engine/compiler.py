@@ -101,13 +101,25 @@ def compile_flow(flow: FlowDefinition) -> FlowDefinition:
         act = oe.action
         if isinstance(act, str):
             act = OnErrorAction(act)
-        if act == OnErrorAction.JUMP and oe.target:
-            src = m.id or m.name
+        src = m.id or m.name
+        if act == OnErrorAction.JUMP:
+            if not oe.target:
+                raise CompilationError(f"on_error.action=jump on node {src!r} requires 'target'")
             if not _jump_allowed(flow, src, oe.target, parent):
                 raise CompilationError(
                     f"Jump from {src!r} to {oe.target!r} violates scope barrier "
                     "(only upward or same-list targets are allowed)."
                 )
+        if act == OnErrorAction.RETRY:
+            st = flow.strategies.get(m.strategy_ref)
+            if st is not None and st.retry_count <= 0:
+                raise CompilationError(
+                    f"Node {src!r} declares on_error.action=retry but strategy "
+                    f"{m.strategy_ref!r} has retry_count={st.retry_count}; "
+                    "increase retry_count or choose another action."
+                )
+        if act == OnErrorAction.CUSTOM and not oe.script:
+            raise CompilationError(f"on_error.action=custom on node {src!r} requires 'script'")
 
     _validate_global_paths(flow)
     return flow

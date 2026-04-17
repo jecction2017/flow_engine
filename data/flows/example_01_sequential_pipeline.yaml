@@ -1,0 +1,80 @@
+# 典型流程 #1: 线性顺序管道 —— 覆盖
+#   * initial_context 注入
+#   * boundary.inputs（path -> starlark 变量）
+#   * boundary.outputs（starlark key -> 上下文路径）
+#   * resolve($.global....) 读路径
+#   * 多节点间通过 global 命名空间串联数据流
+name: example_01_sequential_pipeline
+version: "1.0.0"
+
+initial_context:
+  order:
+    id: "ORD-1001"
+    amount: 200.0
+    vip: true
+  tax_rate: 0.1
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  - name: normalize
+    id: normalize
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {
+        "norm": {
+          "id": resolve("$.global.order.id"),
+          "amount": float(resolve("$.global.order.amount")),
+          "vip": bool(resolve("$.global.order.vip")),
+        }
+      }
+    boundary:
+      outputs:
+        norm: "$.global.normalized"
+
+  - name: compute_tax
+    id: compute_tax
+    type: task
+    strategy_ref: default_sync
+    script: |
+      amount = resolve("$.global.normalized.amount")
+      rate = resolve("$.global.tax_rate")
+      {"tax": amount * rate}
+    boundary:
+      outputs:
+        tax: "$.global.tax"
+
+  - name: compute_total
+    id: compute_total
+    type: task
+    strategy_ref: default_sync
+    # 演示 boundary.inputs：把路径值注入为脚本变量，无需使用 resolve。
+    script: |
+      {"total": AMOUNT + TAX}
+    boundary:
+      inputs:
+        "$.global.normalized.amount": AMOUNT
+        "$.global.tax": TAX
+      outputs:
+        total: "$.global.total"
+
+  - name: summarize
+    id: summarize
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {
+        "report": {
+          "order_id": resolve("$.global.normalized.id"),
+          "amount": resolve("$.global.normalized.amount"),
+          "tax": resolve("$.global.tax"),
+          "total": resolve("$.global.total"),
+        }
+      }
+    boundary:
+      outputs:
+        report: "$.global.report"

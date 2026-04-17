@@ -1,0 +1,61 @@
+# 典型流程 #5: Subflow 子流程命名空间 —— 覆盖
+#   * subflow 推入一层 ContextFrame（有 alias），子任务写 $.global 与 $.<alias>
+#   * 子流程内执行完成后 frame 必须 pop（无 leak）
+#   * 父流程仅看到 $.global 侧的副作用
+name: example_05_subflow_namespace
+version: "1.0.0"
+
+initial_context:
+  counter: 0
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  - name: before
+    id: before
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"n": resolve("$.global.counter") + 1}
+    boundary:
+      outputs:
+        n: "$.global.counter"
+
+  - name: sub_enrich
+    id: sub_enrich
+    type: subflow
+    strategy_ref: default_sync
+    alias: enrich
+    children:
+      - name: sub_step_1
+        id: sub_step_1
+        type: task
+        strategy_ref: default_sync
+        script: |
+          {"n": resolve("$.global.counter") + 10}
+        boundary:
+          outputs:
+            n: "$.global.counter"
+
+      - name: sub_step_2
+        id: sub_step_2
+        type: task
+        strategy_ref: default_sync
+        script: |
+          {"tag": "enriched"}
+        boundary:
+          outputs:
+            tag: "$.global.tag"
+
+  - name: after
+    id: after
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"n": resolve("$.global.counter") + 100}
+    boundary:
+      outputs:
+        n: "$.global.counter"

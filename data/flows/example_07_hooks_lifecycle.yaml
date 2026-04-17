@@ -1,0 +1,70 @@
+# 典型流程 #7: 生命周期 Hooks —— 覆盖
+#   * flow.hooks.on_start / on_complete：全局起止钩子
+#   * task.hooks.pre_exec / post_exec：任务前后钩子
+#   * loop.hooks.pre_exec / post_exec / on_iteration_start / on_iteration_end
+# Hooks 脚本只有 resolve() 读路径能力（无写路径），这里仅通过 resolve 做校验 & 无副作用表达式，
+# 真正的状态由普通 task 节点驱动。
+name: example_07_hooks_lifecycle
+version: "1.0.0"
+
+initial_context:
+  items: [10, 20, 30]
+  sum: 0
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+hooks:
+  on_start: |
+    _ = resolve("$.global.items")
+  on_complete: |
+    _ = resolve("$.global.sum")
+
+nodes:
+  - name: sum_loop
+    id: sum_loop
+    type: loop
+    strategy_ref: default_sync
+    alias: it
+    iterable: 'resolve("$.global.items")'
+    hooks:
+      pre_exec: |
+        _ = resolve("$.global.items")
+      on_iteration_start: |
+        _ = resolve("$.item")
+      on_iteration_end: |
+        _ = resolve("$.global.sum")
+      post_exec: |
+        _ = resolve("$.global.sum")
+    children:
+      - name: accumulate
+        id: accumulate
+        type: task
+        strategy_ref: default_sync
+        hooks:
+          pre_exec: |
+            _ = resolve("$.item")
+          post_exec: |
+            _ = resolve("$.global.sum")
+        script: |
+          {"s": resolve("$.global.sum") + resolve("$.item")}
+        boundary:
+          outputs:
+            s: "$.global.sum"
+
+  - name: finalize
+    id: finalize
+    type: task
+    strategy_ref: default_sync
+    hooks:
+      pre_exec: |
+        _ = resolve("$.global.sum")
+      post_exec: |
+        _ = resolve("$.global.sum")
+    script: |
+      {"result": {"sum": resolve("$.global.sum"), "avg": resolve("$.global.sum") // len(resolve("$.global.items"))}}
+    boundary:
+      outputs:
+        result: "$.global.result"

@@ -124,13 +124,16 @@ def eval_task_script(
     ctx: ContextStack,
     boundary_inputs: dict[str, str],
 ) -> dict[str, Any]:
+    from flow_engine.engine.starlark_glue import cf_guard
+
     with _budget_scope():
         mod = sl.Module()
         _prepare_module(mod, ctx, boundary_inputs)
         file_loader, _cache = build_file_loader()
         glb = _globals_main()
         ast = _parse_cached("task.star", script)
-        val = sl.eval(mod, ast, glb, file_loader=file_loader)
+        with cf_guard():
+            val = sl.eval(mod, ast, glb, file_loader=file_loader)
     val = starlark_to_python(val)
     if val is None:
         return {}
@@ -143,33 +146,31 @@ def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     if not expr:
         return True
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    from flow_engine.engine.starlark_glue import _attach_builtins
-
     _attach_builtins(mod)
     glb = _globals_main()
     ast = _parse_cached("cond.star", f"({expr})")
     file_loader, _ = build_file_loader()
-    val = sl.eval(mod, ast, glb, file_loader=file_loader)
+    with cf_guard():
+        val = sl.eval(mod, ast, glb, file_loader=file_loader)
     return bool(val)
 
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    from flow_engine.engine.starlark_glue import _attach_builtins
-
     _attach_builtins(mod)
     glb = _globals_main()
     ast = _parse_cached("iter.star", f"({expr})")
     file_loader, _ = build_file_loader()
-    val = sl.eval(mod, ast, glb, file_loader=file_loader)
+    with cf_guard():
+        val = sl.eval(mod, ast, glb, file_loader=file_loader)
     return list(val)
 
 
@@ -177,20 +178,19 @@ def run_hook_script(snippet: str | None, ctx: ContextStack, extra: dict[str, Any
     if not snippet:
         return
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     if extra:
         for k, v in extra.items():
             mod[k] = v
-    from flow_engine.engine.starlark_glue import _attach_builtins
-
     _attach_builtins(mod)
     _attach_sdk_python(mod)
     glb = _globals_main()
     ast = _parse_cached("hook.star", snippet)
     file_loader, _ = build_file_loader()
-    sl.eval(mod, ast, glb, file_loader=file_loader)
+    with cf_guard():
+        sl.eval(mod, ast, glb, file_loader=file_loader)
 
 
 def warmup_runtime(module_ids: list[str], script_samples: list[str] | None = None) -> dict[str, Any]:

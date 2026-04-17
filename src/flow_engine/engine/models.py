@@ -118,6 +118,13 @@ class LoopNode(BaseNode):
     alias: str
     children: list["FlowMember"] = Field(default_factory=list)
     hooks: LoopHooks | None = None
+    # Controls how each loop item is bound into the iteration frame.
+    #   "shared" (default): bind the object by reference; mutations inside the
+    #                       loop body are visible to later iterations and to
+    #                       any sibling references holding the same list.
+    #   "shallow": copy.copy() per iteration (top-level isolation only).
+    #   "deep":    copy.deepcopy() per iteration (full isolation).
+    copy_item: Literal["shared", "shallow", "deep"] = "shared"
 
 
 class SubflowNode(BaseNode):

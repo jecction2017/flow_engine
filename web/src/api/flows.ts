@@ -56,3 +56,31 @@ export async function deleteFlow(flowId: string): Promise<void> {
   const r = await fetch(`/api/flows/${encodeURIComponent(flowId)}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`delete ${flowId}: ${r.status}`);
 }
+
+export type RunFlowRequest = {
+  initial_context?: Record<string, unknown> | null;
+  merge?: boolean;
+  timeout_sec?: number;
+};
+
+export type RunFlowResponse = {
+  ok: boolean;
+  state: string;
+  message: string | null;
+  elapsed_ms: number;
+  node_state: Record<string, string>;
+  global_ns: Record<string, unknown>;
+};
+
+export async function runFlow(flowId: string, body: RunFlowRequest = {}): Promise<RunFlowResponse> {
+  const r = await fetch(`/api/flows/${encodeURIComponent(flowId)}/run`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `run ${flowId}: ${r.status}`);
+  }
+  return r.json() as Promise<RunFlowResponse>;
+}

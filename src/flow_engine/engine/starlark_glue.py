@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+import threading
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 import starlark as sl
 
@@ -16,6 +18,45 @@ from flow_engine.engine.exceptions import (
     TerminateInterrupt,
     starlark_to_python,
 )
+
+# ---------------------------------------------------------------------------
+# Control-flow exception unwrapping
+#
+# The Starlark binding we use wraps every Python exception raised inside a
+# registered builtin into `sl.StarlarkError`, discarding the original
+# `__cause__` / `__context__`. Our flow-control builtins (`flow_jump`,
+# `flow_continue`, `flow_break`, `flow_terminate`) therefore need to stash the
+# original exception on a thread-local so the caller can re-raise the true
+# type after `sl.eval` returns control.
+# ---------------------------------------------------------------------------
+
+_CF_LOCAL = threading.local()
+
+
+def _cf_set(exc: BaseException) -> None:
+    _CF_LOCAL.pending = exc
+
+
+def _cf_pop() -> BaseException | None:
+    exc = getattr(_CF_LOCAL, "pending", None)
+    _CF_LOCAL.pending = None
+    return exc
+
+
+@contextmanager
+def cf_guard() -> Iterator[None]:
+    """Wrap a `sl.eval` call so flow-control builtins propagate as their
+    original Python exception types instead of opaque `StarlarkError`s."""
+    _CF_LOCAL.pending = None
+    try:
+        yield
+    except sl.StarlarkError:
+        pending = _cf_pop()
+        if pending is not None:
+            raise pending
+        raise
+    finally:
+        _CF_LOCAL.pending = None
 
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
@@ -54,16 +95,24 @@ def _attach_builtins(mod: sl.Module) -> None:
     mod.add_callable("regex_match", _regex_match)
 
     def _jump(target: str) -> None:
-        raise JumpTarget(target)
+        exc = JumpTarget(target)
+        _cf_set(exc)
+        raise exc
 
     def _flow_continue() -> None:
-        raise ContinueInterrupt()
+        exc = ContinueInterrupt()
+        _cf_set(exc)
+        raise exc
 
     def _flow_break() -> None:
-        raise BreakInterrupt()
+        exc = BreakInterrupt()
+        _cf_set(exc)
+        raise exc
 
     def _terminate() -> None:
-        raise TerminateInterrupt()
+        exc = TerminateInterrupt()
+        _cf_set(exc)
+        raise exc
 
     mod.add_callable("flow_jump", _jump)
     mod.add_callable("flow_continue", _flow_continue)
@@ -88,7 +137,8 @@ def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     inject_resolve(mod, ctx)
     glb = _globals_extended()
     ast = sl.parse("cond.star", f"({expr})")
-    val = sl.eval(mod, ast, glb)
+    with cf_guard():
+        val = sl.eval(mod, ast, glb)
     return bool(val)
 
 
@@ -103,7 +153,8 @@ def run_starfile_script(
             mod[k] = v
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
-    return starlark_to_python(sl.eval(mod, ast, glb))
+    with cf_guard():
+        return starlark_to_python(sl.eval(mod, ast, glb))
 
 
 def run_task_script(

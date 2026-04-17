@@ -1,0 +1,141 @@
+# 典型流程 #6: 跳转与异常处理 —— 覆盖
+#   * flow_jump("<id>")：Starlark 脚本主动跳转到同层兄弟节点
+#   * on_error.action=jump + target：节点抛错时重定向到兄弟节点
+#   * on_error.action=ignore：吞掉异常并继续
+#   * 循环内 flow_break()：提前终止迭代
+#   * 跳转后被越过的节点 state 不应落入 SUCCESS
+name: example_06_retry_and_jump
+version: "1.0.0"
+
+initial_context:
+  divisor: 0
+  trail: []
+  items: [1, 2, 3, 4, 5]
+  limit: 3
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  # ---- 片段 1：Starlark flow_jump 主动跳转（跳过 handle_slow） ----
+  - name: classify
+    id: classify
+    type: task
+    strategy_ref: default_sync
+    script: |
+      flow_jump("handle_fast")
+      {}
+
+  - name: handle_slow
+    id: handle_slow
+    type: task
+    strategy_ref: default_sync
+    script: |
+      trail = resolve("$.global.trail")
+      {"trail": trail + ["slow"]}
+    boundary:
+      outputs:
+        trail: "$.global.trail"
+
+  - name: handle_fast
+    id: handle_fast
+    type: task
+    strategy_ref: default_sync
+    script: |
+      trail = resolve("$.global.trail")
+      {"trail": trail + ["fast"]}
+    boundary:
+      outputs:
+        trail: "$.global.trail"
+
+  # ---- 片段 2：on_error.action=jump，除零后跳到 recover，跳过 never_runs ----
+  - name: guarded_divide
+    id: guarded_divide
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"x": 10 // resolve("$.global.divisor")}
+    on_error:
+      action: jump
+      target: recover
+    boundary:
+      outputs:
+        x: "$.global.x"
+
+  - name: never_runs
+    id: never_runs
+    type: task
+    strategy_ref: default_sync
+    script: |
+      trail = resolve("$.global.trail")
+      {"trail": trail + ["never"]}
+    boundary:
+      outputs:
+        trail: "$.global.trail"
+
+  - name: recover
+    id: recover
+    type: task
+    strategy_ref: default_sync
+    script: |
+      trail = resolve("$.global.trail")
+      {"trail": trail + ["recover"]}
+    boundary:
+      outputs:
+        trail: "$.global.trail"
+
+  # ---- 片段 3：on_error.action=ignore 吞掉异常 ----
+  # on_error=ignore 时 result 视为 {}，故这里不声明 outputs，避免 apply_outputs 读取缺失键。
+  - name: optional_step
+    id: optional_step
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"y": 1 // 0}
+    on_error:
+      action: ignore
+
+  - name: after_optional
+    id: after_optional
+    type: task
+    strategy_ref: default_sync
+    script: |
+      trail = resolve("$.global.trail")
+      {"trail": trail + ["after_optional"]}
+    boundary:
+      outputs:
+        trail: "$.global.trail"
+
+  # ---- 片段 4：循环内 flow_break() 在阈值处提前结束 ----
+  - name: count_loop
+    id: count_loop
+    type: loop
+    strategy_ref: default_sync
+    alias: it
+    iterable: 'resolve("$.global.items")'
+    children:
+      - name: maybe_break
+        id: maybe_break
+        type: task
+        strategy_ref: default_sync
+        # 顶层 if/for 被禁用：把判断包进 def 函数。
+        script: |
+          def _check():
+            if resolve("$.item") > resolve("$.global.limit"):
+              flow_break()
+          _check()
+          {}
+
+      - name: push_item
+        id: push_item
+        type: task
+        strategy_ref: default_sync
+        script: |
+          g = resolve("$.global")
+          seen = g["seen"] if "seen" in g else []
+          {"seen": seen + [resolve("$.item")]}
+        boundary:
+          outputs:
+            seen: "$.global.seen"

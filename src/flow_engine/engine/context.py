@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,82 +36,117 @@ class ContextFrame:
 
 
 class ContextStack:
-    """Fork-on-branch: clone stacks for concurrent branches; locals stay isolated."""
+    """Fork-on-branch: clone stacks for concurrent branches; locals stay isolated.
+
+    Thread safety
+    -------------
+    All public mutation / lookup methods are guarded by an internal reentrant
+    lock so that concurrent workers (thread-pool tasks, ``asyncio.to_thread``
+    callers, etc.) can safely read and write path values in parallel with
+    the main event loop performing ``push``/``pop``/``set_path``. The lock is
+    reentrant so that user-facing helpers composed of multiple primitives do
+    not deadlock when they themselves are already holding it.
+    """
 
     def __init__(self, global_ns: dict[str, Any] | None = None) -> None:
         self.global_ns: dict[str, Any] = global_ns if global_ns is not None else {}
         self._frames: list[ContextFrame] = []
+        self._lock = threading.RLock()
+
+    @property
+    def lock(self) -> threading.RLock:
+        """Expose the internal lock for call sites that need to perform a
+        compound read-modify-write sequence atomically."""
+        return self._lock
 
     def fork(self) -> ContextStack:
         """Deep copy global reference (same dict) and copy frames for branch isolation."""
-        c = ContextStack(self.global_ns)
-        c._frames = [ContextFrame(f.node_id, f.alias, copy.copy(f.local), f.loop_item, f.loop_alias) for f in self._frames]
-        return c
+        with self._lock:
+            c = ContextStack(self.global_ns)
+            c._frames = [
+                ContextFrame(f.node_id, f.alias, copy.copy(f.local), f.loop_item, f.loop_alias)
+                for f in self._frames
+            ]
+            return c
 
     def push(self, frame: ContextFrame) -> None:
-        self._frames.append(frame)
+        with self._lock:
+            self._frames.append(frame)
 
     def pop(self) -> ContextFrame:
-        return self._frames.pop()
+        with self._lock:
+            return self._frames.pop()
 
     @property
     def frames(self) -> list[ContextFrame]:
-        return self._frames
+        # Return a snapshot to avoid callers mutating the list unlocked.
+        with self._lock:
+            return list(self._frames)
 
     def find_frame_by_ident(self, ident: str) -> ContextFrame | None:
-        for f in reversed(self._frames):
-            if ident == f.node_id or (f.alias and ident == f.alias):
-                return f
-        return None
+        with self._lock:
+            for f in reversed(self._frames):
+                if ident == f.node_id or (f.alias and ident == f.alias):
+                    return f
+            return None
 
     def get_path(self, path: str) -> Any:
         segments = _parse_segments(path)
         if not segments:
             raise PathResolutionError("Empty path after '$.'")
         head, *tail = segments
-        if head == "global":
-            return self._dig(self.global_ns, tail)
-        if head == "local":
-            if not self._frames:
-                raise PathResolutionError("No frame for $.local")
-            return self._dig(self._frames[-1].local, tail)
-        if head == "item":
-            for f in reversed(self._frames):
-                if f.loop_item is not None:
-                    if not tail:
-                        return f.loop_item
-                    return self._dig_any(f.loop_item, tail)
-            raise PathResolutionError("$.item used outside of a loop with current item")
-        fr = self.find_frame_by_ident(head)
-        if fr is None:
-            raise PathResolutionError(f"Unknown namespace or id: {head!r}")
-        if not tail:
-            return fr.local
-        return self._dig(fr.local, tail)
+        with self._lock:
+            if head == "global":
+                return self._dig(self.global_ns, tail)
+            if head == "local":
+                if not self._frames:
+                    raise PathResolutionError("No frame for $.local")
+                return self._dig(self._frames[-1].local, tail)
+            if head == "item":
+                for f in reversed(self._frames):
+                    if f.loop_item is not None:
+                        if not tail:
+                            return f.loop_item
+                        return self._dig_any(f.loop_item, tail)
+                raise PathResolutionError("$.item used outside of a loop with current item")
+            fr = self._find_frame_by_ident_locked(head)
+            if fr is None:
+                raise PathResolutionError(f"Unknown namespace or id: {head!r}")
+            if not tail:
+                return fr.local
+            return self._dig(fr.local, tail)
 
     def set_path(self, path: str, value: Any) -> None:
         segments = _parse_segments(path)
         if not segments:
             raise PathResolutionError("Empty path after '$.'")
         head, *tail = segments
-        if head == "global":
-            self._set_container(self.global_ns, tail, value)
-            return
-        if head == "local":
-            if not self._frames:
-                raise PathResolutionError("No frame for $.local")
-            self._set_container(self._frames[-1].local, tail, value)
-            return
-        if head == "item":
-            for f in reversed(self._frames):
-                if f.loop_item is not None:
-                    self._set_any(f.loop_item, tail, value)
-                    return
-            raise PathResolutionError("$.item not active")
-        fr = self.find_frame_by_ident(head)
-        if fr is None:
-            raise PathResolutionError(f"Unknown namespace or id: {head!r}")
-        self._set_container(fr.local, tail, value)
+        with self._lock:
+            if head == "global":
+                self._set_container(self.global_ns, tail, value)
+                return
+            if head == "local":
+                if not self._frames:
+                    raise PathResolutionError("No frame for $.local")
+                self._set_container(self._frames[-1].local, tail, value)
+                return
+            if head == "item":
+                for f in reversed(self._frames):
+                    if f.loop_item is not None:
+                        self._set_any(f.loop_item, tail, value)
+                        return
+                raise PathResolutionError("$.item not active")
+            fr = self._find_frame_by_ident_locked(head)
+            if fr is None:
+                raise PathResolutionError(f"Unknown namespace or id: {head!r}")
+            self._set_container(fr.local, tail, value)
+
+    def _find_frame_by_ident_locked(self, ident: str) -> ContextFrame | None:
+        # Caller must hold self._lock.
+        for f in reversed(self._frames):
+            if ident == f.node_id or (f.alias and ident == f.alias):
+                return f
+        return None
 
     @staticmethod
     def _dig(obj: dict[str, Any], tail: list[str]) -> Any:
