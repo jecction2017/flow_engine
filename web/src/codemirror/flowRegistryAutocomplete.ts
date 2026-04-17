@@ -1,7 +1,24 @@
 /** Registry-driven completions for Starlark task scripts (Python builtins + internal exports). */
 
-import { autocompletion, type Completion, type CompletionContext } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  completeAnyWord,
+  type Completion,
+  type CompletionContext,
+} from "@codemirror/autocomplete";
 import type { RegistryDoc } from "@/api/starlark";
+
+function formatSignature(
+  signature: Array<{ name: string; type: string; required?: boolean }>,
+): string {
+  if (!signature.length) return "()";
+  const args = signature.map((p) => {
+    const t = p.type?.trim() || "any";
+    if (p.required === false) return `${p.name}?: ${t}`;
+    return `${p.name}: ${t}`;
+  });
+  return `(${args.join(", ")})`;
+}
 
 function completionSource(registry: RegistryDoc) {
   return (context: CompletionContext) => {
@@ -18,8 +35,8 @@ function completionSource(registry: RegistryDoc) {
         options.push({
           label: l,
           type: "function",
-          detail: f.summary.length > 72 ? `${f.summary.slice(0, 72)}…` : f.summary,
-          info: `${f.summary}\n\n• id: ${f.id}\n• 在任务脚本中直接调用，无需 load。`,
+          detail: `${l}${formatSignature(f.signature)}`,
+          info: `${f.summary}\n\n签名: ${l}${formatSignature(f.signature)}\n返回: ${f.returns}\n\n• id: ${f.id}\n• 在任务脚本中直接调用，无需 load。`,
         });
       }
     }
@@ -45,10 +62,14 @@ function completionSource(registry: RegistryDoc) {
 
 /** CodeMirror extension; pass null to skip (no extra completions). */
 export function flowRegistryAutocompletion(registry: RegistryDoc | null) {
-  if (!registry) return [];
+  const sources = [completeAnyWord];
+  if (registry) sources.unshift(completionSource(registry));
   return autocompletion({
-    override: [completionSource(registry)],
+    // include both:
+    // 1) registry-driven builtins/internal exports
+    // 2) in-document identifiers (variables/functions defined above)
+    override: sources,
     activateOnTyping: true,
-    maxRenderedOptions: 80,
+    maxRenderedOptions: 120,
   });
 }
