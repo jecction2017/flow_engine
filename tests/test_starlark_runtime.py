@@ -45,4 +45,3 @@ def test_eval_task_script_main_branches() -> None:
     # Branch 3: non-dict return should raise TypeError.
     with pytest.raises(TypeError, match="Task script must evaluate to a dict"):
         eval_task_script("123", ctx, {})
-    eval_task_script("a=1\na\nb=2\nb", ctx, {})

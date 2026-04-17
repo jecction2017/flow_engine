@@ -13,12 +13,16 @@
       <button type="button" class="nav-btn" :class="{ active: view === 'lookup' }" @click="view = 'lookup'">
         Lookup
       </button>
+      <button type="button" class="nav-btn" :class="{ active: view === 'guide' }" @click="view = 'guide'">
+        帮助文档
+      </button>
     </nav>
     <main class="main-fill">
       <FlowStudioView v-if="view === 'flow'" />
       <CapabilityCenterView v-else-if="view === 'starlark'" />
       <DictConfigView v-else-if="view === 'dict'" />
-      <LookupConfigView v-else />
+      <LookupConfigView v-else-if="view === 'lookup'" />
+      <ScriptGuideView v-else />
     </main>
   </div>
 </template>
@@ -29,8 +33,9 @@ import FlowStudioView from "./views/FlowStudioView.vue";
 import CapabilityCenterView from "./views/CapabilityCenterView.vue";
 import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
+import ScriptGuideView from "./views/ScriptGuideView.vue";
 
-const view = ref<"flow" | "starlark" | "dict" | "lookup">("flow");
+const view = ref<"flow" | "starlark" | "dict" | "lookup" | "guide">("flow");
 </script>
 
 <style scoped>
