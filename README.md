@@ -7,12 +7,20 @@ pip install -e .
 python -m flow_engine examples/cyber_alert_diagnosis.yaml
 ```
 ## 测试
-
+跑所有测试用例
 ```bash
 pip install -e ".[dev,api]"
 python -m pytest tests
 ```
-
+若未做可编辑安装，可临时指定源码路径：
+```bash
+$env:PYTHONPATH = "e:\cursor\flow_engine\src"
+pytest
+```
+跑某一个测试文件
+```bash
+pytest tests\test_smoke.py
+```
 ## HTTP API（YAML 文件存储）
 
 流程定义默认保存在仓库根目录的 **`data/flows/`** 下（每个流程一个 `{id}.yaml`）。可通过环境变量 **`FLOW_ENGINE_FLOWS_DIR`** 指定其他目录；若包不在检出目录中运行，可设置 **`FLOW_ENGINE_REPO_ROOT`** 指向含 `pyproject.toml` 的仓库根，或分别为各资源设置目录类环境变量。

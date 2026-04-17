@@ -124,7 +124,7 @@
 
     <section v-if="node.type === 'task'" class="card">
       <div class="sec-title">Starlark 脚本</div>
-      <CodeEditor v-model="node.script" :height="340" @update:model-value="commit" />
+      <CodeEditor v-model="node.script" :height="340" :registry="starlarkRegistry" @update:model-value="commit" />
     </section>
 
     <DebugPanel v-if="node.type === 'task'" :path="path" />
@@ -132,14 +132,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from "vue";
+import { computed, onMounted, reactive, watch } from "vue";
 import type { FlowNode } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
 import CodeEditor from "./CodeEditor.vue";
 import DebugPanel from "./DebugPanel.vue";
 
 const props = defineProps<{ path: number[] }>();
 const store = useFlowStudioStore();
+const { registry: starlarkRegistry, ensureRegistry } = useStarlarkRegistryCache();
+
+onMounted(() => {
+  void ensureRegistry();
+});
 
 const node = computed(() => store.getNode(props.path) as FlowNode | null);
 
