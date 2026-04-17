@@ -7,7 +7,7 @@ import io
 import json
 from typing import Any
 
-from flow_engine.lookup_store import LookupStoreError
+from flow_engine.lookup.lookup_store import LookupStoreError
 
 
 def _detect_format(filename: str, fmt: str) -> str:

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from flow_engine.data_dict import lookup as data_dict_lookup
-from flow_engine.lookup_service import lookup_query as run_lookup_query
+from flow_engine.lookup.lookup_service import lookup_query as run_lookup_query
+from flow_engine.stores.data_dict import lookup as data_dict_lookup
 from flow_engine.starlark_sdk.builtin_registry import (
     BuiltinArgSpec,
     PythonBuiltinSpec,

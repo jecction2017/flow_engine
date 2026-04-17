@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from flow_engine._repo_root import repo_root
+
 _SAFE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")
 
 
@@ -17,7 +19,7 @@ def _flows_dir() -> Path:
     raw = os.environ.get("FLOW_ENGINE_FLOWS_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "flows").resolve()
+    return (repo_root() / "data" / "flows").resolve()
 
 
 def validate_flow_id(flow_id: str) -> str:

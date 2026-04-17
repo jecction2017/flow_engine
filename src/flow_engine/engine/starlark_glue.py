@@ -8,14 +8,14 @@ from typing import Any
 
 import starlark as sl
 
-from flow_engine.exceptions import (
+from flow_engine.engine.context import ContextStack
+from flow_engine.engine.exceptions import (
     BreakInterrupt,
     ContinueInterrupt,
     JumpTarget,
     TerminateInterrupt,
     starlark_to_python,
 )
-from flow_engine.context import ContextStack
 
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:

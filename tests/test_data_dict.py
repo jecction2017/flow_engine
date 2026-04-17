@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import flow_engine.data_dict as data_dict
-from flow_engine.dict_store import DataDictError, get_at_path
+import flow_engine.stores.data_dict as data_dict
+from flow_engine.stores.dict_store import DataDictError, get_at_path
 
 
 def test_lookup_and_dict_get(tmp_path, monkeypatch) -> None:

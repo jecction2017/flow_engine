@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from flow_engine.exceptions import CompilationError
-from flow_engine.models import (
+from flow_engine.engine.exceptions import CompilationError
+from flow_engine.engine.models import (
     FlowDefinition,
     FlowMember,
     LoopNode,

@@ -9,7 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from flow_engine.exceptions import FlowEngineError
+from flow_engine._repo_root import repo_root
+from flow_engine.engine.exceptions import FlowEngineError
 
 
 class LookupStoreError(FlowEngineError):
@@ -23,7 +24,7 @@ def _lookup_dir() -> Path:
     raw = os.environ.get("FLOW_ENGINE_LOOKUP_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "lookup").resolve()
+    return (repo_root() / "data" / "lookup").resolve()
 
 
 def validate_lookup_namespace(ns: str) -> str:

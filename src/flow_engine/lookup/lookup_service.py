@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from flow_engine.lookup_store import LookupStoreError, get_lookup_store, normalize_table, validate_lookup_namespace
+from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, normalize_table, validate_lookup_namespace
 
 MAX_QUERY_ROWS = 10_000
 

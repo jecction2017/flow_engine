@@ -7,8 +7,8 @@ import json
 import sys
 from pathlib import Path
 
-from flow_engine.loader import load_flow_from_yaml
-from flow_engine.orchestrator import FlowRuntime
+from flow_engine.engine.loader import load_flow_from_yaml
+from flow_engine.engine.orchestrator import FlowRuntime
 
 
 async def _amain(argv: list[str]) -> int:

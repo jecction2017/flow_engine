@@ -11,15 +11,15 @@ from typing import Any
 
 import starlark as sl
 
-from flow_engine.context import ContextFrame, ContextStack
-from flow_engine.exceptions import (
+from flow_engine.engine.context import ContextFrame, ContextStack
+from flow_engine.engine.exceptions import (
     BreakInterrupt,
     ContinueInterrupt,
     FlowEngineError,
     JumpTarget,
     TerminateInterrupt,
 )
-from flow_engine.models import (
+from flow_engine.engine.models import (
     ExecutionStrategy,
     FlowDefinition,
     FlowMember,
@@ -32,9 +32,8 @@ from flow_engine.models import (
     SubflowNode,
     TaskNode,
 )
-from flow_engine.data_dict import tree_copy
-from flow_engine.resources import GlobalConcurrencyGate, StrategyExecutors, asyncio_main_cancel, install_signal_handlers
-from flow_engine.starlark_glue import (
+from flow_engine.engine.resources import GlobalConcurrencyGate, StrategyExecutors, asyncio_main_cancel, install_signal_handlers
+from flow_engine.engine.starlark_glue import (
     apply_outputs,
     eval_condition,
     eval_iterable_expr,
@@ -42,7 +41,8 @@ from flow_engine.starlark_glue import (
     run_hook_script,
     run_task_script,
 )
-from flow_engine.tracker import TaskTracker
+from flow_engine.engine.tracker import TaskTracker
+from flow_engine.stores.data_dict import tree_copy
 
 logger = logging.getLogger(__name__)
 

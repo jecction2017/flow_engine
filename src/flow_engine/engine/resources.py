@@ -9,7 +9,7 @@ import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Any, Callable
 
-from flow_engine.models import ExecutionStrategy, StrategyMode
+from flow_engine.engine.models import ExecutionStrategy, StrategyMode
 
 logger = logging.getLogger(__name__)
 

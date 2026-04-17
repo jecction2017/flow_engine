@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from flow_engine.loader import load_flow_from_yaml
-from flow_engine.models import FlowState
-from flow_engine.orchestrator import FlowRuntime
+from flow_engine.engine.loader import load_flow_from_yaml
+from flow_engine.engine.models import FlowState
+from flow_engine.engine.orchestrator import FlowRuntime
 
 
 @pytest.mark.asyncio

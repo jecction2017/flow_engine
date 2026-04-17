@@ -11,22 +11,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from flow_engine import data_dict
-from flow_engine.compiler import compile_flow
-from flow_engine.context import ContextStack
-from flow_engine.dict_store import DataDictError
-from flow_engine.loader import load_flow_from_yaml
-from flow_engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
-from flow_engine.starlark_glue import run_task_script
+from flow_engine.engine.compiler import compile_flow
+from flow_engine.engine.context import ContextStack
+from flow_engine.engine.loader import load_flow_from_yaml
+from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
+from flow_engine.engine.starlark_glue import run_task_script
+from flow_engine.lookup.lookup_import import rows_from_bytes
+from flow_engine.lookup.lookup_service import merge_imported_rows, put_table
+from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
 from flow_engine.starlark_sdk.paths import user_scripts_root
 from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
 from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
-from flow_engine.lookup_import import rows_from_bytes
-from flow_engine.lookup_service import merge_imported_rows, put_table
-from flow_engine.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
-from flow_engine.yaml_store import FlowYamlStore, validate_flow_id
+from flow_engine.stores import data_dict
+from flow_engine.stores.dict_store import DataDictError
+from flow_engine.stores.yaml_store import FlowYamlStore, validate_flow_id
 
 store = FlowYamlStore()
 
@@ -259,7 +259,7 @@ def create_app() -> FastAPI:
         namespace: str,
         filter_json: str = Query(default="{}", alias="filter"),
     ) -> dict[str, Any]:
-        from flow_engine.lookup_service import lookup_query as run_lookup_query
+        from flow_engine.lookup.lookup_service import lookup_query as run_lookup_query
 
         try:
             validate_lookup_namespace(namespace)
@@ -360,7 +360,7 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run(
-        "flow_engine.http_api:app",
+        "flow_engine.api.http_api:app",
         host="127.0.0.1",
         port=int(__import__("os").environ.get("FLOW_ENGINE_PORT", "8000")),
         reload=__import__("os").environ.get("FLOW_ENGINE_RELOAD", "").lower() in ("1", "true", "yes"),

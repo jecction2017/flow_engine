@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flow_engine.context import ContextStack
+from flow_engine.engine.context import ContextStack
 from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import eval_task_script, runtime_stats, warmup_runtime
 

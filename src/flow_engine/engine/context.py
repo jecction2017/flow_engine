@@ -6,7 +6,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from flow_engine.exceptions import FlowEngineError
+from flow_engine.engine.exceptions import FlowEngineError
 
 
 class PathResolutionError(FlowEngineError):

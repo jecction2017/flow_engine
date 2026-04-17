@@ -6,10 +6,16 @@
 pip install -e .
 python -m flow_engine examples/cyber_alert_diagnosis.yaml
 ```
+## 测试
+
+```bash
+pip install -e ".[dev,api]"
+python -m pytest tests
+```
 
 ## HTTP API（YAML 文件存储）
 
-流程定义默认保存在项目根目录的 **`flows/`** 下（每个流程一个 `{id}.yaml`）。可通过环境变量 **`FLOW_ENGINE_FLOWS_DIR`** 指定其他目录。
+流程定义默认保存在仓库根目录的 **`data/flows/`** 下（每个流程一个 `{id}.yaml`）。可通过环境变量 **`FLOW_ENGINE_FLOWS_DIR`** 指定其他目录；若包不在检出目录中运行，可设置 **`FLOW_ENGINE_REPO_ROOT`** 指向含 `pyproject.toml` 的仓库根，或分别为各资源设置目录类环境变量。
 
 ```bash
 pip install -e ".[api]"
@@ -20,15 +26,17 @@ flow-api
 
 默认监听 `http://127.0.0.1:8000`，主要接口：
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/flows` | 列出 `flows/*.yaml` |
-| GET | `/api/flows/{id}` | 读取流程（JSON，与前端 `FlowDocument` 一致） |
-| PUT | `/api/flows/{id}` | 保存流程（校验后写回 YAML） |
-| POST | `/api/flows` | 新建空流程 `{ "id": "...", "name": "可选" }` |
-| DELETE | `/api/flows/{id}` | 删除文件 |
-| POST | `/api/debug/node` | 调试 Task 节点 Starlark（body: `script`, `boundary_inputs`, `initial_context`） |
+
+| 方法     | 路径                | 说明                                                                        |
+| ------ | ----------------- | ------------------------------------------------------------------------- |
+| GET    | `/api/health`     | 健康检查                                                                      |
+| GET    | `/api/flows`      | 列出 `data/flows/*.yaml`（或 `FLOW_ENGINE_FLOWS_DIR` 下 `*.yaml`）                         |
+| GET    | `/api/flows/{id}` | 读取流程（JSON，与前端 `FlowDocument` 一致）                                          |
+| PUT    | `/api/flows/{id}` | 保存流程（校验后写回 YAML）                                                          |
+| POST   | `/api/flows`      | 新建空流程 `{ "id": "...", "name": "可选" }`                                     |
+| DELETE | `/api/flows/{id}` | 删除文件                                                                      |
+| POST   | `/api/debug/node` | 调试 Task 节点 Starlark（body: `script`, `boundary_inputs`, `initial_context`） |
+
 
 ## Vue Flow Studio
 

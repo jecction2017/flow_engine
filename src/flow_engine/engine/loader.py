@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
-from flow_engine.compiler import compile_flow
-from flow_engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
+from flow_engine.engine.compiler import compile_flow
+from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, StrategyMode
 
 
 def load_flow_from_yaml(path: str | Path) -> FlowDefinition:

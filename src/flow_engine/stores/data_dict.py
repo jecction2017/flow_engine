@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from flow_engine.dict_store import DataDictStore, _dict_dir, delete_at_path, get_at_path, parse_path, set_at_path
+from flow_engine.stores.dict_store import DataDictStore, _dict_dir, delete_at_path, get_at_path, parse_path, set_at_path
 
 _store_cache: tuple[str, DataDictStore] | None = None
 
@@ -30,7 +30,7 @@ def tree_copy() -> dict[str, Any]:
 
 def lookup(path: str, default: Any = None) -> Any:
     """Dot-path lookup, same semantics as ``dict.get`` for missing keys."""
-    from flow_engine.dict_store import DataDictError
+    from flow_engine.stores.dict_store import DataDictError
 
     parts = parse_path(path)
     if not parts:
@@ -46,7 +46,7 @@ def apply_subtree_yaml(path: str, yaml_fragment: str) -> dict[str, Any]:
     """Parse YAML fragment and replace subtree at ``path`` (empty path = whole root)."""
     import yaml
 
-    from flow_engine.dict_store import DataDictError
+    from flow_engine.stores.dict_store import DataDictError
 
     parts = parse_path(path)
     if not yaml_fragment.strip():
@@ -79,7 +79,7 @@ def subtree_as_yaml(path: str) -> str:
     """Return pretty YAML for the subtree at ``path`` (empty = full document)."""
     import yaml
 
-    from flow_engine.dict_store import DataDictError
+    from flow_engine.stores.dict_store import DataDictError
 
     tree = store().read_tree()
     parts = parse_path(path)

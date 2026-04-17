@@ -83,7 +83,7 @@ function isNonSync(mode: string | undefined): boolean {
 export const useFlowStudioStore = defineStore("flowStudio", () => {
   const doc = ref<FlowDocument>(clone(SAMPLE));
   const selection = ref<Selection>({ kind: "flow" });
-  /** 当前绑定的服务端流程 id（对应 ``flows/{id}.yaml``） */
+  /** 当前绑定的服务端流程 id（对应 ``data/flows/{id}.yaml``） */
   const activeFlowId = ref<string | null>(null);
   const serverFlowsDir = ref<string | null>(null);
   const flowList = ref<{ id: string; name: string }[]>([]);

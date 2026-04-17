@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from flow_engine.lookup_import import rows_from_bytes
-from flow_engine.lookup_service import lookup_query, merge_imported_rows, put_table
-from flow_engine.lookup_store import LookupStoreError, invalidate_lookup_store_cache
+from flow_engine.lookup.lookup_import import rows_from_bytes
+from flow_engine.lookup.lookup_service import lookup_query, merge_imported_rows, put_table
+from flow_engine.lookup.lookup_store import LookupStoreError, invalidate_lookup_store_cache
 
 
 def test_lookup_query_and_import(tmp_path, monkeypatch) -> None:

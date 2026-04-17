@@ -11,8 +11,8 @@ from typing import Any
 
 import starlark as sl
 
-from flow_engine.context import ContextStack
-from flow_engine.exceptions import starlark_to_python
+from flow_engine.engine.context import ContextStack
+from flow_engine.engine.exceptions import starlark_to_python
 from flow_engine.starlark_sdk.loader import build_file_loader, dialect_with_load, loader_stats, warmup_modules
 from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
 
@@ -111,7 +111,7 @@ def _attach_sdk_python(mod: sl.Module) -> None:
 
 
 def _prepare_module(mod: sl.Module, ctx: ContextStack, boundary_inputs: dict[str, str]) -> None:
-    from flow_engine.starlark_glue import _attach_builtins, inject_context_paths, inject_resolve
+    from flow_engine.engine.starlark_glue import _attach_builtins, inject_context_paths, inject_resolve
 
     inject_context_paths(mod, ctx, boundary_inputs)
     inject_resolve(mod, ctx)
@@ -143,11 +143,11 @@ def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     if not expr:
         return True
     mod = sl.Module()
-    from flow_engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    from flow_engine.starlark_glue import _attach_builtins
+    from flow_engine.engine.starlark_glue import _attach_builtins
 
     _attach_builtins(mod)
     glb = _globals_main()
@@ -159,11 +159,11 @@ def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
     mod = sl.Module()
-    from flow_engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    from flow_engine.starlark_glue import _attach_builtins
+    from flow_engine.engine.starlark_glue import _attach_builtins
 
     _attach_builtins(mod)
     glb = _globals_main()
@@ -177,13 +177,13 @@ def run_hook_script(snippet: str | None, ctx: ContextStack, extra: dict[str, Any
     if not snippet:
         return
     mod = sl.Module()
-    from flow_engine.starlark_glue import inject_resolve
+    from flow_engine.engine.starlark_glue import inject_resolve
 
     inject_resolve(mod, ctx)
     if extra:
         for k, v in extra.items():
             mod[k] = v
-    from flow_engine.starlark_glue import _attach_builtins
+    from flow_engine.engine.starlark_glue import _attach_builtins
 
     _attach_builtins(mod)
     _attach_sdk_python(mod)

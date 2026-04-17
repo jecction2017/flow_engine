@@ -14,7 +14,7 @@
       <div class="actions">
         <div class="grp" title="对应服务端 flows 目录下的 YAML 文件">
           <select v-model="selectedId" class="sel" @change="onSelectFlow">
-            <option value="" disabled>选择 flows/*.yaml…</option>
+            <option value="" disabled>选择 data/flows/*.yaml…</option>
             <option v-for="f in store.flowList" :key="f.id" :value="f.id">
               {{ f.name }} ({{ f.id }})
             </option>

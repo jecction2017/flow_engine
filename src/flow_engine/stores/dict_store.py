@@ -9,7 +9,8 @@ from typing import Any
 
 import yaml
 
-from flow_engine.exceptions import FlowEngineError
+from flow_engine._repo_root import repo_root
+from flow_engine.engine.exceptions import FlowEngineError
 
 
 class DataDictError(FlowEngineError):
@@ -20,7 +21,7 @@ def _dict_dir() -> Path:
     raw = os.environ.get("FLOW_ENGINE_DICT_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "dict").resolve()
+    return (repo_root() / "data" / "dict").resolve()
 
 
 class DataDictStore:
