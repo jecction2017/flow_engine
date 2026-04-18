@@ -55,3 +55,15 @@ npm run dev
 ```
 
 开发时 Vite 将 `/api` 代理到 `127.0.0.1:8000`，需先启动上述 API 服务后再使用「保存到服务器」与列表加载。
+
+## cursor访问外部大模型
+用快捷键 command + shift + P 然后搜索 open user settings 选择带json 的那个，然后在json中添加下面：
+```bash
+"workbench.editor.enablePreview": false,
+"http.proxy": "http://127.0.0.1:6699",
+"http.proxyStrictSSL": false,
+"http.proxySupport": "override",
+"http.noProxy": [],
+"cursor.general.disableHttp2": true
+```
+http.proxy修改为本地代理的端口

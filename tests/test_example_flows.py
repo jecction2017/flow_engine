@@ -21,12 +21,11 @@ from flow_engine.engine.loader import load_flow_from_yaml
 from flow_engine.engine.models import FlowState, NodeState
 from flow_engine.engine.orchestrator import FlowRuntime
 
-FLOWS_DIR = Path(__file__).resolve().parents[1] / "data" / "flows"
+FLOWS_DIR = Path(__file__).resolve().parents[1] / "examples"
 
 
 def _flow(name: str):
     return load_flow_from_yaml(FLOWS_DIR / f"{name}.yaml")
-
 
 # --------------------------------------------------------------------------
 # 1) Sequential pipeline with boundary I/O
