@@ -63,12 +63,32 @@ export type RunFlowRequest = {
   timeout_sec?: number;
 };
 
+export type NodeRunTransition = {
+  state: string;
+  t_ms: number;
+};
+
+export type NodeRunInfo = {
+  node_id: string;
+  order: number;
+  first_seen_ms: number;
+  started_ms: number | null;
+  finished_ms: number | null;
+  duration_ms: number | null;
+  final_state: string;
+  parent_id?: string | null;
+  iterations?: number | null;
+  execution_count?: number;
+  transitions: NodeRunTransition[];
+};
+
 export type RunFlowResponse = {
   ok: boolean;
   state: string;
   message: string | null;
   elapsed_ms: number;
   node_state: Record<string, string>;
+  node_runs?: NodeRunInfo[];
   global_ns: Record<string, unknown>;
 };
 

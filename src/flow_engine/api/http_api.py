@@ -410,13 +410,20 @@ def create_app() -> FastAPI:
 
         if timed_out or res is None:
             # FlowRuntime already installed a cancel hook, but wait_for above
-            # only cancels the awaiting task; make sure we surface a timeout.
+            # only cancels the awaiting task; make sure we surface a timeout
+            # AND still return whatever partial node telemetry the runtime
+            # captured so operators can see where the flow got stuck.
+            partial_runs = [r.to_dict() for r in sorted(rt._node_runs.values(), key=lambda r: r.order)]
+            partial_state = {
+                k: v.value if isinstance(v, NodeState) else str(v) for k, v in rt.node_state.items()
+            }
             return {
                 "ok": False,
                 "state": "TERMINATED",
                 "message": f"Run exceeded {body.timeout_sec}s",
                 "elapsed_ms": elapsed_ms,
-                "node_state": {},
+                "node_state": partial_state,
+                "node_runs": partial_runs,
                 "global_ns": {},
             }
 
@@ -429,6 +436,7 @@ def create_app() -> FastAPI:
             "message": res.message,
             "elapsed_ms": elapsed_ms,
             "node_state": node_state,
+            "node_runs": [r.to_dict() for r in res.node_runs],
             "global_ns": ns,
         }
 

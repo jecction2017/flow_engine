@@ -112,6 +112,22 @@ class TaskNode(BaseNode):
     boundary: Boundary = Field(default_factory=Boundary)
 
 
+class IterationCollect(BaseModel):
+    """Harvests a value from each iteration's (possibly isolated) context and
+    appends it to a list path in the parent context.
+
+    * ``from_path``: path evaluated against the per-iteration context.
+    * ``append_to``: path in the PARENT context; if absent or not a list, a
+      fresh list is created. The parent list is updated under the parent
+      context's lock so concurrent iterations are race-free.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_path: str
+    append_to: str
+
+
 class LoopNode(BaseNode):
     type: Literal["loop"] = "loop"
     iterable: str
@@ -125,6 +141,21 @@ class LoopNode(BaseNode):
     #   "shallow": copy.copy() per iteration (top-level isolation only).
     #   "deep":    copy.deepcopy() per iteration (full isolation).
     copy_item: Literal["shared", "shallow", "deep"] = "shared"
+    # Controls whether an iteration gets its own isolated ContextStack.
+    #   "shared" (default): the iteration body mutates the parent's
+    #                       ``$.global`` namespace directly (legacy behaviour).
+    #   "fork": each iteration receives a freshly forked ContextStack with a
+    #           deep copy of ``global_ns``; writes inside the iteration do not
+    #           leak to the parent nor to sibling iterations. Use
+    #           ``iteration_collect`` to harvest a per-iteration result.
+    iteration_isolation: Literal["shared", "fork"] = "shared"
+    # When set, after each iteration completes we read ``from_path`` from the
+    # iteration's (possibly isolated) context and append that value to the
+    # list at ``append_to`` in the parent context. The parent list grows in
+    # iteration-completion order (which, for concurrent loops, is not the same
+    # as the source order — pair with a stable key inside the collected value
+    # if you need deterministic ordering).
+    iteration_collect: IterationCollect | None = None
 
 
 class SubflowNode(BaseNode):

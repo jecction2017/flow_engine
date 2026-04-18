@@ -48,10 +48,19 @@ class ContextStack:
     not deadlock when they themselves are already holding it.
     """
 
-    def __init__(self, global_ns: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        global_ns: dict[str, Any] | None = None,
+        *,
+        _lock: threading.RLock | None = None,
+    ) -> None:
         self.global_ns: dict[str, Any] = global_ns if global_ns is not None else {}
         self._frames: list[ContextFrame] = []
-        self._lock = threading.RLock()
+        # The optional ``_lock`` argument is used by :meth:`fork` to make the
+        # child share the parent's RLock when they also share ``global_ns``;
+        # otherwise concurrent writes to the same dict through two different
+        # locks would race.
+        self._lock = _lock or threading.RLock()
 
     @property
     def lock(self) -> threading.RLock:
@@ -59,10 +68,24 @@ class ContextStack:
         compound read-modify-write sequence atomically."""
         return self._lock
 
-    def fork(self) -> ContextStack:
-        """Deep copy global reference (same dict) and copy frames for branch isolation."""
+    def fork(self, *, clone_global: bool = False) -> ContextStack:
+        """Fork the context stack for a concurrent / isolated branch.
+
+        * ``clone_global=False`` (default): the fork shares ``global_ns`` and
+          the parent's RLock so that concurrent writes from both stacks stay
+          serialized against the same dict.
+        * ``clone_global=True``: ``global_ns`` is deep-copied, and the fork
+          receives its own lock. Writes inside the fork are fully invisible
+          to the parent until an explicit merge step.
+
+        In both cases frames are shallow-cloned so the branch can push/pop
+        independently without disturbing the parent's frame stack.
+        """
         with self._lock:
-            c = ContextStack(self.global_ns)
+            if clone_global:
+                c = ContextStack(copy.deepcopy(self.global_ns))
+            else:
+                c = ContextStack(self.global_ns, _lock=self._lock)
             c._frames = [
                 ContextFrame(f.node_id, f.alias, copy.copy(f.local), f.loop_item, f.loop_alias)
                 for f in self._frames

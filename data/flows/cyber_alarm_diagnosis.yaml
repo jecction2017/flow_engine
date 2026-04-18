@@ -1,0 +1,560 @@
+# 网络安全告警诊断模拟流程
+#
+# 形态对应：
+#   init_flow_node
+#   loop_node                              # 模拟消费 Kafka 告警批，迭代并发 + 上下文隔离
+#     ├─ alarm_normalize_node              # 内存归一化
+#     ├─ evidence_enrich_subflow           # IO 并发（async）
+#     │    └─ enrich_ip / enrich_domain / enrich_hash / merge_evidence
+#     ├─ feature_calculate_subflow         # 内存计算
+#     │    └─ feat_ioc_stats / feat_behavior / feat_context
+#     ├─ scoring_subflow                   # 内存计算
+#     │    └─ score_base / score_weights / score_final
+#     ├─ diagnose_node                     # 诊断结论
+#     ├─ upgrade_node                      # 条件升级
+#     └─ talking_subflow                   # 话术/可解释性
+#          └─ build_explanation / build_action_hint / assemble_talking
+#   aggregate_report_node                  # 汇总所有告警的诊断结果
+#
+# 关键引擎能力（在本仓库的引擎中新支持）：
+#   * LoopNode.strategy_ref != default_sync  -> 迭代并发（受 strategy.concurrency 约束）
+#   * LoopNode.iteration_isolation = fork    -> 每个告警独占深拷贝的 $.global 上下文
+#   * LoopNode.iteration_collect             -> 每条迭代完成后把结果追加到父上下文 list
+name: cyber_alarm_diagnosis
+version: "1.0.0"
+
+initial_context:
+  # 模拟 Kafka 已拉取的一批告警（真实场景里 init_flow_node 可以替换这个列表）
+  kafka_alarms:
+    - id: "ALT-0001"
+      severity: "HIGH"
+      title: "Outbound to suspicious CDN"
+      source_ip: "10.0.0.21"
+      dest_ip: "198.51.100.7"
+      indicators:
+        - {type: "ip", value: "198.51.100.7"}
+        - {type: "domain", value: "cdn.example.invalid"}
+        - {type: "hash", value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+    - id: "ALT-0002"
+      severity: "MEDIUM"
+      title: "Anomalous DNS burst"
+      source_ip: "10.0.0.45"
+      dest_ip: "8.8.8.8"
+      indicators:
+        - {type: "domain", value: "analytics.vendor.invalid"}
+    - id: "ALT-0003"
+      severity: "LOW"
+      title: "Beaconing timing pattern"
+      source_ip: "10.0.0.77"
+      dest_ip: "203.0.113.9"
+      indicators:
+        - {type: "ip", value: "203.0.113.9"}
+        - {type: "hash", value: "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"}
+    - id: "ALT-0004"
+      severity: "CRITICAL"
+      title: "Lateral movement via SMB"
+      source_ip: "10.0.0.33"
+      dest_ip: "10.0.0.90"
+      indicators:
+        - {type: "ip", value: "10.0.0.90"}
+        - {type: "hash", value: "badb001badb001badb001badb001badb001badb001badb001badb001badb001b"}
+    - id: "ALT-0005"
+      severity: "LOW"
+      title: "Noisy scanner"
+      source_ip: "10.0.0.5"
+      dest_ip: "10.0.0.6"
+      indicators: []
+
+  # 诊断产出将追加到这里；注意是父上下文里的空 list
+  diagnoses: []
+  final_report: {}
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+  # loop 级并发：用 process 语义模拟进程池（引擎实际上以 asyncio 任务并发调度每个迭代，
+  # 每个迭代可在内部使用 mode: process 的 task 做真正的 CPU 密集子进程）
+  alarm_worker_pool:
+    name: alarm_worker_pool
+    mode: process
+    concurrency: 3
+    timeout: 60
+
+  # 单条告警内部的 IO 并发（evidence 富化）
+  io_enrich:
+    name: io_enrich
+    mode: async
+    concurrency: 4
+    timeout: 20
+
+  # 单条告警内部的 CPU 计算（可以改为 thread/process）
+  cpu_compute:
+    name: cpu_compute
+    mode: thread
+    concurrency: 2
+    timeout: 15
+
+nodes:
+  # ------------------------------------------------------------------
+  # init_flow_node
+  # ------------------------------------------------------------------
+  - name: init_flow_node
+    id: init_flow_node
+    type: task
+    strategy_ref: default_sync
+    script: |
+      alarms = resolve("$.global.kafka_alarms")
+      {
+        "meta": {
+          "flow": "cyber_alarm_diagnosis",
+          "batch_size": len(alarms),
+          "version": "1.0.0",
+        }
+      }
+    boundary:
+      outputs:
+        meta: "$.global.flow_meta"
+
+  # ------------------------------------------------------------------
+  # loop_node —— 每条告警走独立的诊断子流水线，上下文隔离 + 并发
+  # ------------------------------------------------------------------
+  - name: alarm_loop
+    id: alarm_loop
+    type: loop
+    alias: alarm
+    # 迭代并发由这个 strategy 决定（concurrency=3 即同时并行处理 3 条告警）
+    strategy_ref: alarm_worker_pool
+    iterable: 'resolve("$.global.kafka_alarms")'
+    # 每条告警深拷贝 $.global，迭代之间不共享任何写入 -> 真正的"上下文隔离"
+    iteration_isolation: fork
+    # 迭代完成后把该迭代上下文里 $.global.per_alarm_result 追加到父上下文 $.global.diagnoses
+    iteration_collect:
+      from_path: "$.global.per_alarm_result"
+      append_to: "$.global.diagnoses"
+    copy_item: deep
+    children:
+      # ----------------------------------------------------------------
+      # alarm_normalize_node
+      # ----------------------------------------------------------------
+      - name: alarm_normalize_node
+        id: alarm_normalize_node
+        type: task
+        strategy_ref: default_sync
+        script: |
+          it = resolve("$.item")
+          ioc_count = len(it["indicators"])
+          sev = it["severity"]
+          sev_weight = 4 if sev == "CRITICAL" else (3 if sev == "HIGH" else (2 if sev == "MEDIUM" else 1))
+          {
+            "alarm": {
+              "id": it["id"],
+              "severity": sev,
+              "severity_weight": sev_weight,
+              "title": it["title"],
+              "src": it["source_ip"],
+              "dst": it["dest_ip"],
+              "ioc_count": ioc_count,
+              "indicators": it["indicators"],
+            }
+          }
+        boundary:
+          outputs:
+            alarm: "$.global.alarm"
+
+      # ----------------------------------------------------------------
+      # evidence_enrich_subflow —— 三路 IO 并发 + 汇合
+      # ----------------------------------------------------------------
+      - name: evidence_enrich_subflow
+        id: evidence_enrich_subflow
+        type: subflow
+        strategy_ref: default_sync
+        alias: evidence
+        children:
+          - name: enrich_ip
+            id: enrich_ip
+            type: task
+            strategy_ref: io_enrich
+            script: |
+              ind = [x for x in resolve("$.global.alarm.indicators") if x["type"] == "ip"]
+              # 模拟 IO：以命中策略代替真实威胁情报查询
+              hits = [
+                {
+                  "value": x["value"],
+                  "reputation": "malicious" if (x["value"].startswith("198.51.") or x["value"].startswith("203.0.113.")) else "clean",
+                  "source": "intel_ip",
+                }
+                for x in ind
+              ]
+              {"evidence_ip": {"count": len(ind), "hits": hits}}
+            boundary:
+              outputs:
+                evidence_ip: "$.global.ev_ip"
+
+          - name: enrich_domain
+            id: enrich_domain
+            type: task
+            strategy_ref: io_enrich
+            script: |
+              ind = [x for x in resolve("$.global.alarm.indicators") if x["type"] == "domain"]
+              hits = [
+                {
+                  "value": x["value"],
+                  "reputation": "suspicious" if x["value"].endswith(".invalid") else "clean",
+                  "source": "intel_domain",
+                }
+                for x in ind
+              ]
+              {"evidence_domain": {"count": len(ind), "hits": hits}}
+            boundary:
+              outputs:
+                evidence_domain: "$.global.ev_domain"
+
+          - name: enrich_hash
+            id: enrich_hash
+            type: task
+            strategy_ref: io_enrich
+            script: |
+              ind = [x for x in resolve("$.global.alarm.indicators") if x["type"] == "hash"]
+              # 简单模拟：以 "bad" / "deadbeef" 等特征命中黑名单
+              hits = [
+                {
+                  "value": x["value"],
+                  "reputation": "malicious" if ("bad" in x["value"] or "deadbeef" in x["value"]) else "clean",
+                  "source": "intel_hash",
+                }
+                for x in ind
+              ]
+              {"evidence_hash": {"count": len(ind), "hits": hits}}
+            boundary:
+              outputs:
+                evidence_hash: "$.global.ev_hash"
+
+          - name: merge_evidence
+            id: merge_evidence
+            type: task
+            strategy_ref: default_sync
+            wait_before: true
+            script: |
+              ev_ip = resolve("$.global.ev_ip")
+              ev_dom = resolve("$.global.ev_domain")
+              ev_hash = resolve("$.global.ev_hash")
+              mal = (
+                len([h for h in ev_ip["hits"] if h["reputation"] == "malicious"])
+                + len([h for h in ev_hash["hits"] if h["reputation"] == "malicious"])
+              )
+              sus = len([h for h in ev_dom["hits"] if h["reputation"] == "suspicious"])
+              {
+                "evidence": {
+                  "ip": ev_ip,
+                  "domain": ev_dom,
+                  "hash": ev_hash,
+                  "malicious_hits": mal,
+                  "suspicious_hits": sus,
+                }
+              }
+            boundary:
+              outputs:
+                evidence: "$.global.evidence"
+
+      # ----------------------------------------------------------------
+      # feature_calculate_subflow —— 顺序内存计算
+      # ----------------------------------------------------------------
+      - name: feature_calculate_subflow
+        id: feature_calculate_subflow
+        type: subflow
+        strategy_ref: default_sync
+        alias: features
+        children:
+          - name: feat_ioc_stats
+            id: feat_ioc_stats
+            type: task
+            strategy_ref: default_sync
+            script: |
+              a = resolve("$.global.alarm")
+              ev = resolve("$.global.evidence")
+              {
+                "ioc_stats": {
+                  "ioc_count": a["ioc_count"],
+                  "malicious_hits": ev["malicious_hits"],
+                  "suspicious_hits": ev["suspicious_hits"],
+                }
+              }
+            boundary:
+              outputs:
+                ioc_stats: "$.global.feat_ioc_stats"
+
+          - name: feat_behavior
+            id: feat_behavior
+            type: task
+            strategy_ref: default_sync
+            script: |
+              a = resolve("$.global.alarm")
+              # 行为特征简单建模：源/目的是否跨网段、标题关键词
+              src = a["src"]
+              dst = a["dst"]
+              internal_src = src.startswith("10.") or src.startswith("192.168.")
+              internal_dst = dst.startswith("10.") or dst.startswith("192.168.")
+              lateral = internal_src and internal_dst
+              outbound = internal_src and (not internal_dst)
+              title_lower = a["title"].lower()
+              beaconing = "beacon" in title_lower
+              {
+                "behavior": {
+                  "lateral": lateral,
+                  "outbound": outbound,
+                  "beaconing": beaconing,
+                }
+              }
+            boundary:
+              outputs:
+                behavior: "$.global.feat_behavior"
+
+          - name: feat_context
+            id: feat_context
+            type: task
+            strategy_ref: default_sync
+            script: |
+              a = resolve("$.global.alarm")
+              # 资产/环境上下文：模拟从资产库查询资产重要性
+              dst = a["dst"]
+              asset_criticality = 3 if dst == "10.0.0.90" else 1
+              {
+                "context": {
+                  "asset_criticality": asset_criticality,
+                  "severity_weight": a["severity_weight"],
+                }
+              }
+            boundary:
+              outputs:
+                context: "$.global.feat_context"
+
+      # ----------------------------------------------------------------
+      # scoring_subflow —— 加权打分
+      # ----------------------------------------------------------------
+      - name: scoring_subflow
+        id: scoring_subflow
+        type: subflow
+        strategy_ref: default_sync
+        alias: scoring
+        children:
+          - name: score_base
+            id: score_base
+            type: task
+            strategy_ref: cpu_compute
+            script: |
+              ioc = resolve("$.global.feat_ioc_stats")
+              base = 10 * ioc["malicious_hits"] + 4 * ioc["suspicious_hits"] + 1 * ioc["ioc_count"]
+              {"base": base}
+            boundary:
+              outputs:
+                base: "$.global.score_base_v"
+
+          - name: score_weights
+            id: score_weights
+            type: task
+            strategy_ref: cpu_compute
+            script: |
+              beh = resolve("$.global.feat_behavior")
+              ctx = resolve("$.global.feat_context")
+              w = (
+                ctx["severity_weight"] * 3
+                + ctx["asset_criticality"] * 5
+                + (12 if beh["lateral"] else 0)
+                + (8 if beh["beaconing"] else 0)
+                + (4 if beh["outbound"] else 0)
+              )
+              {"weights": w}
+            boundary:
+              outputs:
+                weights: "$.global.score_weights_v"
+
+          - name: score_final
+            id: score_final
+            type: task
+            strategy_ref: default_sync
+            wait_before: true
+            script: |
+              base = resolve("$.global.score_base_v")
+              wts = resolve("$.global.score_weights_v")
+              raw = base + wts
+              # 归一化到 0-100
+              score = 100 if raw > 100 else raw
+              {"score": {"raw": raw, "normalized": score}}
+            boundary:
+              outputs:
+                score: "$.global.score"
+
+      # ----------------------------------------------------------------
+      # diagnose_node
+      # ----------------------------------------------------------------
+      - name: diagnose_node
+        id: diagnose_node
+        type: task
+        strategy_ref: default_sync
+        script: |
+          s = resolve("$.global.score.normalized")
+          a = resolve("$.global.alarm")
+          verdict = (
+            "true_positive_critical" if s >= 50 else (
+              "true_positive" if s >= 30 else (
+                "needs_review" if s >= 15 else "false_positive"
+              )
+            )
+          )
+          {
+            "diagnosis": {
+              "alarm_id": a["id"],
+              "score": s,
+              "verdict": verdict,
+            }
+          }
+        boundary:
+          outputs:
+            diagnosis: "$.global.diagnosis"
+
+      # ----------------------------------------------------------------
+      # upgrade_node —— 仅在威胁度高时升级；其余 SKIPPED
+      # ----------------------------------------------------------------
+      - name: upgrade_node
+        id: upgrade_node
+        type: task
+        strategy_ref: default_sync
+        condition: 'resolve("$.global.diagnosis.verdict") == "true_positive_critical"'
+        script: |
+          d = resolve("$.global.diagnosis")
+          {
+            "upgrade": {
+              "should_upgrade": True,
+              "target_severity": "CRITICAL",
+              "playbook": "isolate_host_and_block_ioc",
+              "owner": "soc-oncall",
+              "alarm_id": d["alarm_id"],
+            }
+          }
+        boundary:
+          outputs:
+            upgrade: "$.global.upgrade"
+
+      # ----------------------------------------------------------------
+      # talking_subflow —— 组织可解释性话术
+      # ----------------------------------------------------------------
+      - name: talking_subflow
+        id: talking_subflow
+        type: subflow
+        strategy_ref: default_sync
+        alias: talking
+        children:
+          - name: build_explanation
+            id: build_explanation
+            type: task
+            strategy_ref: default_sync
+            script: |
+              a = resolve("$.global.alarm")
+              ev = resolve("$.global.evidence")
+              beh = resolve("$.global.feat_behavior")
+              base_parts = [
+                "告警 " + a["id"] + " 标题: " + a["title"] + "。",
+                "严重度 " + a["severity"] + "；源 " + a["src"] + " -> 目的 " + a["dst"] + "。",
+                "证据: 恶意命中 " + str(ev["malicious_hits"]) + " 次，可疑命中 " + str(ev["suspicious_hits"]) + " 次。",
+              ]
+              # Starlark 标准方言不允许顶层 if，这里用条件表达式 + 过滤空串
+              extras = [
+                "检测到横向移动特征。" if beh["lateral"] else "",
+                "检测到 C2 心跳行为。" if beh["beaconing"] else "",
+                "存在异常外连。" if beh["outbound"] else "",
+              ]
+              parts = base_parts + [s for s in extras if s]
+              {"explanation": " ".join(parts)}
+            boundary:
+              outputs:
+                explanation: "$.global.talking_explanation"
+
+          - name: build_action_hint
+            id: build_action_hint
+            type: task
+            strategy_ref: default_sync
+            script: |
+              v = resolve("$.global.diagnosis.verdict")
+              hint = (
+                "立即隔离主机并封禁 IOC，派单 SOC 处置。" if v == "true_positive_critical" else (
+                  "建议阻断 IOC 并加强监控。" if v == "true_positive" else (
+                    "建议人工复核，补充上下文。" if v == "needs_review" else "可关闭该告警。"
+                  )
+                )
+              )
+              {"hint": hint}
+            boundary:
+              outputs:
+                hint: "$.global.talking_hint"
+
+          - name: assemble_talking
+            id: assemble_talking
+            type: task
+            strategy_ref: default_sync
+            script: |
+              d = resolve("$.global.diagnosis")
+              exp = resolve("$.global.talking_explanation")
+              hint = resolve("$.global.talking_hint")
+              {
+                "talking": {
+                  "alarm_id": d["alarm_id"],
+                  "verdict": d["verdict"],
+                  "score": d["score"],
+                  "explanation": exp,
+                  "action_hint": hint,
+                }
+              }
+            boundary:
+              outputs:
+                talking: "$.global.talking"
+
+      # ----------------------------------------------------------------
+      # 组装本条告警的最终结果 —— 会被 iteration_collect 追加到父 ctx 的 diagnoses
+      # ----------------------------------------------------------------
+      - name: finalize_per_alarm
+        id: finalize_per_alarm
+        type: task
+        strategy_ref: default_sync
+        script: |
+          a = resolve("$.global.alarm")
+          d = resolve("$.global.diagnosis")
+          s = resolve("$.global.score")
+          tk = resolve("$.global.talking")
+          {
+            "per_alarm_result": {
+              "alarm_id": a["id"],
+              "verdict": d["verdict"],
+              "score": s["normalized"],
+              "upgraded": d["verdict"] == "true_positive_critical",
+              "talking": tk,
+            }
+          }
+        boundary:
+          outputs:
+            per_alarm_result: "$.global.per_alarm_result"
+
+  # ------------------------------------------------------------------
+  # aggregate_report_node —— 在 loop 外，汇总所有告警的诊断
+  # ------------------------------------------------------------------
+  - name: aggregate_report_node
+    id: aggregate_report_node
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    script: |
+      ds = resolve("$.global.diagnoses")
+      verdicts = ["true_positive_critical", "true_positive", "needs_review", "false_positive"]
+      by_verdict = {v: len([x for x in ds if x["verdict"] == v]) for v in verdicts}
+      {
+        "report": {
+          "total": len(ds),
+          "upgraded": len([x for x in ds if x["upgraded"]]),
+          "by_verdict": by_verdict,
+          "items": ds,
+        }
+      }
+    boundary:
+      outputs:
+        report: "$.global.final_report"

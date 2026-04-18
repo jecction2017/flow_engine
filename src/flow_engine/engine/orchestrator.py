@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import time
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -75,11 +76,73 @@ def _node_hook(hooks: Any, name: str) -> str | None:
 
 
 @dataclass
+class NodeRunInfo:
+    """Per-node execution record captured by the orchestrator.
+
+    Timestamps are relative milliseconds from the moment ``FlowRuntime.run``
+    entered :attr:`FlowState.RUNNING` so that consumers can plot a timeline
+    without knowing the wall-clock start. ``order`` is the 0-based index in
+    which the node was first observed by the scheduler -- this is what drives
+    the "execution sequence" column in the UI and is stable across reruns of
+    deterministic flows.
+    """
+
+    node_id: str
+    order: int
+    first_seen_ms: int
+    started_ms: int | None = None
+    finished_ms: int | None = None
+    final_state: NodeState = NodeState.INITIALIZED
+    parent_id: str | None = None
+    iterations: int | None = None
+    transitions: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def duration_ms(self) -> int | None:
+        if self.started_ms is None or self.finished_ms is None:
+            return None
+        return max(0, self.finished_ms - self.started_ms)
+
+    @property
+    def execution_count(self) -> int:
+        """How many times the node entered a new execution pass.
+
+        Every pass through the scheduler starts either by transitioning to
+        ``STAGING`` (condition passed) or by landing directly in ``SKIPPED``
+        (condition failed). Counting those two events gives us loop
+        iteration counts without the orchestrator having to maintain a
+        separate attempt counter.
+        """
+        n = sum(
+            1
+            for t in self.transitions
+            if t.get("state") in (NodeState.STAGING.value, NodeState.SKIPPED.value)
+        )
+        return max(1, n)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "node_id": self.node_id,
+            "order": self.order,
+            "first_seen_ms": self.first_seen_ms,
+            "started_ms": self.started_ms,
+            "finished_ms": self.finished_ms,
+            "duration_ms": self.duration_ms,
+            "final_state": self.final_state.value,
+            "parent_id": self.parent_id,
+            "iterations": self.iterations,
+            "execution_count": self.execution_count,
+            "transitions": list(self.transitions),
+        }
+
+
+@dataclass
 class FlowRunResult:
     state: FlowState
     context: ContextStack
     message: str | None = None
     node_state: dict[str, NodeState] = field(default_factory=dict)
+    node_runs: list[NodeRunInfo] = field(default_factory=list)
 
 
 class FlowRuntime:
@@ -94,6 +157,8 @@ class FlowRuntime:
             self.ctx.global_ns["dictionary"] = tree_copy()
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}
+        self._node_runs: dict[str, NodeRunInfo] = {}
+        self._t0: float | None = None
         self._root_tracker = TaskTracker()
         self._gate = GlobalConcurrencyGate(limit=256)
         self.executors = StrategyExecutors(flow.strategies, self._gate)
@@ -103,8 +168,39 @@ class FlowRuntime:
     def _nid(self, m: FlowMember) -> str:
         return m.id or m.name
 
-    def _mark(self, nid: str, st: NodeState) -> None:
+    def _now_ms(self) -> int:
+        """Milliseconds since :meth:`run` started tracking (0 before start)."""
+        if self._t0 is None:
+            return 0
+        return max(0, int((time.monotonic() - self._t0) * 1000))
+
+    def _mark(self, nid: str, st: NodeState, *, parent_id: str | None = None) -> None:
         self.node_state[nid] = st
+        t = self._now_ms()
+        info = self._node_runs.get(nid)
+        if info is None:
+            info = NodeRunInfo(
+                node_id=nid,
+                order=len(self._node_runs),
+                first_seen_ms=t,
+                final_state=st,
+                parent_id=parent_id,
+            )
+            self._node_runs[nid] = info
+        # `parent_id` is only authoritative on the FIRST observation. If a
+        # loop child re-enters across iterations it must stay attached to
+        # the loop it was first scheduled under rather than flipping to
+        # whatever the current caller passes.
+        info.final_state = st
+        info.transitions.append({"state": st.value, "t_ms": t})
+        if info.started_ms is None and st in (
+            NodeState.STAGING,
+            NodeState.DISPATCHED,
+            NodeState.RUNNING,
+        ):
+            info.started_ms = t
+        if st in (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED):
+            info.finished_ms = t
 
     def _strategy_for(self, m: FlowMember) -> ExecutionStrategy:
         try:
@@ -123,17 +219,20 @@ class FlowRuntime:
             apply_outputs(result, outputs, ctx)
 
     def _result(self, message: str | None) -> FlowRunResult:
+        runs = sorted(self._node_runs.values(), key=lambda r: r.order)
         return FlowRunResult(
             state=self.flow_state,
             context=self.ctx,
             message=message,
             node_state=dict(self.node_state),
+            node_runs=runs,
         )
 
     async def run(self) -> FlowRunResult:
         install_signal_handlers()
         self._loop = asyncio.get_running_loop()
         self._cancel_dereg = asyncio_main_cancel(self._loop)
+        self._t0 = time.monotonic()
         self.flow_state = FlowState.RUNNING
         if self.flow.hooks and self.flow.hooks.on_start:
             run_hook_script(self.flow.hooks.on_start, self.ctx)
@@ -175,13 +274,20 @@ class FlowRuntime:
                     logger.debug("Cancel deregister failed", exc_info=True)
                 self._cancel_dereg = None
 
-    async def _run_members(self, members: list[FlowMember], ctx: ContextStack, tracker: TaskTracker) -> None:
+    async def _run_members(
+        self,
+        members: list[FlowMember],
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        *,
+        parent_id: str | None = None,
+    ) -> None:
         i = 0
         jumps = 0
         while i < len(members):
             m = members[i]
             try:
-                await self._dispatch_member(m, ctx, tracker)
+                await self._dispatch_member(m, ctx, tracker, parent_id=parent_id)
             except JumpTarget as j:
                 idx = self._index_by_id(members, j.target)
                 if idx is not None:
@@ -201,7 +307,14 @@ class FlowRuntime:
                 return idx
         return None
 
-    async def _dispatch_member(self, m: FlowMember, ctx: ContextStack, tracker: TaskTracker) -> None:
+    async def _dispatch_member(
+        self,
+        m: FlowMember,
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        *,
+        parent_id: str | None = None,
+    ) -> None:
         nid = self._nid(m)
 
         # `wait_before` must run BEFORE `condition`: a condition can legitimately
@@ -211,13 +324,13 @@ class FlowRuntime:
             await tracker.wait_all()
 
         if not eval_condition(m.condition, ctx):
-            self._mark(nid, NodeState.SKIPPED)
+            self._mark(nid, NodeState.SKIPPED, parent_id=parent_id)
             return
 
         st = self._strategy_for(m)
         mode = _strategy_mode(st)
 
-        self._mark(nid, NodeState.STAGING)
+        self._mark(nid, NodeState.STAGING, parent_id=parent_id)
 
         if isinstance(m, TaskNode):
             if mode == StrategyMode.SYNC:
@@ -454,40 +567,38 @@ class FlowRuntime:
             run_hook_script(hooks.pre_exec, ctx)
 
         items = eval_iterable_expr(node.iterable, ctx)
+        info = self._node_runs.get(nid)
+        if info is not None:
+            info.iterations = len(items)
         copy_mode = getattr(node, "copy_item", "shared")
+        isolation = getattr(node, "iteration_isolation", "shared")
+        collect = getattr(node, "iteration_collect", None)
+
+        strategy = self._strategy_for(node)
+        mode = _strategy_mode(strategy)
+        # Concurrency==1 falls back to the legacy sequential path so prior
+        # flow semantics (frame reuse, ordered writes, break/continue at the
+        # outermost iteration) are preserved bit-for-bit.
+        concurrency = 1 if mode == StrategyMode.SYNC else max(1, strategy.concurrency)
+
+        prepared: list[Any] = []
+        for raw_it in items:
+            if copy_mode == "deep":
+                prepared.append(copy.deepcopy(raw_it))
+            elif copy_mode == "shallow":
+                prepared.append(copy.copy(raw_it))
+            else:
+                prepared.append(raw_it)
+
         try:
-            for raw_it in items:
-                if copy_mode == "deep":
-                    it = copy.deepcopy(raw_it)
-                elif copy_mode == "shallow":
-                    it = copy.copy(raw_it)
-                else:
-                    it = raw_it
-                iter_tracker = TaskTracker(parent=tracker)
-                frame = ContextFrame(node_id=nid, alias=node.alias, loop_item=it, loop_alias=node.alias)
-                with self._pushed_frame(ctx, frame):
-                    try:
-                        if hooks and hooks.on_iteration_start:
-                            run_hook_script(hooks.on_iteration_start, ctx, {"item": it})
-                        try:
-                            await self._run_members(node.children, ctx, iter_tracker)
-                        except ContinueInterrupt:
-                            continue
-                        except BreakInterrupt:
-                            break
-                    finally:
-                        # Drain this iteration's background tasks BEFORE popping
-                        # the frame so they still see the correct $.item binding.
-                        try:
-                            await iter_tracker.wait_all()
-                        finally:
-                            if hooks and hooks.on_iteration_end:
-                                # Best-effort; don't let a hook error mask the
-                                # primary exception propagating upward.
-                                try:
-                                    run_hook_script(hooks.on_iteration_end, ctx, {"item": it})
-                                except Exception:  # noqa: BLE001
-                                    logger.exception("on_iteration_end hook failed")
+            if concurrency == 1:
+                await self._run_loop_sequential(
+                    node, prepared, ctx, tracker, hooks, isolation, collect
+                )
+            else:
+                await self._run_loop_concurrent(
+                    node, prepared, ctx, tracker, hooks, isolation, collect, concurrency
+                )
         finally:
             if hooks and hooks.post_exec:
                 try:
@@ -497,6 +608,202 @@ class FlowRuntime:
 
         await tracker.wait_all()
         self._mark(nid, NodeState.SUCCESS)
+
+    @staticmethod
+    def _collect_iteration_result(
+        iter_ctx: ContextStack, parent_ctx: ContextStack, collect: Any
+    ) -> None:
+        """Append a value read from ``iter_ctx`` onto a list at ``collect.append_to``
+        in ``parent_ctx``. Missing source path -> no-op (caller decides whether
+        to treat as an error via on_error); missing / non-list sink -> fresh
+        list. The parent's lock is held during the read-modify-write so
+        concurrent iterations don't lose updates.
+        """
+        try:
+            val = iter_ctx.get_path(collect.from_path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "iteration_collect: could not read %r from iteration ctx: %s",
+                collect.from_path,
+                e,
+            )
+            return
+        with parent_ctx.lock:
+            try:
+                existing = parent_ctx.get_path(collect.append_to)
+            except Exception:  # noqa: BLE001
+                existing = None
+            lst = list(existing) if isinstance(existing, list) else []
+            lst.append(val)
+            parent_ctx.set_path(collect.append_to, lst)
+
+    async def _run_loop_sequential(
+        self,
+        node: LoopNode,
+        items: list[Any],
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        hooks: LoopHooks | None,
+        isolation: str,
+        collect: Any,
+    ) -> None:
+        """Legacy path: run iterations one-by-one.
+
+        When ``isolation == 'fork'`` we still honour it — each iteration gets
+        its own forked stack and we still collect after the iteration.
+        Otherwise we reuse the parent ctx directly, which preserves the
+        original semantics exercised by every existing test/example.
+        """
+        nid = self._nid(node)
+        for it in items:
+            if isolation == "fork":
+                iter_ctx = ctx.fork(clone_global=True)
+                iter_tracker = TaskTracker(parent=None)
+                frame = ContextFrame(node_id=nid, alias=node.alias, loop_item=it, loop_alias=node.alias)
+                with self._pushed_frame(iter_ctx, frame):
+                    try:
+                        if hooks and hooks.on_iteration_start:
+                            run_hook_script(hooks.on_iteration_start, iter_ctx, {"item": it})
+                        try:
+                            await self._run_members(
+                                node.children, iter_ctx, iter_tracker, parent_id=nid
+                            )
+                        except ContinueInterrupt:
+                            continue
+                        except BreakInterrupt:
+                            if collect is not None:
+                                # No partial collect on break.
+                                pass
+                            break
+                    finally:
+                        try:
+                            await iter_tracker.wait_all()
+                        finally:
+                            if hooks and hooks.on_iteration_end:
+                                try:
+                                    run_hook_script(hooks.on_iteration_end, iter_ctx, {"item": it})
+                                except Exception:  # noqa: BLE001
+                                    logger.exception("on_iteration_end hook failed")
+                if collect is not None:
+                    self._collect_iteration_result(iter_ctx, ctx, collect)
+                continue
+
+            iter_tracker = TaskTracker(parent=tracker)
+            frame = ContextFrame(node_id=nid, alias=node.alias, loop_item=it, loop_alias=node.alias)
+            with self._pushed_frame(ctx, frame):
+                try:
+                    if hooks and hooks.on_iteration_start:
+                        run_hook_script(hooks.on_iteration_start, ctx, {"item": it})
+                    try:
+                        await self._run_members(
+                            node.children, ctx, iter_tracker, parent_id=nid
+                        )
+                    except ContinueInterrupt:
+                        continue
+                    except BreakInterrupt:
+                        break
+                finally:
+                    try:
+                        await iter_tracker.wait_all()
+                    finally:
+                        if hooks and hooks.on_iteration_end:
+                            try:
+                                run_hook_script(hooks.on_iteration_end, ctx, {"item": it})
+                            except Exception:  # noqa: BLE001
+                                logger.exception("on_iteration_end hook failed")
+            if collect is not None:
+                self._collect_iteration_result(ctx, ctx, collect)
+
+    async def _run_loop_concurrent(
+        self,
+        node: LoopNode,
+        items: list[Any],
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        hooks: LoopHooks | None,
+        isolation: str,
+        collect: Any,
+        concurrency: int,
+    ) -> None:
+        """Dispatch each iteration as an asyncio task bounded by a semaphore.
+
+        * ``isolation='fork'`` -> per-iteration deep-copied global_ns.
+        * ``isolation='shared'`` -> share global_ns with the parent ctx while
+          still getting a per-iteration frame stack (so ``$.item`` and loop
+          frames don't collide). Concurrent writes to the same path on the
+          shared ``global_ns`` are serialized by the shared RLock handed down
+          from :meth:`ContextStack.fork`.
+
+        ``BreakInterrupt`` raised inside an iteration cancels further
+        iterations (subject to already-running ones finishing). ``Continue``
+        inside an iteration is treated as "skip this one, keep going".
+        """
+        nid = self._nid(node)
+        sem = asyncio.Semaphore(concurrency)
+        stop_requested = {"flag": False}
+
+        async def one(idx: int, raw_item: Any) -> None:
+            if stop_requested["flag"]:
+                return
+            async with sem:
+                if stop_requested["flag"]:
+                    return
+                iter_ctx = ctx.fork(clone_global=(isolation == "fork"))
+                iter_tracker = TaskTracker(parent=None)
+                frame = ContextFrame(
+                    node_id=nid,
+                    alias=node.alias,
+                    loop_item=raw_item,
+                    loop_alias=node.alias,
+                )
+                with self._pushed_frame(iter_ctx, frame):
+                    try:
+                        if hooks and hooks.on_iteration_start:
+                            run_hook_script(
+                                hooks.on_iteration_start, iter_ctx, {"item": raw_item}
+                            )
+                        try:
+                            await self._run_members(
+                                node.children, iter_ctx, iter_tracker, parent_id=nid
+                            )
+                        except ContinueInterrupt:
+                            return
+                        except BreakInterrupt:
+                            stop_requested["flag"] = True
+                            return
+                    finally:
+                        try:
+                            await iter_tracker.wait_all()
+                        finally:
+                            if hooks and hooks.on_iteration_end:
+                                try:
+                                    run_hook_script(
+                                        hooks.on_iteration_end,
+                                        iter_ctx,
+                                        {"item": raw_item},
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    logger.exception("on_iteration_end hook failed")
+                if collect is not None:
+                    self._collect_iteration_result(iter_ctx, ctx, collect)
+
+        coros = [one(i, it) for i, it in enumerate(items)]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        first_exc: BaseException | None = None
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(
+                r, (BreakInterrupt, ContinueInterrupt)
+            ):
+                if first_exc is None:
+                    first_exc = r
+                else:
+                    logger.error("Additional concurrent-loop exception: %r", r)
+        if first_exc is not None:
+            raise first_exc
+        # Drain any background tasks the concurrent iterations may have
+        # attached to the parent tracker (none should have, since concurrent
+        # iterations use their own trackers, but be defensive).
+        await tracker.wait_all()
 
     async def _execute_subflow(self, node: SubflowNode, ctx: ContextStack, tracker: TaskTracker) -> None:
         nid = self._nid(node)
@@ -511,7 +818,7 @@ class FlowRuntime:
         frame = ContextFrame(node_id=nid, alias=node.alias)
         with self._pushed_frame(ctx, frame):
             try:
-                await self._run_members(node.children, ctx, sub_tracker)
+                await self._run_members(node.children, ctx, sub_tracker, parent_id=nid)
             finally:
                 # Drain isolated child tracker BEFORE popping the frame so that
                 # background tasks' outputs still resolve against this subflow.

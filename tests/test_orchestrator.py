@@ -351,6 +351,121 @@ async def test_result_exposes_node_state_snapshot() -> None:
     assert res.node_state["b"] == NodeState.SKIPPED
 
 
+@pytest.mark.asyncio
+async def test_result_exposes_node_runs_timeline() -> None:
+    """`node_runs` must record start order, timing, and final state per node.
+
+    This feeds the Flow Studio timeline visualization -- regressions here
+    would leave the UI unable to render the execution waterfall.
+    """
+    flow = _flow(
+        """
+        name: ns_runs
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: first
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"x": 1}
+          - name: second
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"y": 2}
+          - name: skipped
+            type: task
+            strategy_ref: default_sync
+            condition: "False"
+            script: |
+              {"z": 3}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    assert [r.node_id for r in res.node_runs] == ["first", "second", "skipped"]
+    assert [r.order for r in res.node_runs] == [0, 1, 2]
+    by_id = {r.node_id: r for r in res.node_runs}
+    assert by_id["first"].final_state == NodeState.SUCCESS
+    assert by_id["second"].final_state == NodeState.SUCCESS
+    assert by_id["skipped"].final_state == NodeState.SKIPPED
+    # Successful nodes should have a non-negative duration captured.
+    for nid in ("first", "second"):
+        run = by_id[nid]
+        assert run.started_ms is not None and run.finished_ms is not None
+        assert run.finished_ms >= run.started_ms
+        assert run.duration_ms is not None and run.duration_ms >= 0
+    # Transitions are recorded in observation order.
+    states = [t["state"] for t in by_id["first"].transitions]
+    assert states[0] in {"STAGING", "RUNNING"}
+    assert states[-1] == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_node_runs_record_tree_hierarchy_and_iterations() -> None:
+    """Loop / subflow children must be linked to their structural parent.
+
+    The Flow Studio run panel groups rows by ``parent_id`` to render the
+    execution tree, so a regression here would flatten the visualization.
+    ``iterations`` on the loop and ``execution_count`` on its children
+    together tell the user how often each leaf ran.
+    """
+    flow = _flow(
+        """
+        name: ns_tree
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1, 2, 3]
+        nodes:
+          - name: root_task
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"x": 1}
+          - name: main_loop
+            type: loop
+            strategy_ref: default_sync
+            iterable: resolve("$.global.items")
+            alias: it
+            children:
+              - name: leaf_a
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {}
+              - name: inner_subflow
+                type: subflow
+                strategy_ref: default_sync
+                alias: sub
+                children:
+                  - name: deep_leaf
+                    type: task
+                    strategy_ref: default_sync
+                    script: |
+                      {}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    by_id = {r.node_id: r for r in res.node_runs}
+    assert by_id["root_task"].parent_id is None
+    assert by_id["main_loop"].parent_id is None
+    assert by_id["leaf_a"].parent_id == "main_loop"
+    assert by_id["inner_subflow"].parent_id == "main_loop"
+    assert by_id["deep_leaf"].parent_id == "inner_subflow"
+    # Loop ran across 3 items, and every child should have been staged once
+    # per iteration (execution_count counts STAGING + SKIPPED transitions).
+    assert by_id["main_loop"].iterations == 3
+    assert by_id["leaf_a"].execution_count == 3
+    assert by_id["deep_leaf"].execution_count == 3
+
+
 def test_compiler_rejects_retry_with_zero_retry_count() -> None:
     from flow_engine.engine.exceptions import CompilationError
 
