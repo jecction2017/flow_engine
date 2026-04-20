@@ -12,22 +12,55 @@
         </div>
       </div>
       <div class="actions">
-        <div class="grp" title="对应服务端 flows 目录下的 YAML 文件">
+        <div class="grp" title="对应服务端 flows 目录下的流程版本">
+          <!-- Flow selector -->
           <select v-model="selectedId" class="sel" @change="onSelectFlow">
-            <option value="" disabled>选择 data/flows/*.yaml…</option>
-            <option v-for="f in store.flowList" :key="f.id" :value="f.id">
-              {{ f.name }} ({{ f.id }})
+            <option value="" disabled>选择流程…</option>
+            <option v-for="f in store.flowList" :key="(f as any).id" :value="(f as any).id">
+              {{ (f as any).name }} ({{ (f as any).id }})
             </option>
           </select>
+
+          <!-- Version selector -->
+          <select v-if="store.activeFlowId" v-model="selectedVersion" class="sel-ver" @change="onSelectVersion">
+            <option value="draft" :disabled="!hasDraft">草稿{{ hasDraft ? "" : "（无）" }}</option>
+            <option v-for="v in versionList" :key="v.version" :value="String(v.version)">
+              V{{ v.version }}{{ v.version === latestVersion ? " (最新)" : "" }}
+            </option>
+          </select>
+
+          <!-- Version badge -->
+          <span v-if="currentVersionBadge" class="ver-badge">{{ currentVersionBadge }}</span>
+
           <button type="button" class="btn ghost" title="重新扫描 flows 目录" @click="refresh">刷新</button>
-          <button type="button" class="btn primary" :disabled="!store.activeFlowId || saving" @click="save">
-            {{ saving ? "保存中…" : "保存到服务器" }}
+
+          <!-- Save draft -->
+          <button
+            type="button"
+            class="btn ghost"
+            :disabled="!store.activeFlowId || saving"
+            title="保存为草稿（不创建新版本）"
+            @click="saveDraft"
+          >
+            {{ saving === "draft" ? "保存中…" : "保存草稿" }}
           </button>
+
+          <!-- Commit new version -->
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="!store.activeFlowId || saving !== false"
+            title="将当前草稿提交为新版本（V+1）"
+            @click="saveNewVersion"
+          >
+            {{ saving === "version" ? "提交中…" : `提交 V${latestVersion + 1}` }}
+          </button>
+
           <button
             type="button"
             class="btn accent"
             :disabled="!store.activeFlowId"
-            title="执行当前选中的流程（需先保存）"
+            title="执行当前流程（需先保存）"
             @click="toggleRun"
           >
             ▶ 运行流程
@@ -43,6 +76,9 @@
         </div>
       </div>
     </header>
+
+    <!-- Save message -->
+    <div v-if="saveMsg" class="save-msg" :class="saveMsg.type">{{ saveMsg.text }}</div>
 
     <FlowRunPanel
       :flow-id="store.activeFlowId"
@@ -64,16 +100,40 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import type { FlowDocument } from "@/types/flow";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import FlowRunPanel from "@/components/FlowRunPanel.vue";
+import { fetchVersionList, commitVersion, saveDraft as apiSaveDraft, fetchVersion, fetchDraft } from "@/api/publish";
+import type { FlowVersionMeta } from "@/api/publish";
 
 const store = useFlowStudioStore();
 const selectedId = ref("");
-const saving = ref(false);
+const selectedVersion = ref("draft");
+const saving = ref<false | "draft" | "version">(false);
 const runVisible = ref(false);
+
+const versionList = ref<FlowVersionMeta[]>([]);
+const latestVersion = ref(0);
+const hasDraft = ref(false);
+
+type SaveMsg = { type: "ok" | "err"; text: string };
+const saveMsg = ref<SaveMsg | null>(null);
+let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showMsg(type: "ok" | "err", text: string) {
+  saveMsg.value = { type, text };
+  if (saveMsgTimer) clearTimeout(saveMsgTimer);
+  saveMsgTimer = setTimeout(() => (saveMsg.value = null), 3000);
+}
+
+const currentVersionBadge = computed(() => {
+  if (!store.activeFlowId) return "";
+  if (selectedVersion.value === "draft") return hasDraft.value ? "草稿" : "";
+  return `V${selectedVersion.value}`;
+});
 
 function toggleRun() {
   runVisible.value = !runVisible.value;
@@ -90,35 +150,97 @@ watch(
 onMounted(async () => {
   await store.refreshFlowList();
   try {
-    if (store.flowList.some((f) => f.id === "demo_flow")) {
-      await store.loadFlowFromServer("demo_flow");
+    if (store.flowList.some((f) => (f as any).id === "demo_flow")) {
+      await loadFlowWithVersions("demo_flow");
     } else if (store.flowList.length > 0) {
-      await store.loadFlowFromServer(store.flowList[0].id);
+      await loadFlowWithVersions((store.flowList[0] as any).id);
     }
   } catch {
-    /* 离线时使用内置示例 */
+    /* offline – use built-in sample */
   }
 });
 
 async function refresh() {
   await store.refreshFlowList();
+  if (store.activeFlowId) {
+    await refreshVersionList(store.activeFlowId);
+  }
+}
+
+async function refreshVersionList(flowId: string) {
+  try {
+    const vl = await fetchVersionList(flowId);
+    versionList.value = vl.versions;
+    latestVersion.value = vl.latest_version;
+    hasDraft.value = vl.has_draft;
+  } catch {
+    versionList.value = [];
+    latestVersion.value = 0;
+    hasDraft.value = false;
+  }
+}
+
+async function loadFlowWithVersions(flowId: string) {
+  await store.loadFlowFromServer(flowId);
+  await refreshVersionList(flowId);
+  // Show draft if it exists, otherwise latest version
+  selectedVersion.value = hasDraft.value ? "draft" : String(latestVersion.value || "draft");
 }
 
 async function onSelectFlow() {
   if (!selectedId.value) return;
   try {
-    await store.loadFlowFromServer(selectedId.value);
+    await loadFlowWithVersions(selectedId.value);
   } catch (e) {
     alert(e instanceof Error ? e.message : String(e));
   }
 }
 
-async function save() {
-  saving.value = true;
+async function onSelectVersion() {
+  const fid = store.activeFlowId;
+  if (!fid) return;
   try {
-    await store.saveFlowToServer();
+    let data: Record<string, unknown>;
+    if (selectedVersion.value === "draft") {
+      data = await fetchDraft(fid);
+    } else {
+      data = await fetchVersion(fid, Number(selectedVersion.value));
+    }
+    store.loadDocument(data as unknown as FlowDocument, fid);
   } catch (e) {
-    alert(e instanceof Error ? e.message : String(e));
+    showMsg("err", e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function saveDraft() {
+  const fid = store.activeFlowId;
+  if (!fid) return;
+  saving.value = "draft";
+  try {
+    await apiSaveDraft(fid, store.doc as unknown as Record<string, unknown>);
+    await refreshVersionList(fid);
+    selectedVersion.value = "draft";
+    showMsg("ok", "草稿已保存");
+  } catch (e) {
+    showMsg("err", e instanceof Error ? e.message : String(e));
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveNewVersion() {
+  const fid = store.activeFlowId;
+  if (!fid) return;
+  saving.value = "version";
+  try {
+    // Save current doc to draft first, then commit
+    await apiSaveDraft(fid, store.doc as unknown as Record<string, unknown>);
+    const res = await commitVersion(fid);
+    await refreshVersionList(fid);
+    selectedVersion.value = String(res.version);
+    showMsg("ok", `版本 V${res.version} 已提交`);
+  } catch (e) {
+    showMsg("err", e instanceof Error ? e.message : String(e));
   } finally {
     saving.value = false;
   }
@@ -129,6 +251,8 @@ async function newFlow() {
   if (!id?.trim()) return;
   try {
     await store.createFlowOnServer(id.trim());
+    await refreshVersionList(id.trim());
+    selectedVersion.value = "draft";
   } catch (e) {
     alert(e instanceof Error ? e.message : String(e));
   }
@@ -151,6 +275,7 @@ function onImport(ev: Event) {
   reader.onload = () => {
     try {
       store.importJson(String(reader.result));
+      selectedVersion.value = "draft";
     } catch {
       alert("JSON 解析失败");
     }
@@ -232,12 +357,34 @@ function onImport(ev: Event) {
 
 .sel {
   min-width: 200px;
-  max-width: 280px;
+  max-width: 260px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 8px;
   font-size: 12px;
   background: #fff;
+}
+
+.sel-ver {
+  min-width: 110px;
+  max-width: 160px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #fff;
+}
+
+.ver-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .btn {
@@ -280,6 +427,29 @@ function onImport(ev: Event) {
 
 .btn.ghost:hover {
   border-color: var(--border-strong);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.save-msg {
+  padding: 5px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid transparent;
+}
+
+.save-msg.ok {
+  color: #065f46;
+  background: color-mix(in srgb, #10b981 12%, transparent);
+  border-color: color-mix(in srgb, #10b981 25%, transparent);
+}
+
+.save-msg.err {
+  color: #b45309;
+  background: color-mix(in srgb, #fbbf24 12%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 25%, transparent);
 }
 
 .api-err {

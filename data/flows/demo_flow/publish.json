@@ -1,0 +1,15 @@
+{
+  "flow_id": "demo_flow",
+  "production": {
+    "version": 3,
+    "status": "unpublished",
+    "published_at": 1776674236.2150028,
+    "stopped_at": 1776674249.4632914
+  },
+  "gray": {
+    "version": null,
+    "status": "unpublished",
+    "published_at": null,
+    "stopped_at": 1776668485.6690166
+  }
+}

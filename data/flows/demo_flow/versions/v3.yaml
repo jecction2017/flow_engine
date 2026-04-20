@@ -1,0 +1,37 @@
+name: demo_flow
+version: 1.0.0
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+    concurrency: 4
+    retry_count: 0
+  async_io:
+    name: async_io
+    mode: async
+    concurrency: 8
+    timeout: 120.0
+    retry_count: 0
+  worker:
+    name: worker
+    mode: thread
+    concurrency: 4
+    timeout: 60.0
+    retry_count: 0
+nodes:
+- type: task
+  name: ingest
+  id: ingest
+  strategy_ref: default_sync
+  wait_before: false
+  script: '{"summary": {"id": resolve("$.global.alert.id"), "severity": resolve("$.global.alert.severity")}}
+
+    '
+  boundary:
+    inputs: {}
+    outputs:
+      summary: $.global.summary
+initial_context:
+  alert:
+    id: ALT-1
+    severity: HIGH

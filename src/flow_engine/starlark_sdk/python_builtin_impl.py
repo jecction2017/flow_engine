@@ -131,5 +131,23 @@ def user_script_list() -> list[str]:
     return out
 
 
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://system/sleep",
+        starlark_name="system_sleep",
+        category="system",
+        summary="睡眠指定秒数",
+        signature=(BuiltinArgSpec(name="seconds", type="int"),),
+        returns="int",
+        side_effects="none",
+    )
+)
+def system_sleep(seconds: int) -> dict[str, Any]:
+    import time
+    time.sleep(seconds)
+    return seconds
+
+
 # starlark_name -> callable
 PYTHON_BUILTINS: dict[str, Any] = builtin_map()

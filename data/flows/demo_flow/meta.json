@@ -1,0 +1,25 @@
+{
+  "flow_id": "demo_flow",
+  "latest_version": 3,
+  "has_draft": true,
+  "versions": [
+    {
+      "version": 1,
+      "created_at": 1776667864.1577199,
+      "description": "Migrated from legacy flat file",
+      "flow_name": "demo_flow"
+    },
+    {
+      "version": 2,
+      "created_at": 1776668397.2091863,
+      "description": null,
+      "flow_name": "demo_flow"
+    },
+    {
+      "version": 3,
+      "created_at": 1776668401.21057,
+      "description": null,
+      "flow_name": "demo_flow"
+    }
+  ]
+}

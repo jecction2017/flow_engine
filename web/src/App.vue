@@ -13,6 +13,9 @@
       <button type="button" class="nav-btn" :class="{ active: view === 'lookup' }" @click="view = 'lookup'">
         Lookup
       </button>
+      <button type="button" class="nav-btn" :class="{ active: view === 'publish' }" @click="view = 'publish'">
+        发布管理
+      </button>
       <button type="button" class="nav-btn" :class="{ active: view === 'guide' }" @click="view = 'guide'">
         帮助文档
       </button>
@@ -22,6 +25,7 @@
       <CapabilityCenterView v-else-if="view === 'starlark'" />
       <DictConfigView v-else-if="view === 'dict'" />
       <LookupConfigView v-else-if="view === 'lookup'" />
+      <PublishView v-else-if="view === 'publish'" />
       <ScriptGuideView v-else />
     </main>
   </div>
@@ -33,9 +37,10 @@ import FlowStudioView from "./views/FlowStudioView.vue";
 import CapabilityCenterView from "./views/CapabilityCenterView.vue";
 import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
+import PublishView from "./views/PublishView.vue";
 import ScriptGuideView from "./views/ScriptGuideView.vue";
 
-const view = ref<"flow" | "starlark" | "dict" | "lookup" | "guide">("flow");
+const view = ref<"flow" | "starlark" | "dict" | "lookup" | "publish" | "guide">("flow");
 </script>
 
 <style scoped>
