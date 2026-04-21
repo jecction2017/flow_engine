@@ -1,0 +1,105 @@
+name: demo_flow
+version: 1.0.0
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+    concurrency: 4
+    retry_count: 0
+  async_io:
+    name: async_io
+    mode: async
+    concurrency: 8
+    timeout: 120.0
+    retry_count: 0
+  worker:
+    name: worker
+    mode: thread
+    concurrency: 4
+    timeout: 60.0
+    retry_count: 0
+nodes:
+- type: loop
+  id: loop_alarm
+  name: loop_alarm
+  strategy_ref: default_sync
+  wait_before: false
+  iterable: $.global.alarms
+  alias: it
+  children:
+  - type: task
+    id: normalization
+    name: 告警归一化
+    strategy_ref: default_sync
+    wait_before: false
+    script: "\nn_alarm = {\n  \"alarm_id\": alarm.get(\"id\"),\n  \"alarm_grade\"\
+      : alarm.get(\"activity_level\"),\n  \"alarm_type\": alarm.get(\"activity_feature\"\
+      )\n}\n\n{\"normalized_alarm\": n_alarm, \"b\": \"b\"}"
+    boundary:
+      inputs:
+        $.item: alarm
+      outputs:
+        normalized_alarm: $.it.normalized_alarm
+  - type: task
+    id: sleep2
+    name: 睡眠
+    strategy_ref: default_sync
+    wait_before: false
+    script: "system_sleep(2)\n{\n  \"ok\": True\n}\n"
+    boundary:
+      inputs: {}
+      outputs: {}
+  - type: task
+    id: feature
+    name: 特征计算
+    strategy_ref: default_sync
+    wait_before: false
+    script: "def is_match():\n\n  if normalized_alarm[\"alarm_type\"] == \"app_type_02\"\
+      :\n    log_info(\"alarm type is app_type_02\")\n    flow_continue()\n  feature\
+      \ = {\n    \"is_match\": True if normalized_alarm[\"alarm_grade\"]==\"low\"\
+      \ else False\n  }    \n  log_info(\"alarm type is app_type_01\")\n  return feature\n\
+      \n{\"feature\": is_match()}"
+    boundary:
+      inputs:
+        $.it.normalized_alarm: normalized_alarm
+      outputs:
+        feature: $.it.feature
+  - type: task
+    id: sleep
+    name: 睡眠
+    strategy_ref: default_sync
+    wait_before: false
+    script: 'system_sleep(4)
+
+      {}'
+    boundary:
+      inputs: {}
+      outputs: {}
+  copy_item: shared
+  iteration_isolation: shared
+  iteration_collect:
+    from_path: $.it.feature
+    append_to: $.global.features
+- type: task
+  id: task_1
+  name: task_1
+  strategy_ref: default_sync
+  wait_before: false
+  script: "{\n  \"ok\": True\n}\n"
+  boundary:
+    inputs: {}
+    outputs: {}
+initial_context:
+  alarms:
+  - id: '2026040101'
+    activity_level: low
+    activity_feature: app_type_01
+  - id: '2026040102'
+    activity_level: medium
+    activity_feature: app_type_01
+  - id: '2026040103'
+    activity_level: high
+    activity_feature: app_type_01
+  - id: '2026040104'
+    activity_level: low
+    activity_feature: app_type_02

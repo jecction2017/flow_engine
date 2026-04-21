@@ -1,6 +1,6 @@
 {
   "flow_id": "demo_flow",
-  "latest_version": 3,
+  "latest_version": 4,
   "has_draft": true,
   "versions": [
     {
@@ -18,6 +18,12 @@
     {
       "version": 3,
       "created_at": 1776668401.21057,
+      "description": null,
+      "flow_name": "demo_flow"
+    },
+    {
+      "version": 4,
+      "created_at": 1776765889.762413,
       "description": null,
       "flow_name": "demo_flow"
     }

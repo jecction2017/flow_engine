@@ -242,14 +242,6 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     _attach_process_builtins(mod)
     for name, fn in PYTHON_BUILTINS.items():
         mod.add_callable(name, fn)
-    # Register the log-family builtins inside the worker too so scripts
-    # running under PROCESS mode get the same API surface and emit entries
-    # into the worker-local collector we install below.
-    mod.add_callable("log", sdk_runtime._make_log_builtin())
-    mod.add_callable("log_info", sdk_runtime._make_log_builtin("info"))
-    mod.add_callable("log_warn", sdk_runtime._make_log_builtin("warn"))
-    mod.add_callable("log_error", sdk_runtime._make_log_builtin("error"))
-    mod.add_callable("log_debug", sdk_runtime._make_log_builtin("debug"))
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
     with sdk_runtime.log_scope("task") as coll:

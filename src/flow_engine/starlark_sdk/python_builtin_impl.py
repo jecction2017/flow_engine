@@ -149,5 +149,93 @@ def system_sleep(seconds: int) -> dict[str, Any]:
     return seconds
 
 
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/log",
+        starlark_name="log",
+        category="runtime",
+        summary="记录运行时调试日志，支持 level 参数",
+        signature=(
+            BuiltinArgSpec(name="args", type="any", required=False),
+            BuiltinArgSpec(name="level", type="str", required=False),
+        ),
+        returns="none",
+        side_effects="none",
+    )
+)
+def runtime_log(*args: Any, level: str = "info") -> None:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_log(*args, level=level)
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/log_info",
+        starlark_name="log_info",
+        category="runtime",
+        summary="记录 info 级别调试日志",
+        signature=(BuiltinArgSpec(name="args", type="any", required=False),),
+        returns="none",
+        side_effects="none",
+    )
+)
+def runtime_log_info(*args: Any) -> None:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_log_info(*args)
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/log_warn",
+        starlark_name="log_warn",
+        category="runtime",
+        summary="记录 warn 级别调试日志",
+        signature=(BuiltinArgSpec(name="args", type="any", required=False),),
+        returns="none",
+        side_effects="none",
+    )
+)
+def runtime_log_warn(*args: Any) -> None:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_log_warn(*args)
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/log_error",
+        starlark_name="log_error",
+        category="runtime",
+        summary="记录 error 级别调试日志",
+        signature=(BuiltinArgSpec(name="args", type="any", required=False),),
+        returns="none",
+        side_effects="none",
+    )
+)
+def runtime_log_error(*args: Any) -> None:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_log_error(*args)
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/log_debug",
+        starlark_name="log_debug",
+        category="runtime",
+        summary="记录 debug 级别调试日志",
+        signature=(BuiltinArgSpec(name="args", type="any", required=False),),
+        returns="none",
+        side_effects="none",
+    )
+)
+def runtime_log_debug(*args: Any) -> None:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_log_debug(*args)
+
+
 # starlark_name -> callable
 PYTHON_BUILTINS: dict[str, Any] = builtin_map()

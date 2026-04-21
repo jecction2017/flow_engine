@@ -16,8 +16,8 @@ import starlark as sl
 
 from flow_engine.engine.context import ContextStack
 from flow_engine.engine.exceptions import starlark_to_python
+from flow_engine.starlark_sdk.builtin_registry import builtin_map
 from flow_engine.starlark_sdk.loader import build_file_loader, dialect_with_load, loader_stats, warmup_modules
-from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
 
 
 def _globals_main() -> sl.Globals:
@@ -245,6 +245,51 @@ def _make_log_builtin(fixed_level: str | None = None) -> Any:
     return _log
 
 
+def runtime_log(*args: Any, level: str = _DEFAULT_LEVEL) -> None:
+    """Entry point used by declaratively registered `log` builtin."""
+    coll = _active_collector()
+    if coll is None:
+        return None
+    coll.append(level, _format_log_args(args))
+    return None
+
+
+def runtime_log_info(*args: Any) -> None:
+    """Entry point used by declaratively registered `log_info` builtin."""
+    coll = _active_collector()
+    if coll is None:
+        return None
+    coll.append("info", _format_log_args(args))
+    return None
+
+
+def runtime_log_warn(*args: Any) -> None:
+    """Entry point used by declaratively registered `log_warn` builtin."""
+    coll = _active_collector()
+    if coll is None:
+        return None
+    coll.append("warn", _format_log_args(args))
+    return None
+
+
+def runtime_log_error(*args: Any) -> None:
+    """Entry point used by declaratively registered `log_error` builtin."""
+    coll = _active_collector()
+    if coll is None:
+        return None
+    coll.append("error", _format_log_args(args))
+    return None
+
+
+def runtime_log_debug(*args: Any) -> None:
+    """Entry point used by declaratively registered `log_debug` builtin."""
+    coll = _active_collector()
+    if coll is None:
+        return None
+    coll.append("debug", _format_log_args(args))
+    return None
+
+
 def _guard_builtin(name: str, fn: Any) -> Any:
     def _wrapped(*args: Any, **kwargs: Any) -> Any:
         b = _active_budget()
@@ -259,16 +304,17 @@ def _guard_builtin(name: str, fn: Any) -> Any:
 
 
 def _attach_sdk_python(mod: sl.Module) -> None:
-    for name, fn in PYTHON_BUILTINS.items():
-        mod.add_callable(name, _guard_builtin(name, fn))
-    # `log*` are intentionally NOT wrapped by `_guard_builtin`: they're
-    # side-effect-free accumulators and we don't want debug prints inside a
-    # tight loop to burn through the Python-builtin call budget.
-    mod.add_callable("log", _make_log_builtin())
-    mod.add_callable("log_info", _make_log_builtin("info"))
-    mod.add_callable("log_warn", _make_log_builtin("warn"))
-    mod.add_callable("log_error", _make_log_builtin("error"))
-    mod.add_callable("log_debug", _make_log_builtin("debug"))
+    # Use dynamic registry snapshot so all @register_builtin functions,
+    # including runtime-provided log builtins, are attached uniformly.
+    py_builtins = builtin_map()
+    for name, fn in py_builtins.items():
+        # `log*` are intentionally NOT wrapped by `_guard_builtin`: they're
+        # side-effect-free accumulators and we don't want debug prints inside
+        # a tight loop to burn through the Python-builtin call budget.
+        if name in {"log", "log_info", "log_warn", "log_error", "log_debug"}:
+            mod.add_callable(name, fn)
+        else:
+            mod.add_callable(name, _guard_builtin(name, fn))
 
 
 def _prepare_module(mod: sl.Module, ctx: ContextStack, boundary_inputs: dict[str, str]) -> None:
