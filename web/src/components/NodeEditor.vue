@@ -109,15 +109,81 @@
       <div class="sec-title">循环</div>
       <div class="grid">
         <label class="field full">
-          <span>iterable（Starlark 表达式）</span>
-          <input v-model="node.iterable" class="inp mono" @input="commit" />
+          <span>iterable（Starlark 表达式，或 <code>$.path</code> 简写）</span>
+          <input
+            v-model="node.iterable"
+            class="inp mono"
+            placeholder='$.global.items   或   resolve("$.global.items")'
+            @input="commit"
+          />
         </label>
         <label class="field">
           <span>alias</span>
           <input v-model="node.alias" class="inp mono" @input="commit" />
         </label>
+        <label class="field">
+          <span>
+            copy_item
+            <span class="hint-inline">每次迭代绑定 <span class="mono">$.item</span> 的方式</span>
+          </span>
+          <select :value="loopCopyItem" class="inp" @change="onCopyItemChange">
+            <option value="shared">shared（引用，默认）</option>
+            <option value="shallow">shallow（copy.copy）</option>
+            <option value="deep">deep（copy.deepcopy）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>
+            iteration_isolation
+            <span class="hint-inline">迭代上下文是否与父 ctx 隔离</span>
+          </span>
+          <select :value="loopIsolation" class="inp" @change="onIsolationChange">
+            <option value="shared">shared（共享 $.global，默认）</option>
+            <option value="fork">fork（每次迭代独立深拷贝）</option>
+          </select>
+        </label>
       </div>
-      <div class="hint">子节点在左侧树中编辑；循环体会继承 <span class="mono">$.item</span> 上下文。</div>
+
+      <div class="subcard">
+        <label class="field check">
+          <input
+            type="checkbox"
+            :checked="collectEnabled"
+            @change="onCollectToggle(($event.target as HTMLInputElement).checked)"
+          />
+          <span>
+            iteration_collect（把每次迭代结果追加到父 ctx 的 list）
+            <span class="hint-inline">常配合 <span class="mono">iteration_isolation: fork</span> 使用</span>
+          </span>
+        </label>
+        <div v-if="collectEnabled" class="grid">
+          <label class="field">
+            <span>from_path（从迭代 ctx 读取的 <span class="mono">$.</span> 路径）</span>
+            <input
+              :value="node.iteration_collect?.from_path ?? ''"
+              class="inp mono"
+              placeholder="$.global.per_item_result"
+              @input="onCollectFromPath(($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label class="field">
+            <span>append_to（父 ctx 的 list 路径）</span>
+            <input
+              :value="node.iteration_collect?.append_to ?? ''"
+              class="inp mono"
+              placeholder="$.global.results"
+              @input="onCollectAppendTo(($event.target as HTMLInputElement).value)"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div class="hint">
+        子节点在左侧树中编辑；循环体会继承 <span class="mono">$.item</span> 上下文。
+        <span v-if="loopIsolation === 'fork'">
+          当前为 <span class="mono">fork</span> 隔离，迭代里对 <span class="mono">$.global</span> 的写入不会回到父 ctx，如需汇总请启用 iteration_collect。
+        </span>
+      </div>
     </section>
 
     <section v-if="node.type === 'subflow'" class="card">
@@ -140,7 +206,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import type { FlowNode, TaskNode } from "@/types/flow";
+import type {
+  FlowNode,
+  LoopCopyItem,
+  LoopIterationIsolation,
+  LoopNode,
+  TaskNode,
+} from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
 import CodeEditor from "./CodeEditor.vue";
@@ -241,6 +313,75 @@ function onConditionInput(ev: Event) {
   if (!node.value) return;
   const v = (ev.target as HTMLInputElement).value;
   node.value.condition = v.trim() === "" ? null : v;
+  commit();
+}
+
+// ---------------------------------------------------------------------------
+// Loop 专属：copy_item / iteration_isolation / iteration_collect
+//   * 后端 (models.LoopNode) 的默认值是 shared / shared / None，
+//     加载草稿时若字段缺失，计算属性会回落到这些默认值，并把实际的默认值
+//     写回节点以便再次提交时与后端序列化结果保持一致。
+// ---------------------------------------------------------------------------
+
+const loopCopyItem = computed<LoopCopyItem>(() => {
+  if (node.value?.type !== "loop") return "shared";
+  return (node.value as LoopNode).copy_item ?? "shared";
+});
+
+const loopIsolation = computed<LoopIterationIsolation>(() => {
+  if (node.value?.type !== "loop") return "shared";
+  return (node.value as LoopNode).iteration_isolation ?? "shared";
+});
+
+const collectEnabled = computed<boolean>(() => {
+  if (node.value?.type !== "loop") return false;
+  return !!(node.value as LoopNode).iteration_collect;
+});
+
+function onCopyItemChange(ev: Event) {
+  if (!node.value || node.value.type !== "loop") return;
+  const v = (ev.target as HTMLSelectElement).value as LoopCopyItem;
+  (node.value as LoopNode).copy_item = v;
+  commit();
+}
+
+function onIsolationChange(ev: Event) {
+  if (!node.value || node.value.type !== "loop") return;
+  const v = (ev.target as HTMLSelectElement).value as LoopIterationIsolation;
+  (node.value as LoopNode).iteration_isolation = v;
+  commit();
+}
+
+function onCollectToggle(on: boolean) {
+  if (!node.value || node.value.type !== "loop") return;
+  const loop = node.value as LoopNode;
+  if (on) {
+    if (!loop.iteration_collect) {
+      loop.iteration_collect = { from_path: "", append_to: "" };
+    }
+  } else {
+    loop.iteration_collect = null;
+  }
+  commit();
+}
+
+function onCollectFromPath(v: string) {
+  if (!node.value || node.value.type !== "loop") return;
+  const loop = node.value as LoopNode;
+  if (!loop.iteration_collect) {
+    loop.iteration_collect = { from_path: "", append_to: "" };
+  }
+  loop.iteration_collect.from_path = v;
+  commit();
+}
+
+function onCollectAppendTo(v: string) {
+  if (!node.value || node.value.type !== "loop") return;
+  const loop = node.value as LoopNode;
+  if (!loop.iteration_collect) {
+    loop.iteration_collect = { from_path: "", append_to: "" };
+  }
+  loop.iteration_collect.append_to = v;
   commit();
 }
 
@@ -508,6 +649,21 @@ function commit() {
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.subcard {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.subcard .grid {
+  gap: 10px;
 }
 
 @media (max-width: 900px) {

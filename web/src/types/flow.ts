@@ -28,6 +28,14 @@ export interface TaskNode {
   boundary: Boundary;
 }
 
+export type LoopCopyItem = "shared" | "shallow" | "deep";
+export type LoopIterationIsolation = "shared" | "fork";
+
+export interface IterationCollect {
+  from_path: string;
+  append_to: string;
+}
+
 export interface LoopNode {
   type: "loop";
   id: string;
@@ -38,6 +46,12 @@ export interface LoopNode {
   iterable: string;
   alias: string;
   children: FlowNode[];
+  /** 迭代项绑定方式：shared=原对象引用；shallow=copy.copy；deep=copy.deepcopy。 */
+  copy_item?: LoopCopyItem;
+  /** 迭代上下文隔离：shared=共用父 ctx；fork=每次迭代独立深拷贝 global_ns。 */
+  iteration_isolation?: LoopIterationIsolation;
+  /** 每次迭代结束后把 ``from_path`` 的值追加到父 ctx 的 ``append_to`` list。 */
+  iteration_collect?: IterationCollect | null;
 }
 
 export interface SubflowNode {

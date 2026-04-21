@@ -582,3 +582,328 @@ async def test_signal_handlers_idempotent_across_runs() -> None:
     # Each run registers a cancel hook and deregisters it on exit; the net
     # delta must stay zero (previously grew by 1 per run).
     assert after == before
+
+
+@pytest.mark.asyncio
+async def test_loop_iterable_accepts_bare_context_path() -> None:
+    """A bare ``$.path`` iterable is auto-wrapped as ``resolve("$.path")``.
+
+    Users expect the same path syntax used elsewhere in the engine (boundary
+    mappings, resolve(), set_path) to work directly as a loop iterable without
+    explicitly writing ``resolve(...)``.
+    """
+    flow = _flow(
+        """
+        name: bare_path_iterable
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1, 2, 3]
+          sum: 0
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: $.global.items
+            alias: it
+            children:
+              - name: accum
+                id: accum
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {"s": resolve("$.global.sum") + resolve("$.item")}
+                boundary:
+                  outputs:
+                    s: "$.global.sum"
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    assert res.context.global_ns["sum"] == 6
+
+
+@pytest.mark.asyncio
+async def test_loop_iterable_bad_path_expression_gives_helpful_error() -> None:
+    """A non-trivial expression that uses ``$.`` without ``resolve(...)`` must
+    surface a user-friendly hint instead of the raw Starlark parse error."""
+    flow = _flow(
+        """
+        name: bad_iter_hint
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1]
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: $.global.items + []
+            alias: it
+            children:
+              - name: t
+                id: t
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.FAILED
+    assert res.message is not None and 'resolve("$.' in res.message
+
+
+@pytest.mark.asyncio
+async def test_iteration_collect_from_loop_alias_path_shared() -> None:
+    """``iteration_collect.from_path`` with a loop-alias qualifier (``$.it.x``)
+    must be resolved while the iteration frame is still pushed.
+
+    Previously the collect call happened *after* the ``with pushed_frame``
+    block exited, so ``$.it.*`` paths could not be resolved and the caught
+    ``PathResolutionError`` was silently swallowed — the sink list stayed
+    empty. This regression test uses the shared-isolation path (the most
+    common loop configuration) and writes per-iteration results under the
+    alias frame.
+    """
+    flow = _flow(
+        """
+        name: collect_alias_shared
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1, 2, 3]
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: $.global.items
+            alias: it
+            iteration_collect:
+              from_path: $.it.value
+              append_to: $.global.collected
+            children:
+              - name: emit
+                id: emit
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {"v": resolve("$.item") * 10}
+                boundary:
+                  outputs:
+                    v: $.it.value
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    assert res.context.global_ns["collected"] == [10, 20, 30]
+
+
+@pytest.mark.asyncio
+async def test_iteration_collect_from_loop_alias_path_fork() -> None:
+    """Same guarantee under ``iteration_isolation: fork``: ``from_path`` of
+    form ``$.alias.*`` must still resolve because the iteration frame lives
+    inside the forked stack."""
+    flow = _flow(
+        """
+        name: collect_alias_fork
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1, 2, 3]
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: $.global.items
+            alias: it
+            iteration_isolation: fork
+            iteration_collect:
+              from_path: $.it.value
+              append_to: $.global.collected
+            children:
+              - name: emit
+                id: emit
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {"v": resolve("$.item") * 10}
+                boundary:
+                  outputs:
+                    v: $.it.value
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    assert res.context.global_ns["collected"] == [10, 20, 30]
+
+
+@pytest.mark.asyncio
+async def test_iteration_collect_skipped_on_continue() -> None:
+    """``flow_continue()`` inside an iteration must skip the collect for that
+    iteration (no partial results)."""
+    flow = _flow(
+        """
+        name: collect_skip_on_continue
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          items: [1, 2, 3]
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: $.global.items
+            alias: it
+            iteration_collect:
+              from_path: $.it.value
+              append_to: $.global.collected
+            children:
+              - name: emit
+                id: emit
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  def compute():
+                      v = resolve("$.item")
+                      if v == 2:
+                          flow_continue()
+                      return v * 10
+                  {"v": compute()}
+                boundary:
+                  outputs:
+                    v: $.it.value
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    # Item 2 triggered flow_continue before writing $.it.value, and the
+    # iteration was skipped -> only 10 and 30 are collected.
+    assert res.context.global_ns["collected"] == [10, 30]
+
+
+@pytest.mark.asyncio
+async def test_execution_count_does_not_double_count_staged_then_skipped() -> None:
+    """A staged pass that later lands in SKIPPED still counts as one run."""
+    flow = _flow(
+        """
+        name: execution_count_continue
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          alarms:
+            - id: "a1"
+              activity_level: low
+              activity_feature: app_type_02
+        nodes:
+          - type: loop
+            id: lp
+            name: lp
+            strategy_ref: default_sync
+            iterable: $.global.alarms
+            alias: it
+            children:
+              - type: task
+                id: feature
+                name: feature
+                strategy_ref: default_sync
+                script: |
+                  def run_feature():
+                      if resolve("$.item.activity_feature") == "app_type_02":
+                          flow_continue()
+                      return {"ok": True}
+                  {"feature": run_feature()}
+                boundary:
+                  outputs:
+                    feature: $.it.feature
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    by_id = {r.node_id: r for r in res.node_runs}
+    assert by_id["feature"].execution_count == 1
+
+
+@pytest.mark.asyncio
+async def test_node_runs_expose_script_logs() -> None:
+    """Starlark `log_*` calls inside a task script should land on the
+    owning node's `NodeRunInfo.logs`, preserving level + source metadata.
+
+    This is the end-to-end contract that lets the Flow Studio timeline
+    surface per-node debug output; failing this would silently degrade
+    the debug UX for complex flows.
+    """
+    flow = _flow(
+        """
+        name: node_logs
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: emitter
+            id: emitter
+            type: task
+            strategy_ref: default_sync
+            script: |
+              log_info("before work")
+              log_warn("midway", {"k": 1})
+              {"ok": True}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    by_id = {r.node_id: r for r in res.node_runs}
+    logs = by_id["emitter"].logs
+    assert [e["level"] for e in logs] == ["info", "warn"]
+    assert all(e["source"] == "task" for e in logs)
+    assert "before work" in logs[0]["message"]
+    assert '"k": 1' in logs[1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_flow_logs_carry_lifecycle_hook_output() -> None:
+    """Flow-level `on_start` / `on_complete` logs should surface in
+    `FlowRunResult.flow_logs` rather than being attached to a node."""
+    flow = _flow(
+        """
+        name: flow_logs
+        hooks:
+          on_start: 'log_info("hello")'
+          on_complete: 'log_warn("bye")'
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: noop
+            id: noop
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"ok": True}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    sources = [e["source"] for e in res.flow_logs]
+    levels = [e["level"] for e in res.flow_logs]
+    assert sources == ["on_start", "on_complete"]
+    assert levels == ["info", "warn"]

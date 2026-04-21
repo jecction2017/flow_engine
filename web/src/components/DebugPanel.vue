@@ -39,12 +39,27 @@
       <span class="hint">{{ hint }}</span>
     </div>
     <pre class="out mono">{{ responseText }}</pre>
+
+    <div v-if="logs.length" class="lbl row">
+      <span>运行日志</span>
+      <span class="hint">{{ logs.length }} 条 · 脚本中调用 log / log_info / log_warn / log_error 产生</span>
+    </div>
+    <ul v-if="logs.length" class="logs mono">
+      <li v-for="(entry, i) in logs" :key="i" class="log-row" :class="`lvl-${entry.level}`">
+        <span class="log-ts">+{{ entry.ts_ms }}ms</span>
+        <span class="log-lvl">{{ entry.level }}</span>
+        <span class="log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
+        <span class="log-msg">{{ entry.message }}</span>
+        <span v-if="entry.truncated" class="log-trunc" title="达到日志上限，后续条目被丢弃">…</span>
+      </li>
+    </ul>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import type { LogEntry } from "@/api/flows";
 import type { TaskNode } from "@/types/flow";
 
 const props = defineProps<{
@@ -56,6 +71,7 @@ const ctxText = ref("{}");
 const responseText = ref("// 等待调试输出");
 const pending = ref(false);
 const hint = ref("");
+const logs = ref<LogEntry[]>([]);
 
 const task = computed(() => {
   // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
@@ -122,6 +138,7 @@ async function run() {
   pending.value = true;
   hint.value = "";
   responseText.value = "";
+  logs.value = [];
 
   const body = {
     script: task.value.script,
@@ -141,8 +158,19 @@ async function run() {
       return;
     }
     try {
-      const parsed = JSON.parse(text) as { ok?: boolean; result?: unknown; error?: string };
-      responseText.value = JSON.stringify(parsed, null, 2);
+      const parsed = JSON.parse(text) as {
+        ok?: boolean;
+        result?: unknown;
+        error?: string;
+        logs?: LogEntry[];
+      };
+      // Separate the log stream from the result payload for display:
+      // the "响应" block stays focused on the script's return value
+      // while logs get their own structured row list below.
+      logs.value = Array.isArray(parsed.logs) ? parsed.logs : [];
+      const { logs: _logs, ...rest } = parsed;
+      void _logs;
+      responseText.value = JSON.stringify(rest, null, 2);
       hint.value = parsed.ok === false ? "Starlark 执行失败" : "后端执行成功";
     } catch {
       responseText.value = text;
@@ -290,5 +318,88 @@ async function run() {
   overflow: auto;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.logs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 240px;
+  overflow: auto;
+  background: #fff;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 62px 46px 92px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.log-row:last-child {
+  border-bottom: none;
+}
+
+.log-ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.log-lvl {
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: #e2e8f0;
+  color: #475569;
+  text-align: center;
+}
+
+.log-row.lvl-info .log-lvl {
+  background: color-mix(in srgb, #3b82f6 15%, transparent);
+  color: #1d4ed8;
+}
+
+.log-row.lvl-warn .log-lvl {
+  background: color-mix(in srgb, #f59e0b 20%, transparent);
+  color: #92400e;
+}
+
+.log-row.lvl-error .log-lvl {
+  background: color-mix(in srgb, #ef4444 18%, transparent);
+  color: #b91c1c;
+}
+
+.log-row.lvl-debug .log-lvl {
+  background: color-mix(in srgb, #94a3b8 20%, transparent);
+  color: #475569;
+}
+
+.log-src {
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-msg {
+  color: var(--text, #0f172a);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-trunc {
+  color: #b45309;
+  font-weight: 700;
 }
 </style>

@@ -56,59 +56,149 @@
             <button class="link" type="button" @click="expandAll">全部展开</button>
             <span class="sep">·</span>
             <button class="link" type="button" @click="collapseAll">全部折叠</button>
+            <span class="sep">·</span>
+            <span class="tl-filter-lbl">日志级别</span>
+            <button
+              v-for="lvl in ALL_LOG_LEVELS"
+              :key="lvl"
+              type="button"
+              class="chip-btn"
+              :class="[`lvl-${lvl}`, { active: levelFilter.has(lvl) }]"
+              @click="toggleLevelFilter(lvl)"
+            >
+              {{ lvl }}
+            </button>
+            <button
+              v-if="levelFilter.size > 0"
+              type="button"
+              class="link"
+              @click="clearLevelFilter"
+            >
+              清除
+            </button>
           </div>
           <ul class="tl-rows">
-            <li
-              v-for="row in treeRows"
-              :key="row.node_id"
-              class="tl-row"
-              :class="[statusClass(row.final_state), { 'is-branch': row.hasChildren }]"
-              :title="rowTitle(row)"
-            >
-              <span class="tl-order">{{ row.order + 1 }}</span>
-              <span class="tl-dot" />
-              <span class="tl-name mono">
-                <span class="tl-indent" aria-hidden="true">
-                  <span
-                    v-for="(hasLine, i) in row.guides"
-                    :key="i"
-                    class="tl-guide"
-                    :class="{ on: hasLine }"
-                  />
-                  <span v-if="row.depth > 0" class="tl-guide elbow">
-                    {{ row.isLast ? "└" : "├" }}
+            <template v-for="row in treeRows" :key="row.node_id">
+              <li
+                class="tl-row"
+                :class="[
+                  statusClass(row.final_state),
+                  { 'is-branch': row.hasChildren, 'has-logs': (logCountsByNode.get(row.node_id) ?? 0) > 0 },
+                ]"
+                :title="rowTitle(row)"
+              >
+                <span class="tl-order">{{ row.order + 1 }}</span>
+                <span class="tl-dot" />
+                <span class="tl-name mono">
+                  <span class="tl-indent" aria-hidden="true">
+                    <span
+                      v-for="(hasLine, i) in row.guides"
+                      :key="i"
+                      class="tl-guide"
+                      :class="{ on: hasLine }"
+                    />
+                    <span v-if="row.depth > 0" class="tl-guide elbow">
+                      {{ row.isLast ? "└" : "├" }}
+                    </span>
                   </span>
+                  <button
+                    v-if="row.hasChildren"
+                    type="button"
+                    class="tl-caret"
+                    :aria-expanded="!collapsed.has(row.node_id)"
+                    @click="toggleCollapsed(row.node_id)"
+                  >
+                    {{ collapsed.has(row.node_id) ? "▶" : "▼" }}
+                  </button>
+                  <span v-else class="tl-caret-spacer" />
+                  <span class="tl-id" :title="row.node_id">{{ row.node_id }}</span>
+                  <span v-if="row.iterations != null" class="tl-meta" title="迭代次数">
+                    × {{ row.iterations }}
+                  </span>
+                  <span
+                    v-else-if="row.execution_count && row.execution_count > 1"
+                    class="tl-meta"
+                    title="执行次数"
+                  >
+                    × {{ row.execution_count }}
+                  </span>
+                  <button
+                    v-if="(logCountsByNode.get(row.node_id) ?? 0) > 0"
+                    type="button"
+                    class="tl-logs-btn"
+                    :aria-expanded="openLogsFor === row.node_id"
+                    :title="`展开 / 折叠 ${row.node_id} 的日志`"
+                    @click="toggleLogDrawer(row.node_id)"
+                  >
+                    📝 {{ logCountsByNode.get(row.node_id) }}
+                  </button>
                 </span>
-                <button
-                  v-if="row.hasChildren"
-                  type="button"
-                  class="tl-caret"
-                  :aria-expanded="!collapsed.has(row.node_id)"
-                  @click="toggleCollapsed(row.node_id)"
-                >
-                  {{ collapsed.has(row.node_id) ? "▶" : "▼" }}
-                </button>
-                <span v-else class="tl-caret-spacer" />
-                <span class="tl-id" :title="row.node_id">{{ row.node_id }}</span>
-                <span v-if="row.iterations != null" class="tl-meta" title="迭代次数">
-                  × {{ row.iterations }}
-                </span>
-                <span
-                  v-else-if="row.execution_count && row.execution_count > 1"
-                  class="tl-meta"
-                  title="执行次数"
-                >
-                  × {{ row.execution_count }}
-                </span>
-              </span>
-              <div class="tl-track">
-                <div class="tl-bar" :style="barStyle(row)">
-                  <span class="tl-bar-label">{{ formatDuration(row.duration_ms) }}</span>
+                <div class="tl-track">
+                  <div class="tl-bar" :style="barStyle(row)">
+                    <span class="tl-bar-label">{{ formatDuration(row.duration_ms) }}</span>
+                  </div>
                 </div>
-              </div>
-              <span class="tl-status">{{ row.final_state }}</span>
-            </li>
+                <span class="tl-status">{{ row.final_state }}</span>
+              </li>
+              <li
+                v-if="openLogsFor === row.node_id"
+                :key="row.node_id + ':logs'"
+                class="tl-logs-drawer"
+              >
+                <div class="tl-logs-head">
+                  <span>{{ row.node_id }} 日志</span>
+                  <span class="muted">
+                    共 {{ logCountsByNode.get(row.node_id) }} 条
+                    <template v-if="levelFilter.size > 0">
+                      · 已过滤 {{ filteredLogsFor(row.node_id).length }} 条
+                    </template>
+                  </span>
+                </div>
+                <ul v-if="filteredLogsFor(row.node_id).length" class="logs-list mono">
+                  <li
+                    v-for="(entry, i) in filteredLogsFor(row.node_id)"
+                    :key="i"
+                    class="log-row"
+                    :class="`lvl-${entry.level}`"
+                  >
+                    <span class="log-ts">+{{ entry.ts_ms }}ms</span>
+                    <span class="log-lvl">{{ entry.level }}</span>
+                    <span class="log-src" :title="`来源: ${entry.source}`">
+                      {{ entry.source }}<span v-if="entry.attempt" class="log-attempt">#{{ entry.attempt }}</span>
+                    </span>
+                    <span class="log-msg">{{ entry.message }}</span>
+                    <span v-if="entry.truncated" class="log-trunc" title="达到日志上限，后续条目被丢弃">…</span>
+                  </li>
+                </ul>
+                <div v-else class="muted tl-logs-empty">
+                  当前过滤条件下没有可显示的日志
+                </div>
+              </li>
+            </template>
           </ul>
+          <section v-if="flowLogs.length" class="flow-logs">
+            <div class="flow-logs-head">
+              <span>流程级日志</span>
+              <span class="muted">{{ flowLogs.length }} 条 · on_start / on_complete / on_failure</span>
+            </div>
+            <ul v-if="filteredFlowLogs.length" class="logs-list mono">
+              <li
+                v-for="(entry, i) in filteredFlowLogs"
+                :key="i"
+                class="log-row"
+                :class="`lvl-${entry.level}`"
+              >
+                <span class="log-ts">+{{ entry.ts_ms }}ms</span>
+                <span class="log-lvl">{{ entry.level }}</span>
+                <span class="log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
+                <span class="log-msg">{{ entry.message }}</span>
+                <span v-if="entry.truncated" class="log-trunc" title="达到日志上限">…</span>
+              </li>
+            </ul>
+            <div v-else class="muted tl-logs-empty">
+              当前过滤条件下没有可显示的日志
+            </div>
+          </section>
         </div>
       </section>
       <section class="col">
@@ -123,7 +213,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { runFlow } from "@/api/flows";
-import type { NodeRunInfo, RunFlowResponse } from "@/api/flows";
+import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
+
+const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
 
 type TreeRow = NodeRunInfo & {
   depth: number;
@@ -151,6 +244,10 @@ const pending = ref(false);
 const response = ref<RunFlowResponse | null>(null);
 const error = ref<string | null>(null);
 const collapsed = reactive(new Set<string>());
+/** id of the currently open log drawer, or null when none is open. */
+const openLogsFor = ref<string | null>(null);
+/** Active log-level filter. Empty set = show all. */
+const levelFilter = reactive(new Set<KnownLevel>());
 
 watch(
   () => props.initialContext,
@@ -166,6 +263,7 @@ watch(
     response.value = null;
     error.value = null;
     collapsed.clear();
+    openLogsFor.value = null;
   },
 );
 
@@ -265,6 +363,47 @@ const summary = computed(() => {
   }
   return s;
 });
+
+const flowLogs = computed<LogEntry[]>(() => {
+  const r = response.value;
+  return Array.isArray(r?.flow_logs) ? (r!.flow_logs as LogEntry[]) : [];
+});
+
+const logCountsByNode = computed<Map<string, number>>(() => {
+  const m = new Map<string, number>();
+  for (const r of rawRuns.value) {
+    m.set(r.node_id, Array.isArray(r.logs) ? r.logs.length : 0);
+  }
+  return m;
+});
+
+function entryMatchesFilter(e: LogEntry): boolean {
+  if (levelFilter.size === 0) return true;
+  return levelFilter.has(e.level as KnownLevel);
+}
+
+function filteredLogsFor(nid: string): LogEntry[] {
+  const run = rawRuns.value.find((r) => r.node_id === nid);
+  const all = Array.isArray(run?.logs) ? (run!.logs as LogEntry[]) : [];
+  return all.filter(entryMatchesFilter);
+}
+
+const filteredFlowLogs = computed<LogEntry[]>(() =>
+  flowLogs.value.filter(entryMatchesFilter),
+);
+
+function toggleLevelFilter(lvl: KnownLevel): void {
+  if (levelFilter.has(lvl)) levelFilter.delete(lvl);
+  else levelFilter.add(lvl);
+}
+
+function clearLevelFilter(): void {
+  levelFilter.clear();
+}
+
+function toggleLogDrawer(nid: string): void {
+  openLogsFor.value = openLogsFor.value === nid ? null : nid;
+}
 
 function toggleCollapsed(nid: string): void {
   if (collapsed.has(nid)) collapsed.delete(nid);
@@ -896,6 +1035,161 @@ async function run() {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+.tl-logs-btn {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: color-mix(in srgb, #3b82f6 10%, transparent);
+  border: 1px solid color-mix(in srgb, #3b82f6 25%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-logs-btn:hover {
+  background: color-mix(in srgb, #3b82f6 18%, transparent);
+}
+
+.tl-row.has-logs .tl-id {
+  color: color-mix(in srgb, var(--text, #0f172a) 90%, #1d4ed8);
+}
+
+.tl-logs-drawer {
+  padding: 8px 10px 10px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+}
+
+.tl-logs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.tl-logs-empty {
+  font-size: 11px;
+  padding: 6px 0;
+}
+
+.logs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 62px 46px 110px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.log-row:last-child {
+  border-bottom: none;
+}
+
+.log-ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.log-lvl {
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: #e2e8f0;
+  color: #475569;
+  text-align: center;
+}
+
+.log-row.lvl-info .log-lvl { background: color-mix(in srgb, #3b82f6 15%, transparent); color: #1d4ed8; }
+.log-row.lvl-warn .log-lvl { background: color-mix(in srgb, #f59e0b 20%, transparent); color: #92400e; }
+.log-row.lvl-error .log-lvl { background: color-mix(in srgb, #ef4444 18%, transparent); color: #b91c1c; }
+.log-row.lvl-debug .log-lvl { background: color-mix(in srgb, #94a3b8 20%, transparent); color: #475569; }
+
+.log-src {
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-attempt {
+  color: #b45309;
+  margin-left: 3px;
+}
+
+.log-msg {
+  color: var(--text, #0f172a);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-trunc {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.flow-logs {
+  padding: 8px 10px 10px;
+  border-top: 1px dashed var(--border);
+  background: #f8fafc;
+}
+
+.flow-logs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.tl-filter-lbl {
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+.chip-btn {
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chip-btn.active.lvl-info { background: color-mix(in srgb, #3b82f6 18%, transparent); color: #1d4ed8; border-color: color-mix(in srgb, #3b82f6 35%, transparent); }
+.chip-btn.active.lvl-warn { background: color-mix(in srgb, #f59e0b 22%, transparent); color: #92400e; border-color: color-mix(in srgb, #f59e0b 40%, transparent); }
+.chip-btn.active.lvl-error { background: color-mix(in srgb, #ef4444 20%, transparent); color: #b91c1c; border-color: color-mix(in srgb, #ef4444 35%, transparent); }
+.chip-btn.active.lvl-debug { background: color-mix(in srgb, #94a3b8 22%, transparent); color: #475569; border-color: color-mix(in srgb, #94a3b8 40%, transparent); }
 
 .tl-row.ok .tl-status {
   color: #047857;

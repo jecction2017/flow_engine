@@ -637,6 +637,7 @@ def create_app() -> FastAPI:
                 "elapsed_ms": elapsed_ms,
                 "node_state": partial_state,
                 "node_runs": partial_runs,
+                "flow_logs": list(rt._flow_logs),
                 "global_ns": {},
             }
 
@@ -650,6 +651,7 @@ def create_app() -> FastAPI:
             "elapsed_ms": elapsed_ms,
             "node_state": node_state,
             "node_runs": [r.to_dict() for r in res.node_runs],
+            "flow_logs": list(res.flow_logs),
             "global_ns": ns,
         }
 
@@ -831,8 +833,8 @@ def create_app() -> FastAPI:
     @app.post("/api/debug/node")
     def debug_node(body: DebugNodeBody) -> JSONResponse:
         try:
-            result = debug_task_script(body.script, body.initial_context or {})
-            return JSONResponse(content={"ok": True, "result": result})
+            result, logs = debug_task_script(body.script, body.initial_context or {})
+            return JSONResponse(content={"ok": True, "result": result, "logs": logs})
         except Exception as e:  # noqa: BLE001
             return JSONResponse(
                 status_code=200,
@@ -840,6 +842,7 @@ def create_app() -> FastAPI:
                     "ok": False,
                     "error": str(e),
                     "traceback": traceback.format_exc(),
+                    "logs": [],
                 },
             )
 

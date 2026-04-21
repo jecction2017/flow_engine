@@ -68,6 +68,24 @@ export type NodeRunTransition = {
   t_ms: number;
 };
 
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/**
+ * Single log entry emitted by a Starlark `log` / `log_info` / `log_warn` /
+ * `log_error` call inside a task script or lifecycle hook. `source` tags
+ * the origin (task / pre_exec / post_exec / on_iteration_* / on_error /
+ * on_start / on_complete / on_failure) so the UI can group / filter
+ * entries; `attempt` is only present for retried task runs.
+ */
+export type LogEntry = {
+  level: LogLevel | string;
+  message: string;
+  ts_ms: number;
+  source: string;
+  attempt?: number;
+  truncated?: boolean;
+};
+
 export type NodeRunInfo = {
   node_id: string;
   order: number;
@@ -80,6 +98,7 @@ export type NodeRunInfo = {
   iterations?: number | null;
   execution_count?: number;
   transitions: NodeRunTransition[];
+  logs?: LogEntry[];
 };
 
 export type RunFlowResponse = {
@@ -89,6 +108,7 @@ export type RunFlowResponse = {
   elapsed_ms: number;
   node_state: Record<string, string>;
   node_runs?: NodeRunInfo[];
+  flow_logs?: LogEntry[];
   global_ns: Record<string, unknown>;
 };
 

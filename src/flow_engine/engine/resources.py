@@ -60,6 +60,7 @@ class StrategyExecutors:
 _cancel_registry: list[Callable[[], Any]] = []
 _cancel_lock = threading.Lock()
 _signal_handlers_installed = False
+_previous_signal_handlers: dict[int, Any] = {}
 
 
 def register_cancel(fn: Callable[[], Any]) -> Callable[[], None]:
@@ -90,6 +91,17 @@ def _on_signal(signum: int, frame: Any) -> None:
             fn()
         except Exception:  # noqa: BLE001
             logger.exception("Cancel hook failed")
+    prev = _previous_signal_handlers.get(signum)
+    if prev is None or prev is _on_signal:
+        return
+    try:
+        if callable(prev):
+            prev(signum, frame)
+    except KeyboardInterrupt:
+        # Keep the normal SIGINT semantics for callers (e.g. uvicorn CLI).
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("Previous signal handler failed")
 
 
 def install_signal_handlers() -> None:
@@ -99,6 +111,7 @@ def install_signal_handlers() -> None:
         return
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
+            _previous_signal_handlers[sig] = signal.getsignal(sig)
             signal.signal(sig, _on_signal)
         except (AttributeError, ValueError):
             # Windows may not support SIGTERM on all contexts; the main-thread

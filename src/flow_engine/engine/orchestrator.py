@@ -96,6 +96,11 @@ class NodeRunInfo:
     parent_id: str | None = None
     iterations: int | None = None
     transitions: list[dict[str, Any]] = field(default_factory=list)
+    # Log entries emitted by this node's task script AND its hooks
+    # (pre_exec / post_exec / on_iteration_* / on_error-custom). Each entry
+    # carries ``source`` to tell them apart; retry attempts get an extra
+    # ``attempt`` key (omitted on first run for brevity).
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration_ms(self) -> int | None:
@@ -105,20 +110,30 @@ class NodeRunInfo:
 
     @property
     def execution_count(self) -> int:
-        """How many times the node entered a new execution pass.
+        """How many scheduler passes this node went through.
 
-        Every pass through the scheduler starts either by transitioning to
-        ``STAGING`` (condition passed) or by landing directly in ``SKIPPED``
-        (condition failed). Counting those two events gives us loop
-        iteration counts without the orchestrator having to maintain a
-        separate attempt counter.
+        A pass starts with ``STAGING`` when condition checks passed. A node can
+        also start and end in ``SKIPPED`` directly when the condition fails.
+        Importantly, a pass that started with ``STAGING`` may still end in
+        ``SKIPPED`` (for example a task calling ``flow_continue()``), and that
+        must still count as just one pass.
         """
-        n = sum(
-            1
-            for t in self.transitions
-            if t.get("state") in (NodeState.STAGING.value, NodeState.SKIPPED.value)
-        )
-        return max(1, n)
+        staged = 0
+        direct_skipped = 0
+        prev_state: str | None = None
+        for tr in self.transitions:
+            state = str(tr.get("state"))
+            if state == NodeState.STAGING.value:
+                staged += 1
+            elif state == NodeState.SKIPPED.value:
+                if prev_state not in (
+                    NodeState.STAGING.value,
+                    NodeState.DISPATCHED.value,
+                    NodeState.RUNNING.value,
+                ):
+                    direct_skipped += 1
+            prev_state = state
+        return max(1, staged + direct_skipped)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +148,7 @@ class NodeRunInfo:
             "iterations": self.iterations,
             "execution_count": self.execution_count,
             "transitions": list(self.transitions),
+            "logs": list(self.logs),
         }
 
 
@@ -143,6 +159,9 @@ class FlowRunResult:
     message: str | None = None
     node_state: dict[str, NodeState] = field(default_factory=dict)
     node_runs: list[NodeRunInfo] = field(default_factory=list)
+    # Flow-level hook logs (on_start / on_complete / on_failure). These
+    # don't belong to any single node so we surface them separately.
+    flow_logs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FlowRuntime:
@@ -158,6 +177,7 @@ class FlowRuntime:
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}
         self._node_runs: dict[str, NodeRunInfo] = {}
+        self._flow_logs: list[dict[str, Any]] = []
         self._t0: float | None = None
         self._root_tracker = TaskTracker()
         self._gate = GlobalConcurrencyGate(limit=256)
@@ -211,6 +231,39 @@ class FlowRuntime:
                 f"Node {self._nid(m)!r} references undefined strategy {m.strategy_ref!r}"
             ) from e
 
+    def _append_node_logs(
+        self,
+        nid: str,
+        entries: list[dict[str, Any]] | None,
+        *,
+        attempt: int | None = None,
+    ) -> None:
+        """Append collected log entries to ``NodeRunInfo.logs``.
+
+        ``attempt`` is only attached when > 0 so the common case (no
+        retries) keeps log records minimal. Missing ``nid`` is a no-op so
+        callers don't need to null-check the record.
+        """
+        if not entries:
+            return
+        info = self._node_runs.get(nid)
+        if info is None:
+            return
+        if attempt is not None and attempt > 0:
+            for e in entries:
+                rec = dict(e)
+                rec["attempt"] = attempt
+                info.logs.append(rec)
+        else:
+            for e in entries:
+                info.logs.append(dict(e))
+
+    def _append_flow_logs(self, entries: list[dict[str, Any]] | None) -> None:
+        if not entries:
+            return
+        for e in entries:
+            self._flow_logs.append(dict(e))
+
     def _apply_outputs_safe(self, ctx: ContextStack, result: dict[str, Any], outputs: dict[str, str]) -> None:
         # `ContextStack.set_path` is internally locked; this helper exists so
         # that call sites read clearly and so we can group the boundary write
@@ -227,6 +280,7 @@ class FlowRuntime:
             message=message,
             node_state=dict(self.node_state),
             node_runs=runs,
+            flow_logs=list(self._flow_logs),
         )
 
     async def run(self) -> FlowRunResult:
@@ -236,13 +290,19 @@ class FlowRuntime:
         self._t0 = time.monotonic()
         self.flow_state = FlowState.RUNNING
         if self.flow.hooks and self.flow.hooks.on_start:
-            run_hook_script(self.flow.hooks.on_start, self.ctx)
+            self._append_flow_logs(
+                run_hook_script(self.flow.hooks.on_start, self.ctx, source="on_start")
+            )
         try:
             await self._run_members(self.flow.nodes, self.ctx, self._root_tracker)
             await self._root_tracker.wait_all()
             self.flow_state = FlowState.COMPLETED
             if self.flow.hooks and self.flow.hooks.on_complete:
-                run_hook_script(self.flow.hooks.on_complete, self.ctx)
+                self._append_flow_logs(
+                    run_hook_script(
+                        self.flow.hooks.on_complete, self.ctx, source="on_complete"
+                    )
+                )
             return self._result(None)
         except TerminateInterrupt:
             self.flow_state = FlowState.TERMINATED
@@ -253,18 +313,39 @@ class FlowRuntime:
             self.flow_state = FlowState.FAILED
             msg = f"Unresolved jump target: {j.target!r}"
             if self.flow.hooks and self.flow.hooks.on_failure:
-                run_hook_script(self.flow.hooks.on_failure, self.ctx, {"error": msg})
+                self._append_flow_logs(
+                    run_hook_script(
+                        self.flow.hooks.on_failure,
+                        self.ctx,
+                        {"error": msg},
+                        source="on_failure",
+                    )
+                )
             return self._result(msg)
         except FlowEngineError as e:
             self.flow_state = FlowState.FAILED
             if self.flow.hooks and self.flow.hooks.on_failure:
-                run_hook_script(self.flow.hooks.on_failure, self.ctx, {"error": str(e)})
+                self._append_flow_logs(
+                    run_hook_script(
+                        self.flow.hooks.on_failure,
+                        self.ctx,
+                        {"error": str(e)},
+                        source="on_failure",
+                    )
+                )
             return self._result(str(e))
         except Exception as e:  # noqa: BLE001
             logger.exception("Flow failed")
             self.flow_state = FlowState.FAILED
             if self.flow.hooks and self.flow.hooks.on_failure:
-                run_hook_script(self.flow.hooks.on_failure, self.ctx, {"error": str(e)})
+                self._append_flow_logs(
+                    run_hook_script(
+                        self.flow.hooks.on_failure,
+                        self.ctx,
+                        {"error": str(e)},
+                        source="on_failure",
+                    )
+                )
             return self._result(str(e))
         finally:
             self.executors.shutdown()
@@ -362,15 +443,24 @@ class FlowRuntime:
         node: TaskNode,
         ctx: ContextStack,
         st: ExecutionStrategy,
+        *,
+        attempt: int = 0,
     ) -> dict[str, Any]:
         """Run the task exactly once: pre_exec -> dispatch by mode -> raw result.
 
         Respects `GlobalConcurrencyGate` with SYNC fallback for THREAD/PROCESS,
-        and applies strategy timeout uniformly across all modes.
+        and applies strategy timeout uniformly across all modes. Captured
+        log entries (from ``pre_exec`` and the task script itself) are
+        appended to ``NodeRunInfo.logs`` as soon as each piece completes so
+        that a failed retry still preserves whatever it managed to emit
+        before the exception propagated.
         """
+        nid = self._nid(node)
         pre = _node_hook(node.hooks, "pre_exec")
         if pre:
-            run_hook_script(pre, ctx)
+            self._append_node_logs(
+                nid, run_hook_script(pre, ctx, source="pre_exec"), attempt=attempt
+            )
 
         mode = _strategy_mode(st)
         timeout = st.timeout
@@ -383,19 +473,25 @@ class FlowRuntime:
 
         try:
             if mode in (StrategyMode.SYNC, StrategyMode.ASYNC):
-                return await self._with_timeout(
+                result, task_logs = await self._with_timeout(
                     asyncio.to_thread(run_task_script, node.script, ctx, node.boundary.inputs),
                     timeout,
                 )
+                self._append_node_logs(nid, task_logs, attempt=attempt)
+                return result
             if mode == StrategyMode.THREAD:
                 loop = asyncio.get_running_loop()
                 pool = self.executors.thread_pool(node.strategy_ref)
 
-                def sync() -> dict[str, Any]:
+                def sync() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                     return run_task_script(node.script, ctx, node.boundary.inputs)
 
-                fut: ConcurrentFuture[dict[str, Any]] = pool.submit(sync)
-                return await self._with_timeout(asyncio.wrap_future(fut, loop=loop), timeout)
+                fut: ConcurrentFuture[tuple[dict[str, Any], list[dict[str, Any]]]] = pool.submit(sync)
+                result, task_logs = await self._with_timeout(
+                    asyncio.wrap_future(fut, loop=loop), timeout
+                )
+                self._append_node_logs(nid, task_logs, attempt=attempt)
+                return result
             if mode == StrategyMode.PROCESS:
                 loop = asyncio.get_running_loop()
                 pool = self.executors.process_pool(node.strategy_ref)
@@ -406,6 +502,7 @@ class FlowRuntime:
                 }
                 fut2 = pool.submit(process_starlark_task, payload)
                 raw = await self._with_timeout(asyncio.wrap_future(fut2, loop=loop), timeout)
+                self._append_node_logs(nid, raw.get("logs"), attempt=attempt)
                 return raw["result"]
         finally:
             if acquired:
@@ -427,12 +524,18 @@ class FlowRuntime:
         nid = self._nid(node)
         retries = st.retry_count
         last_exc: BaseException | None = None
-        for _ in range(retries + 1):
+        for attempt in range(retries + 1):
             try:
-                result = await self._run_once(node, ctx, st)
+                result = await self._run_once(node, ctx, st, attempt=attempt)
                 post = _node_hook(node.hooks, "post_exec")
                 if post:
-                    run_hook_script(post, ctx, {"result": result})
+                    self._append_node_logs(
+                        nid,
+                        run_hook_script(
+                            post, ctx, {"result": result}, source="post_exec"
+                        ),
+                        attempt=attempt,
+                    )
                 return result
             except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
                 raise
@@ -479,7 +582,18 @@ class FlowRuntime:
         st = self._strategy_for(node)
 
         if await_result:
-            result = await self._run_with_retries(node, ctx, st)
+            try:
+                result = await self._run_with_retries(node, ctx, st)
+            except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
+                # A sync-mode task that invokes a flow-control builtin
+                # (flow_continue / flow_break / flow_terminate / flow_jump)
+                # intentionally opts out of producing output. Without this
+                # handler the node would stay RUNNING because `_mark(RUNNING)`
+                # was already written on entry and no terminal transition
+                # follows. Mark SKIPPED so observers see a clean finish while
+                # the exception still propagates to the enclosing scope.
+                self._mark(nid, NodeState.SKIPPED)
+                raise
             self._apply_outputs_safe(ctx, result, node.boundary.outputs)
             self._mark(nid, NodeState.SUCCESS)
             return
@@ -542,7 +656,13 @@ class FlowRuntime:
         if act == OnErrorAction.BREAK:
             raise BreakInterrupt() from None
         if act == OnErrorAction.CUSTOM and cfg.script:
-            run_hook_script(cfg.script, self.ctx, {"error": str(exc)})
+            nid = self._nid(node)
+            self._append_node_logs(
+                nid,
+                run_hook_script(
+                    cfg.script, self.ctx, {"error": str(exc)}, source="on_error"
+                ),
+            )
             return "propagate"
         return "propagate"
 
@@ -565,7 +685,9 @@ class FlowRuntime:
         hooks = node.hooks if isinstance(node.hooks, LoopHooks) else None
 
         if hooks and hooks.pre_exec:
-            run_hook_script(hooks.pre_exec, ctx)
+            self._append_node_logs(
+                nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
+            )
 
         items = eval_iterable_expr(node.iterable, ctx)
         info = self._node_runs.get(nid)
@@ -603,7 +725,10 @@ class FlowRuntime:
         finally:
             if hooks and hooks.post_exec:
                 try:
-                    run_hook_script(hooks.post_exec, ctx)
+                    self._append_node_logs(
+                        nid,
+                        run_hook_script(hooks.post_exec, ctx, source="post_exec"),
+                    )
                 except Exception:  # noqa: BLE001
                     logger.exception("loop post_exec hook failed")
 
@@ -664,7 +789,15 @@ class FlowRuntime:
                 with self._pushed_frame(iter_ctx, frame):
                     try:
                         if hooks and hooks.on_iteration_start:
-                            run_hook_script(hooks.on_iteration_start, iter_ctx, {"item": it})
+                            self._append_node_logs(
+                                nid,
+                                run_hook_script(
+                                    hooks.on_iteration_start,
+                                    iter_ctx,
+                                    {"item": it},
+                                    source="on_iteration_start",
+                                ),
+                            )
                         try:
                             await self._run_members(
                                 node.children, iter_ctx, iter_tracker, parent_id=nid
@@ -672,21 +805,30 @@ class FlowRuntime:
                         except ContinueInterrupt:
                             continue
                         except BreakInterrupt:
-                            if collect is not None:
-                                # No partial collect on break.
-                                pass
+                            # No partial collect on break.
                             break
+                        # Collect while the iteration frame is still pushed so
+                        # ``from_path`` can reference the loop alias (``$.it.*``);
+                        # on continue/break/error we skip (no partial results).
+                        if collect is not None:
+                            self._collect_iteration_result(iter_ctx, ctx, collect)
                     finally:
                         try:
                             await iter_tracker.wait_all()
                         finally:
                             if hooks and hooks.on_iteration_end:
                                 try:
-                                    run_hook_script(hooks.on_iteration_end, iter_ctx, {"item": it})
+                                    self._append_node_logs(
+                                        nid,
+                                        run_hook_script(
+                                            hooks.on_iteration_end,
+                                            iter_ctx,
+                                            {"item": it},
+                                            source="on_iteration_end",
+                                        ),
+                                    )
                                 except Exception:  # noqa: BLE001
                                     logger.exception("on_iteration_end hook failed")
-                if collect is not None:
-                    self._collect_iteration_result(iter_ctx, ctx, collect)
                 continue
 
             iter_tracker = TaskTracker(parent=tracker)
@@ -694,7 +836,15 @@ class FlowRuntime:
             with self._pushed_frame(ctx, frame):
                 try:
                     if hooks and hooks.on_iteration_start:
-                        run_hook_script(hooks.on_iteration_start, ctx, {"item": it})
+                        self._append_node_logs(
+                            nid,
+                            run_hook_script(
+                                hooks.on_iteration_start,
+                                ctx,
+                                {"item": it},
+                                source="on_iteration_start",
+                            ),
+                        )
                     try:
                         await self._run_members(
                             node.children, ctx, iter_tracker, parent_id=nid
@@ -703,17 +853,27 @@ class FlowRuntime:
                         continue
                     except BreakInterrupt:
                         break
+                    # Same rationale as the fork branch: the alias frame must
+                    # still be live for ``$.alias.*`` lookups to succeed.
+                    if collect is not None:
+                        self._collect_iteration_result(ctx, ctx, collect)
                 finally:
                     try:
                         await iter_tracker.wait_all()
                     finally:
                         if hooks and hooks.on_iteration_end:
                             try:
-                                run_hook_script(hooks.on_iteration_end, ctx, {"item": it})
+                                self._append_node_logs(
+                                    nid,
+                                    run_hook_script(
+                                        hooks.on_iteration_end,
+                                        ctx,
+                                        {"item": it},
+                                        source="on_iteration_end",
+                                    ),
+                                )
                             except Exception:  # noqa: BLE001
                                 logger.exception("on_iteration_end hook failed")
-            if collect is not None:
-                self._collect_iteration_result(ctx, ctx, collect)
 
     async def _run_loop_concurrent(
         self,
@@ -760,8 +920,14 @@ class FlowRuntime:
                 with self._pushed_frame(iter_ctx, frame):
                     try:
                         if hooks and hooks.on_iteration_start:
-                            run_hook_script(
-                                hooks.on_iteration_start, iter_ctx, {"item": raw_item}
+                            self._append_node_logs(
+                                nid,
+                                run_hook_script(
+                                    hooks.on_iteration_start,
+                                    iter_ctx,
+                                    {"item": raw_item},
+                                    source="on_iteration_start",
+                                ),
                             )
                         try:
                             await self._run_members(
@@ -772,21 +938,28 @@ class FlowRuntime:
                         except BreakInterrupt:
                             stop_requested["flag"] = True
                             return
+                        # Must collect while the alias frame is still pushed so
+                        # ``from_path`` of form ``$.alias.*`` can resolve; skip
+                        # on continue/break/error (no partial results).
+                        if collect is not None:
+                            self._collect_iteration_result(iter_ctx, ctx, collect)
                     finally:
                         try:
                             await iter_tracker.wait_all()
                         finally:
                             if hooks and hooks.on_iteration_end:
                                 try:
-                                    run_hook_script(
-                                        hooks.on_iteration_end,
-                                        iter_ctx,
-                                        {"item": raw_item},
+                                    self._append_node_logs(
+                                        nid,
+                                        run_hook_script(
+                                            hooks.on_iteration_end,
+                                            iter_ctx,
+                                            {"item": raw_item},
+                                            source="on_iteration_end",
+                                        ),
                                     )
                                 except Exception:  # noqa: BLE001
                                     logger.exception("on_iteration_end hook failed")
-                if collect is not None:
-                    self._collect_iteration_result(iter_ctx, ctx, collect)
 
         coros = [one(i, it) for i, it in enumerate(items)]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -813,7 +986,9 @@ class FlowRuntime:
         hooks = node.hooks if isinstance(node.hooks, NodeHooks) else None
 
         if hooks and hooks.pre_exec:
-            run_hook_script(hooks.pre_exec, ctx)
+            self._append_node_logs(
+                nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
+            )
 
         sub_tracker = TaskTracker(parent=tracker)
         frame = ContextFrame(node_id=nid, alias=node.alias)
@@ -827,7 +1002,9 @@ class FlowRuntime:
 
         if hooks and hooks.post_exec:
             try:
-                run_hook_script(hooks.post_exec, ctx)
+                self._append_node_logs(
+                    nid, run_hook_script(hooks.post_exec, ctx, source="post_exec")
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("subflow post_exec hook failed")
 

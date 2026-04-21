@@ -161,7 +161,8 @@ def run_task_script(
     script: str,
     ctx: ContextStack,
     boundary_inputs: dict[str, str],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Execute a task script and return ``(result, logs)``."""
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
     return sdk_runtime.eval_task_script(script, ctx, boundary_inputs)
@@ -170,18 +171,31 @@ def run_task_script(
 def debug_task_script(
     script: str,
     variables: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Task-node debug entrypoint: bind top-level keys of ``variables``
-    directly as Starlark globals (no boundary mapping)."""
+    directly as Starlark globals (no boundary mapping). Returns
+    ``(result, logs)``."""
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
     return sdk_runtime.debug_task_script(script, variables)
 
 
-def run_hook_script(snippet: str | None, ctx: ContextStack, extra: dict[str, Any] | None = None) -> None:
+def run_hook_script(
+    snippet: str | None,
+    ctx: ContextStack,
+    extra: dict[str, Any] | None = None,
+    *,
+    source: str = "hook",
+) -> list[dict[str, Any]]:
+    """Run a hook script and return its captured log entries.
+
+    ``source`` labels each resulting entry so the orchestrator can
+    attribute them to ``pre_exec`` / ``post_exec`` / ``on_iteration_*`` /
+    ``on_start`` / ``on_complete`` / ``on_failure``.
+    """
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
-    return sdk_runtime.run_hook_script(snippet, ctx, extra)
+    return sdk_runtime.run_hook_script(snippet, ctx, extra, source=source)
 
 
 def apply_outputs(
@@ -214,7 +228,10 @@ def _attach_process_builtins(mod: sl.Module) -> None:
 
 
 def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
-    """Executed inside a worker process; reconstructs minimal context from serialized inputs."""
+    """Executed inside a worker process; reconstructs minimal context from
+    serialized inputs. Captures log entries and ships them back across the
+    IPC boundary so the orchestrator can attach them to the owning node."""
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
     from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
 
     script = payload["script"]
@@ -225,11 +242,21 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     _attach_process_builtins(mod)
     for name, fn in PYTHON_BUILTINS.items():
         mod.add_callable(name, fn)
+    # Register the log-family builtins inside the worker too so scripts
+    # running under PROCESS mode get the same API surface and emit entries
+    # into the worker-local collector we install below.
+    mod.add_callable("log", sdk_runtime._make_log_builtin())
+    mod.add_callable("log_info", sdk_runtime._make_log_builtin("info"))
+    mod.add_callable("log_warn", sdk_runtime._make_log_builtin("warn"))
+    mod.add_callable("log_error", sdk_runtime._make_log_builtin("error"))
+    mod.add_callable("log_debug", sdk_runtime._make_log_builtin("debug"))
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
-    val = starlark_to_python(sl.eval(mod, ast, glb))
+    with sdk_runtime.log_scope("task") as coll:
+        val = starlark_to_python(sl.eval(mod, ast, glb))
+        logs = coll.as_dicts()
     if val is None:
         val = {}
     if not isinstance(val, dict):
         raise TypeError("task must return dict")
-    return {"result": val}
+    return {"result": val, "logs": logs}

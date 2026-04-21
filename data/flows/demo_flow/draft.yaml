@@ -41,13 +41,24 @@ nodes:
       outputs:
         normalized_alarm: $.it.normalized_alarm
   - type: task
+    id: sleep2
+    name: 睡眠
+    strategy_ref: default_sync
+    wait_before: false
+    script: "system_sleep(2)\n{\n  \"ok\": True\n}\n"
+    boundary:
+      inputs: {}
+      outputs: {}
+  - type: task
     id: feature
     name: 特征计算
     strategy_ref: default_sync
     wait_before: false
     script: "def is_match():\n\n  if normalized_alarm[\"alarm_type\"] == \"app_type_02\"\
-      :\n    flow_continue()\n  feature = {\n    \"is_match\": True if normalized_alarm[\"\
-      alarm_grade\"]==\"low\" else False\n  }\n  return feature\n\n{\"feature\": is_match()}"
+      :\n    log_info(\"alarm type is app_type_02\")\n    flow_continue()\n  feature\
+      \ = {\n    \"is_match\": True if normalized_alarm[\"alarm_grade\"]==\"low\"\
+      \ else False\n  }    \n  log_info(\"alarm type is app_type_01\")\n  return feature\n\
+      \n{\"feature\": is_match()}"
     boundary:
       inputs:
         $.it.normalized_alarm: normalized_alarm
@@ -66,6 +77,18 @@ nodes:
       outputs: {}
   copy_item: shared
   iteration_isolation: shared
+  iteration_collect:
+    from_path: $.it.feature
+    append_to: $.global.features
+- type: task
+  id: task_1
+  name: task_1
+  strategy_ref: default_sync
+  wait_before: false
+  script: "{\n  \"ok\": True\n}\n"
+  boundary:
+    inputs: {}
+    outputs: {}
 initial_context:
   alarms:
   - id: '2026040101'

@@ -364,8 +364,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
 
   function flushNodeDraftsToDocument() {
     const keys = Object.keys(nodeDrafts.value);
-    // Apply deeper paths first to avoid parent replacement overriding child draft.
-    keys.sort((a, b) => b.split("/").length - a.split("/").length);
+    // Apply shallower paths first, then deeper paths.
+    // If a parent and its child both have drafts, this order ensures the child
+    // draft is applied last and won't be overwritten by an older parent snapshot.
+    keys.sort((a, b) => a.split("/").length - b.split("/").length);
     for (const key of keys) {
       const node = nodeDrafts.value[key];
       if (!node) continue;

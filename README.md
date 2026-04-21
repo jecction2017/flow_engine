@@ -71,6 +71,25 @@ npm run dev
 - **边界映射**：改为单一 YAML 风格文本框，顶级键 `inputs:` 与 `outputs:` 分段书写。`#` 开头为注释；inputs 条目形如 `  $.global.alert: alert`，outputs 条目形如 `  summary: $.global.summary`。该格式向后兼容未来在 value 位置追加参数约束 / 校验。
 - **调试**：未保存的脚本/边界改动会立即进入「节点调试」面板；调试上下文顶层 key 直接作为 Starlark 全局变量，不走边界映射。
 
+## 节点日志（log / log_info / log_warn / log_error）
+
+为了便于调试复杂流程，引擎在 Starlark 运行时里注入了一组无副作用的日志函数，脚本中可以随时打印节点内部执行情况；日志**仅随本次运行的响应体返回前端**，不落盘、不写进程 `logging`。
+
+- **可用函数**：
+  - `log(*args, level="info")` — 可变参，按空格拼接；支持 dict/list（自动 JSON 序列化）。
+  - `log_info(*args)` / `log_warn(*args)` / `log_error(*args)` / `log_debug(*args)` — 固定级别的快捷函数。
+- **可用位置**：任何 task 脚本、flow / 节点 / loop / subflow 的 `on_start`、`on_complete`、`on_failure`、`pre_exec`、`post_exec`、`on_iteration_start`、`on_iteration_end`、`on_error:custom`。在 `condition` / `loop.iterable` 表达式中调用不会报错，但日志会被丢弃（归属不明确）。
+- **归属**：
+  - 节点脚本 + 节点级 hook 日志挂在对应节点的 `node_runs[*].logs[]`；每条带 `source`（`task` / `pre_exec` / `post_exec` / `on_iteration_*` / `on_error`）与 `level`。
+  - 重试运行时附加 `attempt` 字段（从 1 开始；首次运行不带）。
+  - flow 级 hook（`on_start` / `on_complete` / `on_failure`）日志挂在响应体顶层 `flow_logs[]`。
+- **查看**：
+  - 「节点调试」面板（`/api/debug/node`）的「运行日志」区块。
+  - 「流程运行结果」面板（`/api/flows/{id}/run`）中，时间线每一行带日志时会显示 `📝 N` 按钮，点击展开当前节点的日志抽屉；顶部工具条里的「日志级别」胶囊可按级别过滤；底部有独立的「流程级日志」面板。
+- **限额环境变量**：
+  - `FLOW_ENGINE_STARLARK_LOG_MAX_ENTRIES`（默认 `500`）：单次脚本/hook 作用域内最多保留的日志条数，超出部分丢弃并在最后一条保留条目上标记 `truncated=true`。
+  - `FLOW_ENGINE_STARLARK_LOG_MAX_MSG`（默认 `2048`）：单条日志消息最大字符数，超长会在末尾截断并追加 `…`。
+
 ## cursor访问外部大模型
 
 用快捷键 command + shift + P 然后搜索 open user settings 选择带json 的那个，然后在json中添加下面：
