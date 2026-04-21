@@ -51,7 +51,7 @@ flow-api
 | PUT    | `/api/flows/{id}` | 保存流程（校验后写回 YAML）                                                          |
 | POST   | `/api/flows`      | 新建空流程 `{ "id": "...", "name": "可选" }`                                     |
 | DELETE | `/api/flows/{id}` | 删除文件                                                                      |
-| POST   | `/api/debug/node` | 调试 Task 节点 Starlark（body: `script`, `boundary_inputs`, `initial_context`） |
+| POST   | `/api/debug/node` | 调试 Task 节点 Starlark（body: `script`, `initial_context`；调试态直接将 `initial_context` 顶层 key 作为 Starlark 全局变量，不做边界映射） |
 
 
 ## Vue Flow Studio

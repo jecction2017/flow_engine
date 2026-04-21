@@ -100,7 +100,6 @@ export async function debugNode(script: string, initialContext: Record<string, u
     headers: jsonHeaders,
     body: JSON.stringify({
       script,
-      boundary_inputs: {},
       initial_context: initialContext,
     }),
   });

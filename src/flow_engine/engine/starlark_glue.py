@@ -167,6 +167,17 @@ def run_task_script(
     return sdk_runtime.eval_task_script(script, ctx, boundary_inputs)
 
 
+def debug_task_script(
+    script: str,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Task-node debug entrypoint: bind top-level keys of ``variables``
+    directly as Starlark globals (no boundary mapping)."""
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.debug_task_script(script, variables)
+
+
 def run_hook_script(snippet: str | None, ctx: ContextStack, extra: dict[str, Any] | None = None) -> None:
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 

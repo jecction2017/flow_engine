@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type {
   ExecutionStrategy,
   FlowDocument,
   FlowNode,
   LoopNode,
+  Selection,
   SubflowNode,
 } from "@/types/flow";
 import {
@@ -24,6 +25,50 @@ import {
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
+}
+
+// ---------------------------------------------------------------------------
+// 节点调试上下文 —— localStorage 持久化（按 flowId 分桶，不写入 YAML）
+// ---------------------------------------------------------------------------
+
+const DEBUG_CTX_STORAGE_PREFIX = "flowEngine:debugCtx:";
+
+function debugCtxStorageKey(flowId: string | null): string {
+  return `${DEBUG_CTX_STORAGE_PREFIX}${flowId ?? "_local"}`;
+}
+
+function readPersistedDebugContexts(flowId: string | null): Record<string, string> {
+  if (typeof window === "undefined" || !window.localStorage) return {};
+  try {
+    const raw = window.localStorage.getItem(debugCtxStorageKey(flowId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedDebugContexts(
+  flowId: string | null,
+  data: Record<string, string>,
+): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    const key = debugCtxStorageKey(flowId);
+    if (Object.keys(data).length === 0) {
+      window.localStorage.removeItem(key);
+    } else {
+      window.localStorage.setItem(key, JSON.stringify(data));
+    }
+  } catch {
+    // storage full / denied / private mode — 忽略即可
+  }
 }
 
 const SAMPLE: FlowDocument = {
@@ -87,6 +132,13 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   const dirtyNodePaths = ref<Set<string>>(new Set());
   /** 当前绑定的服务端流程 id（对应 ``data/flows/{id}.yaml``） */
   const activeFlowId = ref<string | null>(null);
+  /**
+   * 每个节点独立、可完全自定义的调试上下文（原始 JSON 文本，按节点 id/path 隔离）。
+   * 初始化时优先从 ``localStorage`` 恢复，避免每次调试都重复造数据。
+   */
+  const nodeDebugContexts = ref<Record<string, string>>(
+    readPersistedDebugContexts(activeFlowId.value),
+  );
   const serverFlowsDir = ref<string | null>(null);
   const flowList = ref<{ id: string; name: string }[]>([]);
   const apiError = ref<string | null>(null);
@@ -206,6 +258,48 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     dirtyNodePaths.value = new Set();
   }
 
+  /** 为「节点调试上下文」生成稳定的 key：优先使用 node id/name，退化到 path。 */
+  function debugContextKey(path: number[]): string {
+    const n = getNode(path);
+    if (n) {
+      const id = nodeId(n);
+      if (id) return `nid:${id}`;
+    }
+    return `p:${pathKey(path)}`;
+  }
+
+  function getDebugContextText(path: number[]): string | undefined {
+    return nodeDebugContexts.value[debugContextKey(path)];
+  }
+
+  function setDebugContextText(path: number[], text: string) {
+    nodeDebugContexts.value = {
+      ...nodeDebugContexts.value,
+      [debugContextKey(path)]: text,
+    };
+  }
+
+  function clearDebugContext(path: number[]) {
+    const key = debugContextKey(path);
+    if (!(key in nodeDebugContexts.value)) return;
+    const next = { ...nodeDebugContexts.value };
+    delete next[key];
+    nodeDebugContexts.value = next;
+  }
+
+  function clearAllDebugContexts() {
+    nodeDebugContexts.value = {};
+  }
+
+  /** 任何一次变更（编辑/重置/清空/切换流程）都会异步落到 ``localStorage``。 */
+  watch(
+    nodeDebugContexts,
+    (v) => {
+      writePersistedDebugContexts(activeFlowId.value, v);
+    },
+    { deep: true },
+  );
+
   function flushNodeDraftsToDocument() {
     const keys = Object.keys(nodeDrafts.value);
     // Apply deeper paths first to avoid parent replacement overriding child draft.
@@ -294,6 +388,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     select({ kind: "flow" });
     activeFlowId.value = null;
     clearAllNodeDrafts();
+    // 导入来历不明的 JSON，丢弃本地 ``_local`` 桶的旧调试数据。
+    nodeDebugContexts.value = {};
   }
 
   function loadDocument(data: FlowDocument, flowId: string | null = null) {
@@ -303,6 +399,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     select({ kind: "flow" });
     activeFlowId.value = flowId;
     clearAllNodeDrafts();
+    // 切换流程时加载该流程对应的调试上下文，保留上次编辑内容。
+    nodeDebugContexts.value = readPersistedDebugContexts(flowId);
   }
 
   async function refreshFlowList() {
@@ -410,6 +508,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     clearNodeDraft,
     clearAllNodeDrafts,
     flushNodeDraftsToDocument,
+    getDebugContextText,
+    setDebugContextText,
+    clearDebugContext,
+    clearAllDebugContexts,
     addRoot,
     addSibling,
     addChild,

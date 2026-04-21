@@ -3,15 +3,36 @@
     <div class="head">
       <div>
         <div class="h">节点调试</div>
-        <div class="d">构造上下文 JSON，可选连接后端 `/api/debug/node` 执行 Starlark</div>
+        <div class="d">
+          每个节点拥有独立、可完全自定义的调试上下文；顶层 key 会直接绑定为 Starlark 全局变量
+          （不走边界映射）。上下文仅存在于前端，不写回流程定义。
+        </div>
       </div>
       <button type="button" class="btn" :disabled="pending" @click="run">
         {{ pending ? "请求中…" : "发送调试" }}
       </button>
     </div>
 
-    <label class="lbl">调试上下文（JSON）</label>
-    <textarea v-model="ctxText" class="area mono" rows="7" spellcheck="false" />
+    <div class="lbl row">
+      <span>调试上下文（JSON）</span>
+      <span class="actions">
+        <button type="button" class="mini" @click="resetFromInitialContext">
+          重置为 initial_context
+        </button>
+        <button type="button" class="mini" @click="clearCtx">清空</button>
+      </span>
+    </div>
+    <textarea
+      v-model="ctxText"
+      class="area mono"
+      :class="{ invalid: !ctxValid }"
+      rows="8"
+      spellcheck="false"
+      placeholder="{}"
+    />
+    <div class="ctx-hint" :class="{ err: !ctxValid }">
+      {{ ctxValid ? ctxHint : "JSON 无法解析，调试时会被视为空对象。" }}
+    </div>
 
     <div class="lbl row">
       <span>响应</span>
@@ -41,24 +62,58 @@ const task = computed(() => {
   return n && n.type === "task" ? (n as TaskNode) : null;
 });
 
+const parsedCtx = computed<{ ok: boolean; value: Record<string, unknown> }>(() => {
+  const raw = ctxText.value.trim();
+  if (!raw) return { ok: true, value: {} };
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ok: true, value: parsed as Record<string, unknown> };
+    }
+    return { ok: false, value: {} };
+  } catch {
+    return { ok: false, value: {} };
+  }
+});
+
+const ctxValid = computed(() => parsedCtx.value.ok);
+
+const ctxHint = computed(() => {
+  const keys = Object.keys(parsedCtx.value.value);
+  if (keys.length === 0) return "无顶层变量（等价于空环境）。";
+  return `顶层变量：${keys.join(", ")}`;
+});
+
+function defaultCtxText(): string {
+  return JSON.stringify(store.doc.initial_context ?? {}, null, 2);
+}
+
+/** 切换到不同节点时，从 store 读取该节点独立的调试上下文；没有则首次用 initial_context 作为种子。 */
 watch(
-  () => store.doc.initial_context,
-  (v) => {
-    ctxText.value = JSON.stringify(v ?? {}, null, 2);
+  () => props.path.join("/"),
+  () => {
+    const saved = store.getDebugContextText(props.path);
+    ctxText.value = saved !== undefined ? saved : defaultCtxText();
   },
   { immediate: true },
 );
 
+/** 用户每次编辑都回写到当前节点的独立调试上下文。 */
+watch(ctxText, (v) => {
+  store.setDebugContextText(props.path, v);
+});
+
+function resetFromInitialContext() {
+  ctxText.value = defaultCtxText();
+}
+
+function clearCtx() {
+  ctxText.value = "{}";
+}
+
 async function run() {
   if (!task.value) {
     hint.value = "仅 Task 节点可调试";
-    return;
-  }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(ctxText.value || "{}");
-  } catch {
-    hint.value = "上下文 JSON 无效";
     return;
   }
 
@@ -68,8 +123,7 @@ async function run() {
 
   const body = {
     script: task.value.script,
-    boundary_inputs: task.value.boundary.inputs,
-    initial_context: payload,
+    initial_context: parsedCtx.value.ok ? parsedCtx.value.value : {},
   };
 
   try {
@@ -170,6 +224,41 @@ async function run() {
 .hint {
   font-size: 11px;
   color: var(--muted);
+}
+
+.actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.mini {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mini:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.ctx-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 4px 2px 0;
+}
+
+.ctx-hint.err {
+  color: #b91c1c;
+}
+
+.area.invalid {
+  border-color: #fca5a5;
+  background: #fff7f7;
 }
 
 .area {

@@ -142,6 +142,47 @@ def eval_task_script(
     return val
 
 
+def debug_task_script(
+    script: str,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Debug-only evaluation for a task node.
+
+    Unlike :func:`eval_task_script`, this path **does not** perform boundary
+    input mapping. Every top-level key of ``variables`` is bound directly as a
+    Starlark global so the script can reference them by name. A lightweight
+    ``ContextStack`` backed by the same dict is also provided so helpers such
+    as ``resolve("$.key")`` continue to work identically to production runs.
+    """
+    from flow_engine.engine.starlark_glue import (
+        _attach_builtins,
+        cf_guard,
+        inject_resolve,
+    )
+
+    vars_map: dict[str, Any] = dict(variables or {})
+    ctx = ContextStack(global_ns=vars_map)
+
+    with _budget_scope():
+        mod = sl.Module()
+        for name, value in vars_map.items():
+            mod[name] = value
+        inject_resolve(mod, ctx)
+        _attach_builtins(mod)
+        _attach_sdk_python(mod)
+        file_loader, _cache = build_file_loader()
+        glb = _globals_main()
+        ast = _parse_cached("debug_task.star", script)
+        with cf_guard():
+            val = sl.eval(mod, ast, glb, file_loader=file_loader)
+    val = starlark_to_python(val)
+    if val is None:
+        return {}
+    if not isinstance(val, dict):
+        raise TypeError(f"Debug task script must evaluate to a dict, got {type(val).__name__}")
+    return val
+
+
 def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     if not expr:
         return True

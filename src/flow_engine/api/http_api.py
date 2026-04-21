@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from flow_engine.engine.compiler import compile_flow
-from flow_engine.engine.context import ContextStack
 from flow_engine.engine.event_bus import get_event_bus, make_event
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
@@ -25,7 +24,7 @@ from flow_engine.engine.publish_models import (
     FlowPublishState,
     PublishStatus,
 )
-from flow_engine.engine.starlark_glue import run_task_script
+from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import merge_imported_rows, put_table
 from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
@@ -56,7 +55,6 @@ class CreateFlowBody(BaseModel):
 
 class DebugNodeBody(BaseModel):
     script: str
-    boundary_inputs: dict[str, str] = Field(default_factory=dict)
     initial_context: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -832,10 +830,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/debug/node")
     def debug_node(body: DebugNodeBody) -> JSONResponse:
-        ctx = ContextStack()
-        ctx.global_ns.update(body.initial_context or {})
         try:
-            result = run_task_script(body.script, ctx, body.boundary_inputs)
+            result = debug_task_script(body.script, body.initial_context or {})
             return JSONResponse(content={"ok": True, "result": result})
         except Exception as e:  # noqa: BLE001
             return JSONResponse(

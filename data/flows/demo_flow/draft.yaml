@@ -28,16 +28,29 @@ nodes:
   children:
   - type: task
     name: normalization
+    id: 告警归一化
     strategy_ref: default_sync
     wait_before: false
-    script: "alarm = $.item\nalarm = {\n  \"alarm_id\": alarm.get(\"id\"),\n  \"alarm_grade\"\
+    script: "\nn_alarm = {\n  \"alarm_id\": alarm.get(\"id\"),\n  \"alarm_grade\"\
       : alarm.get(\"activity_level\"),\n  \"alarm_type\": alarm.get(\"activity_feature\"\
-      )\n}\nreturn {\"a\": alarm, \"b\": \"b\"}"
+      )\n}\n\n{\"normalized_alarm\": n_alarm, \"b\": \"b\"}"
     boundary:
-      inputs: {}
+      inputs:
+        $.item: alarm
       outputs:
-        a: $.global.al
-        b: $.global.ald
+        normalized_alarm: $.it.normalized_alarm
+  - type: task
+    name: task_1
+    strategy_ref: default_sync
+    wait_before: false
+    script: "if normalized_alarm[\"alarm_type\"] == \"app_type_02\":\n  flow_continue()\n\
+      \n\nfeature = {\n  \"is_match\" = True if normalized_alarm[\"alarm_grade\"]\
+      \ : False\n}\n{\"feature\": feature}"
+    boundary:
+      inputs:
+        $.it.normalized_alarm: normalized_alarm
+      outputs:
+        feature: $.it.feature
   copy_item: shared
   iteration_isolation: shared
 initial_context:
