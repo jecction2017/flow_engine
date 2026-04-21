@@ -43,6 +43,7 @@ async def test_loop_sequential_isolated_fork_does_not_leak_globals() -> None:
           leak_check: "parent_original"
         nodes:
           - name: lp
+            id: lp
             type: loop
             strategy_ref: default_sync
             alias: it
@@ -53,6 +54,7 @@ async def test_loop_sequential_isolated_fork_does_not_leak_globals() -> None:
               append_to: "$.global.collected"
             children:
               - name: write_in_iter
+                id: write_in_iter
                 type: task
                 strategy_ref: default_sync
                 script: |
@@ -99,6 +101,7 @@ async def test_loop_concurrent_async_strategy_runs_iterations_in_parallel() -> N
           collected: []
         nodes:
           - name: lp
+            id: lp
             type: loop
             strategy_ref: alarm_pool
             alias: it
@@ -109,6 +112,7 @@ async def test_loop_concurrent_async_strategy_runs_iterations_in_parallel() -> N
               append_to: "$.global.collected"
             children:
               - name: slow
+                id: slow
                 type: task
                 strategy_ref: default_sync
                 script: |
@@ -152,6 +156,7 @@ async def test_loop_concurrent_shared_isolation_is_thread_safe() -> None:
         "nodes": [
             {
                 "name": "lp",
+                "id": "lp",
                 "type": "loop",
                 "strategy_ref": "pool",
                 "alias": "it",
@@ -160,6 +165,7 @@ async def test_loop_concurrent_shared_isolation_is_thread_safe() -> None:
                 "children": [
                     {
                         "name": "w",
+                        "id": "w",
                         "type": "task",
                         "strategy_ref": "default_sync",
                         "script": (
@@ -204,6 +210,7 @@ async def test_loop_iteration_collect_creates_list_when_missing() -> None:
           items: [7, 8, 9]
         nodes:
           - name: lp
+            id: lp
             type: loop
             strategy_ref: default_sync
             alias: it
@@ -214,6 +221,7 @@ async def test_loop_iteration_collect_creates_list_when_missing() -> None:
               append_to: "$.global.results"
             children:
               - name: emit
+                id: emit
                 type: task
                 strategy_ref: default_sync
                 script: |

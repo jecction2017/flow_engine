@@ -64,6 +64,13 @@ npm run dev
 
 开发时 Vite 将 `/api` 代理到 `127.0.0.1:8000`，需先启动上述 API 服务后再使用「保存到服务器」与列表加载。
 
+### 节点定义约定
+
+- **id（逻辑主键，必填）**：正则 `^[A-Za-z][A-Za-z0-9_]*$`。节点在一个流程内 id 全局唯一，是引用/跳转/调试上下文的稳定键。
+- **name（显示名，可选）**：仅用于可视化展示，允许中文与任意字符。默认与 id 相同，可单独改写。
+- **边界映射**：改为单一 YAML 风格文本框，顶级键 `inputs:` 与 `outputs:` 分段书写。`#` 开头为注释；inputs 条目形如 `  $.global.alert: alert`，outputs 条目形如 `  summary: $.global.summary`。该格式向后兼容未来在 value 位置追加参数约束 / 校验。
+- **调试**：未保存的脚本/边界改动会立即进入「节点调试」面板；调试上下文顶层 key 直接作为 Starlark 全局变量，不走边界映射。
+
 ## cursor访问外部大模型
 
 用快捷键 command + shift + P 然后搜索 open user settings 选择带json 的那个，然后在json中添加下面：

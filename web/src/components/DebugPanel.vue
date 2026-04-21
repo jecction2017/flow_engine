@@ -58,7 +58,9 @@ const pending = ref(false);
 const hint = ref("");
 
 const task = computed(() => {
-  const n = store.getNode(props.path);
+  // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
+  // 避免必须先保存才能生效。
+  const n = store.viewNode(props.path);
   return n && n.type === "task" ? (n as TaskNode) : null;
 });
 

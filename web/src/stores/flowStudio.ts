@@ -16,10 +16,13 @@ import {
   saveFlow as apiSaveFlow,
 } from "@/api/flows";
 import {
+  NODE_ID_PATTERN,
   defaultStrategies,
+  displayName,
   emptyLoop,
   emptySubflow,
   emptyTask,
+  isValidNodeId,
   nodeId,
 } from "@/types/flow";
 
@@ -217,6 +220,17 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     return r.list[r.index] ?? null;
   }
 
+  /**
+   * 读穿：优先返回节点的草稿（未保存修改），没有草稿时退化为 doc 中已提交的版本。
+   * 供「调试面板」等需要看到未保存改动的只读消费者使用，不会创建新的草稿条目。
+   */
+  function viewNode(path: number[]): FlowNode | null {
+    const key = pathKey(path);
+    const draft = nodeDrafts.value[key];
+    if (draft) return draft;
+    return getNode(path);
+  }
+
   function replaceNode(path: number[], node: FlowNode) {
     const r = getListRef(path);
     if (!r) return;
@@ -258,7 +272,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     dirtyNodePaths.value = new Set();
   }
 
-  /** 为「节点调试上下文」生成稳定的 key：优先使用 node id/name，退化到 path。 */
+  /**
+   * 为「节点调试上下文」生成稳定的 key：使用节点 id（逻辑主键）；
+   * 对于尚未填写 id 的草稿（正常 UI 流程不会发生），退化到 path 保证 DOM 可用。
+   */
   function debugContextKey(path: number[]): string {
     const n = getNode(path);
     if (n) {
@@ -291,6 +308,51 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     nodeDebugContexts.value = {};
   }
 
+  /**
+   * 递归遍历整棵流程树（含容器子节点），收集所有节点 id（空 id 跳过）。
+   *
+   * 注意：**必须合并草稿**。如果某节点存在未提交的编辑（`nodeDrafts`），
+   * 以草稿里的 id 为准，而不是 doc 里已提交的旧 id。理由：
+   * 1. 同一会话里用户可能在多个节点之间来回改 id，只用已提交数据会漏掉
+   *    「A 草稿改成 X、B 也输入 X」这类跨节点撞键。
+   * 2. 当前节点自己改了新 id 后，如果再改回原值，也不能把 doc 里那份
+   *    旧 id 当成「别人家的 id」误判冲突。
+   *
+   * 树结构（父子关系 / 同级顺序）始终以 doc 为准——结构性变更
+   * （add/remove/move）都会先 `clearAllNodeDrafts()`，保证 draft 不会
+   * 出现在 doc 结构之外的位置。
+   */
+  function collectAllNodeIds(): Set<string> {
+    const out = new Set<string>();
+    const walk = (ns: FlowNode[], prefix: number[]) => {
+      ns.forEach((n, i) => {
+        const p = [...prefix, i];
+        const live = nodeDrafts.value[pathKey(p)] ?? n;
+        const id = nodeId(live);
+        if (id) out.add(id);
+        if (n.type === "loop" || n.type === "subflow") walk(n.children, p);
+      });
+    };
+    walk(doc.value.nodes, []);
+    return out;
+  }
+
+  /** 基于 prefix 生成全局唯一且符合 id 规则的 id，如 ``task_1``、``task_2``…… */
+  function allocateNodeId(prefix: "task" | "loop" | "subflow"): string {
+    const existing = collectAllNodeIds();
+    let i = 1;
+    while (existing.has(`${prefix}_${i}`)) i++;
+    const candidate = `${prefix}_${i}`;
+    return NODE_ID_PATTERN.test(candidate) ? candidate : `${prefix}_${Date.now()}`;
+  }
+
+  function makeFreshNode(kind: "task" | "loop" | "subflow"): FlowNode {
+    const id = allocateNodeId(kind);
+    if (kind === "task") return emptyTask(id);
+    if (kind === "loop") return emptyLoop(id);
+    return emptySubflow(id);
+  }
+
   /** 任何一次变更（编辑/重置/清空/切换流程）都会异步落到 ``localStorage``。 */
   watch(
     nodeDebugContexts,
@@ -316,12 +378,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
 
   function addRoot(kind: "task" | "loop" | "subflow") {
     clearAllNodeDrafts();
-    const n =
-      kind === "task"
-        ? emptyTask(`task_${doc.value.nodes.length + 1}`)
-        : kind === "loop"
-          ? emptyLoop(`loop_${doc.value.nodes.length + 1}`)
-          : emptySubflow(`subflow_${doc.value.nodes.length + 1}`);
+    const n = makeFreshNode(kind);
     doc.value.nodes.push(n);
     touch();
     select({ kind: "node", path: [doc.value.nodes.length - 1] });
@@ -332,12 +389,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     const r = getListRef(path);
     if (!r) return;
     const insertAt = r.index + 1;
-    const n =
-      kind === "task"
-        ? emptyTask(`task_${insertAt}`)
-        : kind === "loop"
-          ? emptyLoop(`loop_${insertAt}`)
-          : emptySubflow(`subflow_${insertAt}`);
+    const n = makeFreshNode(kind);
     if (path.length === 1) {
       doc.value.nodes.splice(insertAt, 0, n);
       touch();
@@ -356,12 +408,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     clearAllNodeDrafts();
     const p = getNode(path);
     if (!p || (p.type !== "loop" && p.type !== "subflow")) return;
-    const n =
-      kind === "task"
-        ? emptyTask(`task_${p.children.length + 1}`)
-        : kind === "loop"
-          ? emptyLoop(`loop_${p.children.length + 1}`)
-          : emptySubflow(`subflow_${p.children.length + 1}`);
+    const n = makeFreshNode(kind);
     p.children.push(n);
     touch();
     select({ kind: "node", path: [...path, p.children.length - 1] });
@@ -501,9 +548,14 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     upsertStrategy,
     removeStrategy,
     getNode,
+    viewNode,
     replaceNode,
     editableNode,
     updateNodeDraft,
+    collectAllNodeIds,
+    allocateNodeId,
+    isValidNodeId,
+    NODE_ID_PATTERN,
     isNodeDirty,
     clearNodeDraft,
     clearAllNodeDrafts,
@@ -533,6 +585,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     parallelRailRole,
     modeOf,
     nodeId,
+    displayName,
     emptyTask,
     emptyLoop,
     emptySubflow,

@@ -40,12 +40,14 @@ async def test_flow_terminate_bypasses_retry() -> None:
             mode: sync
         nodes:
           - name: halt
+            id: halt
             type: task
             strategy_ref: retry_sync
             script: |
               flow_terminate()
               {}
           - name: unreached
+            id: unreached
             type: task
             strategy_ref: default_sync
             script: |
@@ -75,6 +77,7 @@ async def test_background_task_honors_ignore() -> None:
             mode: sync
         nodes:
           - name: flaky
+            id: flaky
             type: task
             strategy_ref: async_strategy
             script: |
@@ -82,6 +85,7 @@ async def test_background_task_honors_ignore() -> None:
             on_error:
               action: ignore
           - name: barrier
+            id: barrier
             type: task
             strategy_ref: default_sync
             wait_before: true
@@ -116,6 +120,7 @@ async def test_background_task_retry_on_error() -> None:
           divisor: 0
         nodes:
           - name: heal
+            id: heal
             type: task
             strategy_ref: default_sync
             script: |
@@ -124,6 +129,7 @@ async def test_background_task_retry_on_error() -> None:
               outputs:
                 d: "$.global.divisor"
           - name: flaky
+            id: flaky
             type: task
             strategy_ref: async_strategy
             wait_before: true
@@ -135,6 +141,7 @@ async def test_background_task_retry_on_error() -> None:
               outputs:
                 x: "$.global.x"
           - name: barrier
+            id: barrier
             type: task
             strategy_ref: default_sync
             wait_before: true
@@ -159,11 +166,13 @@ async def test_subflow_no_frame_leak() -> None:
             mode: sync
         nodes:
           - name: sub
+            id: sub
             type: subflow
             strategy_ref: default_sync
             alias: s
             children:
               - name: inner
+                id: inner
                 type: task
                 strategy_ref: default_sync
                 script: |
@@ -192,11 +201,13 @@ async def test_subflow_frame_popped_on_error() -> None:
             mode: sync
         nodes:
           - name: sub
+            id: sub
             type: subflow
             strategy_ref: default_sync
             alias: s
             children:
               - name: boom
+                id: boom
                 type: task
                 strategy_ref: default_sync
                 script: |
@@ -221,6 +232,7 @@ async def test_unresolved_runtime_jump_marks_failed() -> None:
             mode: sync
         nodes:
           - name: a
+            id: a
             type: task
             strategy_ref: default_sync
             script: |
@@ -250,6 +262,7 @@ async def test_loop_pre_and_post_exec_hooks_fire() -> None:
           sum: 0
         nodes:
           - name: lp
+            id: lp
             type: loop
             strategy_ref: default_sync
             iterable: resolve("$.global.items")
@@ -261,6 +274,7 @@ async def test_loop_pre_and_post_exec_hooks_fire() -> None:
                 _ = 1
             children:
               - name: accum
+                id: accum
                 type: task
                 strategy_ref: default_sync
                 script: |
@@ -289,6 +303,7 @@ async def test_concurrent_writes_to_global_ns_are_safe() -> None:
         children.append(
             {
                 "name": f"w{i}",
+                "id": f"w{i}",
                 "type": "task",
                 "strategy_ref": "async_strategy",
                 "script": f'{{"v": {i}}}',
@@ -306,6 +321,7 @@ async def test_concurrent_writes_to_global_ns_are_safe() -> None:
             *children,
             {
                 "name": "barrier",
+                "id": "barrier",
                 "type": "task",
                 "strategy_ref": "default_sync",
                 "wait_before": True,
@@ -333,11 +349,13 @@ async def test_result_exposes_node_state_snapshot() -> None:
             mode: sync
         nodes:
           - name: a
+            id: a
             type: task
             strategy_ref: default_sync
             script: |
               {"x": 1}
           - name: b
+            id: b
             type: task
             strategy_ref: default_sync
             condition: "False"
@@ -367,16 +385,19 @@ async def test_result_exposes_node_runs_timeline() -> None:
             mode: sync
         nodes:
           - name: first
+            id: first
             type: task
             strategy_ref: default_sync
             script: |
               {"x": 1}
           - name: second
+            id: second
             type: task
             strategy_ref: default_sync
             script: |
               {"y": 2}
           - name: skipped
+            id: skipped
             type: task
             strategy_ref: default_sync
             condition: "False"
@@ -424,27 +445,32 @@ async def test_node_runs_record_tree_hierarchy_and_iterations() -> None:
           items: [1, 2, 3]
         nodes:
           - name: root_task
+            id: root_task
             type: task
             strategy_ref: default_sync
             script: |
               {"x": 1}
           - name: main_loop
+            id: main_loop
             type: loop
             strategy_ref: default_sync
             iterable: resolve("$.global.items")
             alias: it
             children:
               - name: leaf_a
+                id: leaf_a
                 type: task
                 strategy_ref: default_sync
                 script: |
                   {}
               - name: inner_subflow
+                id: inner_subflow
                 type: subflow
                 strategy_ref: default_sync
                 alias: sub
                 children:
                   - name: deep_leaf
+                    id: deep_leaf
                     type: task
                     strategy_ref: default_sync
                     script: |
@@ -475,6 +501,7 @@ def test_compiler_rejects_retry_with_zero_retry_count() -> None:
         "nodes": [
             {
                 "name": "t",
+                "id": "t",
                 "type": "task",
                 "strategy_ref": "default_sync",
                 "script": "{}",
@@ -498,6 +525,7 @@ async def test_loop_copy_item_deep_isolates_mutation() -> None:
         "nodes": [
             {
                 "name": "lp",
+                "id": "lp",
                 "type": "loop",
                 "strategy_ref": "default_sync",
                 "iterable": 'resolve("$.global.items")',
@@ -506,6 +534,7 @@ async def test_loop_copy_item_deep_isolates_mutation() -> None:
                 "children": [
                     {
                         "name": "step",
+                        "id": "step",
                         "type": "task",
                         "strategy_ref": "default_sync",
                         "script": '{"s": resolve("$.global.sum") + 1}',
@@ -538,6 +567,7 @@ async def test_signal_handlers_idempotent_across_runs() -> None:
             mode: sync
         nodes:
           - name: n
+            id: n
             type: task
             strategy_ref: default_sync
             script: |

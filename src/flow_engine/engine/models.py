@@ -5,7 +5,11 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# 节点 id 的强约束：字母开头，仅允许字母/数字/下划线。
+# 作为流程内的逻辑主键使用；name 仅用于可视化展示，不承担任何业务语义。
+NODE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
 
 
 class FlowState(str, Enum):
@@ -97,13 +101,33 @@ class BaseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: str
-    name: str
-    id: str | None = Field(default=None, description="Optional explicit id; defaults to name")
+    # 节点的逻辑主键。流程内唯一、必填、严格 identifier 形式。
+    # 所有引用节点的地方（jumps / parent_map / debug / 运行态指标等）都以 id 为准。
+    id: str = Field(
+        ...,
+        min_length=1,
+        pattern=NODE_ID_PATTERN,
+        description="节点逻辑主键：字母开头 + 字母/数字/下划线；流程内唯一。",
+    )
+    # 展示名。允许任意非空字符串（含中文）。仅用于 UI 可视化，
+    # 不得作为逻辑主键参与业务逻辑；留空（"" / 空白）时自动回落到 id。
+    name: str = Field(
+        default="",
+        description="展示名，仅作可视化，不承载业务语义；留空则回落到 id。",
+    )
     strategy_ref: str = "default_sync"
     wait_before: bool = False
     condition: str | None = None
     on_error: OnErrorConfig | None = None
     hooks: NodeHooks | LoopHooks | None = None
+
+    @model_validator(mode="after")
+    def _default_name_to_id(self) -> "BaseNode":
+        # 如果 name 为空或仅含空白字符，统一回落到 id，保证展示永远有值
+        # 且 name 永远不会作为歧义的逻辑键出现。
+        if not isinstance(self.name, str) or not self.name.strip():
+            object.__setattr__(self, "name", self.id)
+        return self
 
 
 class TaskNode(BaseNode):
@@ -183,8 +207,8 @@ class FlowDefinition(BaseModel):
 
 
 def iter_member_ids(member: FlowMember) -> list[str]:
-    nid = member.id or member.name
-    out = [nid]
+    # id 是节点的唯一逻辑主键；不再回落 name。
+    out = [member.id]
     if isinstance(member, (LoopNode, SubflowNode)):
         for ch in member.children:
             out.extend(iter_member_ids(ch))

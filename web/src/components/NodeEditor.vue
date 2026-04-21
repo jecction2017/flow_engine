@@ -15,33 +15,56 @@
       <div class="sec-title">基础信息</div>
       <div class="grid">
         <label class="field">
-          <span>name</span>
-          <input v-model="node.name" class="inp" @change="commit" />
+          <span>
+            id（逻辑主键，必填）
+            <span class="hint-inline">字母开头，仅允许字母/数字/下划线</span>
+          </span>
+          <input
+            v-model="idText"
+            class="inp mono"
+            :class="{ invalid: idError !== null }"
+            placeholder="例如：ingest_alert"
+            spellcheck="false"
+            autocomplete="off"
+            @input="onIdInput"
+            @blur="onIdBlur"
+          />
+          <span v-if="idError" class="err">{{ idError }}</span>
         </label>
+
         <label class="field">
-          <span>id（可选）</span>
-          <input v-model="idText" class="inp" @change="commit" />
+          <span>
+            name（显示名）
+            <span class="hint-inline">仅可视化使用，可输入中文/任意字符；留空将自动回落到 id</span>
+          </span>
+          <input
+            v-model="nameText"
+            class="inp"
+            placeholder="例如：告警归一化"
+            @input="onNameInput"
+            @blur="onNameBlur"
+          />
         </label>
+
         <label class="field">
           <span>strategy_ref</span>
           <select v-model="node.strategy_ref" class="inp" @change="commit">
             <option v-for="k in store.strategiesList" :key="k" :value="k">{{ k }}</option>
           </select>
         </label>
+
         <label class="field check">
           <input v-model="node.wait_before" type="checkbox" @change="commit" />
           <span>wait_before（滑动窗口同步屏障）</span>
         </label>
+
         <label class="field full">
           <span>condition（Starlark 表达式，可选）</span>
           <input
             class="inp mono"
             placeholder="例如：True"
             :value="node.condition ?? ''"
-            @input="
-              node.condition = ($event.target as HTMLInputElement).value || null;
-              commit();
-            "
+            @input="onConditionInput"
           />
         </label>
       </div>
@@ -49,77 +72,37 @@
 
     <section v-if="node.type === 'task'" class="card">
       <div class="sec-title">边界映射</div>
-      <div class="kvhead">
-        <span>inputs（$. 路径 → Starlark 变量名）</span>
-      </div>
-      <div v-for="(varName, pathKey) in node.boundary.inputs" :key="'in-' + String(pathKey)" class="kv">
-        <input
-          class="inp mono"
-          :value="String(pathKey)"
-          @blur="renameInPath(String(pathKey), ($event.target as HTMLInputElement).value)"
-        />
-        <span class="arrow">→</span>
-        <input
-          class="inp mono"
-          :value="String(varName)"
-          @input="setInVar(String(pathKey), ($event.target as HTMLInputElement).value)"
-        />
-        <button type="button" class="x" @click="delIn(String(pathKey))">×</button>
-      </div>
-      <div class="kv new">
-        <input
-          v-model="newIn.path"
-          class="inp mono"
-          placeholder="$.global.x"
-          @blur="maybeAddInFromDraft"
-          @keydown.enter.prevent="addIn"
-        />
-        <span class="arrow">→</span>
-        <input
-          v-model="newIn.var"
-          class="inp mono"
-          placeholder="var"
-          @blur="maybeAddInFromDraft"
-          @keydown.enter.prevent="addIn"
-        />
-        <button type="button" class="mini" @click="addIn">添加</button>
+      <div class="sec-desc">
+        <p class="d">
+          使用 YAML 风格文本，<span class="mono">inputs</span> 与 <span class="mono">outputs</span> 两个顶级键，每条映射以 <span class="mono">key: value</span> 缩进书写。空行与 <span class="mono">#</span> 开头的行视为注释。
+        </p>
+        <p class="d">
+          <strong>inputs</strong>：<span class="mono">$.上下文路径 → Starlark 变量名</span>；<strong>outputs</strong>：<span class="mono">脚本返回字段 → $.上下文路径</span>。
+        </p>
+        <p class="d muted">
+          后续将在 value 位置扩展参数约束与校验（例如
+          <span class="mono">$.item: {var: alarm, required: true, type: dict}</span>）。
+        </p>
       </div>
 
       <div class="kvhead">
-        <span>outputs（结果键 → $. 路径）</span>
+        <span>inputs / outputs 定义</span>
+        <button type="button" class="mini ghost" :disabled="!boundaryDirty" @click="resetBoundaryText">
+          恢复为已解析版本
+        </button>
       </div>
-      <div v-for="(pathVal, outKey) in node.boundary.outputs" :key="'out-' + String(outKey)" class="kv">
-        <input
-          class="inp mono"
-          :value="String(outKey)"
-          @blur="renameOutKey(String(outKey), ($event.target as HTMLInputElement).value)"
-        />
-        <span class="arrow">→</span>
-        <input
-          class="inp mono"
-          :value="String(pathVal)"
-          @input="setOutPath(String(outKey), ($event.target as HTMLInputElement).value)"
-        />
-        <button type="button" class="x" @click="delOut(String(outKey))">×</button>
+      <textarea
+        v-model="boundaryText"
+        class="area mono"
+        :class="{ invalid: boundaryErrors.length > 0 }"
+        rows="10"
+        spellcheck="false"
+        :placeholder="boundaryPlaceholder"
+      />
+      <div v-if="boundaryErrors.length > 0" class="err-block">
+        <div v-for="(msg, i) in boundaryErrors" :key="'b-err-' + i">{{ msg }}</div>
       </div>
-      <div class="kv new">
-        <input
-          v-model="newOut.key"
-          class="inp mono"
-          placeholder="field"
-          @blur="maybeAddOutFromDraft"
-          @keydown.enter.prevent="addOut"
-        />
-        <span class="arrow">→</span>
-        <input
-          v-model="newOut.path"
-          class="inp mono"
-          placeholder="$.global.y"
-          @blur="maybeAddOutFromDraft"
-          @keydown.enter.prevent="addOut"
-        />
-        <button type="button" class="mini" @click="addOut">添加</button>
-      </div>
+      <div v-else class="ctx-hint">{{ boundaryCountHint }}</div>
     </section>
 
     <section v-if="node.type === 'loop'" class="card">
@@ -127,11 +110,11 @@
       <div class="grid">
         <label class="field full">
           <span>iterable（Starlark 表达式）</span>
-          <input v-model="node.iterable" class="inp mono" @change="commit" />
+          <input v-model="node.iterable" class="inp mono" @input="commit" />
         </label>
         <label class="field">
           <span>alias</span>
-          <input v-model="node.alias" class="inp mono" @change="commit" />
+          <input v-model="node.alias" class="inp mono" @input="commit" />
         </label>
       </div>
       <div class="hint">子节点在左侧树中编辑；循环体会继承 <span class="mono">$.item</span> 上下文。</div>
@@ -141,7 +124,7 @@
       <div class="sec-title">子流程</div>
       <label class="field">
         <span>alias</span>
-        <input v-model="node.alias" class="inp mono" @change="commit" />
+        <input v-model="node.alias" class="inp mono" @input="commit" />
       </label>
       <div class="hint">子节点在左侧树中编辑。</div>
     </section>
@@ -156,12 +139,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, watch } from "vue";
-import type { FlowNode } from "@/types/flow";
+import { computed, onMounted, ref, watch } from "vue";
+import type { FlowNode, TaskNode } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
 import CodeEditor from "./CodeEditor.vue";
 import DebugPanel from "./DebugPanel.vue";
+import { parseBoundaryDoc, serializeBoundaryDoc } from "@/utils/boundaryText";
 
 const props = defineProps<{ path: number[] }>();
 const store = useFlowStudioStore();
@@ -180,106 +164,146 @@ const title = computed(() => {
   return "Subflow 节点";
 });
 
-const idText = computed({
-  get: () => node.value?.id ?? "",
-  set: (v: string) => {
-    if (!node.value) return;
-    node.value.id = v.trim() === "" ? null : v.trim();
-  },
-});
+// ---------------------------------------------------------------------------
+// 基础信息：id（严格主键）、name（显示名）
+// ---------------------------------------------------------------------------
 
-const newIn = reactive({ path: "", var: "" });
-const newOut = reactive({ key: "", path: "" });
+const idText = ref("");
+const nameText = ref("");
 
 watch(
   () => props.path.join("/"),
   () => {
-    newIn.path = "";
-    newIn.var = "";
-    newOut.key = "";
-    newOut.path = "";
+    idText.value = node.value?.id ?? "";
+    nameText.value = node.value?.name ?? "";
   },
+  { immediate: true },
 );
+
+const otherIds = computed(() => {
+  const all = store.collectAllNodeIds();
+  const own = (node.value?.id ?? "").trim();
+  if (own) all.delete(own);
+  return all;
+});
+
+const idError = computed<string | null>(() => {
+  const v = idText.value.trim();
+  if (!v) return "id 必填";
+  if (!store.isValidNodeId(v)) return "只允许字母开头，字母/数字/下划线";
+  if (otherIds.value.has(v)) return "与其它节点 id 冲突";
+  return null;
+});
+
+function onIdInput() {
+  if (!node.value) return;
+  const v = idText.value.trim();
+  // 输入过程中的实时校验只显示提示，不回写非法值，避免把流程弄脏。
+  if (idError.value) return;
+  if (node.value.id !== v) {
+    node.value.id = v;
+    commit();
+  }
+}
+
+function onIdBlur() {
+  if (idError.value) {
+    // 非法 id 失焦时把当前值回退为最后一次有效 id，避免污染持久化数据。
+    idText.value = node.value?.id ?? "";
+  }
+}
+
+function onNameInput() {
+  if (!node.value) return;
+  // name 允许任意字符串；仅做 UI 绑定，不参与业务逻辑。
+  const next = nameText.value;
+  if (node.value.name !== next) {
+    node.value.name = next;
+    commit();
+  }
+}
+
+function onNameBlur() {
+  // 失焦时若 name 为空白，回落为 id（与后端 model_validator 行为一致，
+  // 保证 UI/持久化里 name 始终是人类可读字符串）。
+  if (!node.value) return;
+  if (!nameText.value.trim()) {
+    const fallback = (node.value.id ?? "").trim();
+    nameText.value = fallback;
+    if (node.value.name !== fallback) {
+      node.value.name = fallback;
+      commit();
+    }
+  }
+}
+
+function onConditionInput(ev: Event) {
+  if (!node.value) return;
+  const v = (ev.target as HTMLInputElement).value;
+  node.value.condition = v.trim() === "" ? null : v;
+  commit();
+}
+
+// ---------------------------------------------------------------------------
+// 边界映射：单一文本框，YAML 风格 ``inputs`` / ``outputs`` 顶级键
+// ---------------------------------------------------------------------------
+
+const boundaryText = ref("");
+const boundaryErrors = ref<string[]>([]);
+
+const boundaryPlaceholder = `inputs:
+  $.global.alert: alert
+outputs:
+  summary: $.global.summary`;
+
+function currentBoundarySerialized(): string {
+  if (!node.value || node.value.type !== "task") return "";
+  const b = (node.value as TaskNode).boundary;
+  return serializeBoundaryDoc({ inputs: b.inputs ?? {}, outputs: b.outputs ?? {} });
+}
+
+const boundaryDirty = computed(() => boundaryText.value !== currentBoundarySerialized());
+
+const boundaryCountHint = computed(() => {
+  if (!node.value || node.value.type !== "task") return "";
+  const b = (node.value as TaskNode).boundary;
+  const nin = Object.keys(b.inputs ?? {}).length;
+  const nout = Object.keys(b.outputs ?? {}).length;
+  if (nin === 0 && nout === 0) return "尚未配置任何边界映射。";
+  return `已解析 inputs ${nin} 条、outputs ${nout} 条。`;
+});
+
+watch(
+  () => props.path.join("/"),
+  () => {
+    boundaryText.value = currentBoundarySerialized();
+    boundaryErrors.value = [];
+  },
+  { immediate: true },
+);
+
+watch(boundaryText, (txt) => {
+  if (!node.value || node.value.type !== "task") return;
+  const res = parseBoundaryDoc(txt);
+  boundaryErrors.value = res.errors;
+  if (res.errors.length === 0) {
+    const b = (node.value as TaskNode).boundary;
+    b.inputs = res.data.inputs;
+    b.outputs = res.data.outputs;
+    commit();
+  }
+});
+
+function resetBoundaryText() {
+  boundaryText.value = currentBoundarySerialized();
+  boundaryErrors.value = [];
+}
+
+// ---------------------------------------------------------------------------
 
 function commit() {
   if (!node.value) return;
   store.updateNodeDraft(props.path, JSON.parse(JSON.stringify(node.value)) as FlowNode);
-}
-
-function addIn() {
-  if (!node.value || node.value.type !== "task") return;
-  const p = newIn.path.trim();
-  const v = newIn.var.trim();
-  if (!p || !v) return;
-  node.value.boundary.inputs[p] = v;
-  newIn.path = "";
-  newIn.var = "";
-  commit();
-}
-
-function maybeAddInFromDraft() {
-  if (!newIn.path.trim() || !newIn.var.trim()) return;
-  addIn();
-}
-
-function addOut() {
-  if (!node.value || node.value.type !== "task") return;
-  const k = newOut.key.trim();
-  const p = newOut.path.trim();
-  if (!k || !p) return;
-  node.value.boundary.outputs[k] = p;
-  newOut.key = "";
-  newOut.path = "";
-  commit();
-}
-
-function maybeAddOutFromDraft() {
-  if (!newOut.key.trim() || !newOut.path.trim()) return;
-  addOut();
-}
-
-function delIn(k: string) {
-  if (!node.value || node.value.type !== "task") return;
-  delete node.value.boundary.inputs[k];
-  commit();
-}
-
-function delOut(k: string) {
-  if (!node.value || node.value.type !== "task") return;
-  delete node.value.boundary.outputs[k];
-  commit();
-}
-
-function setInVar(pathKey: string, val: string) {
-  if (!node.value || node.value.type !== "task") return;
-  node.value.boundary.inputs[pathKey] = val;
-  commit();
-}
-
-function renameInPath(oldPath: string, newPath: string) {
-  if (!node.value || node.value.type !== "task") return;
-  const np = newPath.trim();
-  if (!np || np === oldPath) return;
-  const v = node.value.boundary.inputs[oldPath];
-  delete node.value.boundary.inputs[oldPath];
-  node.value.boundary.inputs[np] = v;
-  commit();
-}
-
-function setOutPath(outKey: string, val: string) {
-  if (!node.value || node.value.type !== "task") return;
-  node.value.boundary.outputs[outKey] = val;
-  commit();
-}
-
-function renameOutKey(oldK: string, newK: string) {
-  if (!node.value || node.value.type !== "task") return;
-  const nk = newK.trim();
-  if (!nk || nk === oldK) return;
-  const v = node.value.boundary.outputs[oldK];
-  delete node.value.boundary.outputs[oldK];
-  node.value.boundary.outputs[nk] = v;
-  commit();
 }
 </script>
 
@@ -342,6 +366,21 @@ function renameOutKey(oldK: string, newK: string) {
   margin-bottom: 10px;
 }
 
+.sec-desc {
+  margin: -2px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.sec-desc .d {
+  margin: 0 0 4px;
+}
+
+.sec-desc .muted {
+  opacity: 0.75;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -366,6 +405,13 @@ function renameOutKey(oldK: string, newK: string) {
   align-items: center;
 }
 
+.hint-inline {
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+
 .inp {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -380,6 +426,16 @@ function renameOutKey(oldK: string, newK: string) {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.inp.invalid {
+  border-color: #fca5a5;
+  background: #fff7f7;
+}
+
+.err {
+  font-size: 11px;
+  color: #b91c1c;
+}
+
 .kvhead {
   display: flex;
   justify-content: space-between;
@@ -389,41 +445,62 @@ function renameOutKey(oldK: string, newK: string) {
   color: var(--muted);
 }
 
-.kv {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr auto;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.kv.new {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-}
-
-.arrow {
-  color: var(--muted);
+.area {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
   font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  background: #fbfdff;
+}
+
+.area:focus {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.area.invalid {
+  border-color: #fca5a5;
+  background: #fff7f7;
+}
+
+.err-block {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  color: #b91c1c;
+  line-height: 1.45;
+}
+
+.ctx-hint {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .mini {
   border: 1px solid var(--border);
   background: #fff;
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 12px;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 11px;
   cursor: pointer;
 }
 
-.x {
-  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
-  background: #fff;
-  color: #b91c1c;
-  border-radius: 10px;
-  width: 34px;
-  cursor: pointer;
+.mini.ghost {
+  color: var(--muted);
+}
+
+.mini:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mini:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .hint {
@@ -436,12 +513,6 @@ function renameOutKey(oldK: string, newK: string) {
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
-  }
-  .kv {
-    grid-template-columns: 1fr;
-  }
-  .arrow {
-    display: none;
   }
 }
 </style>

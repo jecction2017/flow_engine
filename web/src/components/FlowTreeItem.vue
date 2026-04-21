@@ -20,11 +20,12 @@
           <div class="indent" :style="{ width: 10 + depth * 12 + 'px' }" />
           <span class="glyph">{{ glyph(n) }}</span>
           <div class="meta">
-            <div class="name mono">
-              {{ store.nodeId(n) }}
+            <div class="name" :title="store.nodeId(n)">
+              {{ store.displayName(n) }}
               <span v-if="store.isNodeDirty([...pathPrefix, i])" class="dirty-dot" title="该节点有未保存修改">●</span>
             </div>
             <div class="sub">
+              <span class="chip id-chip mono" :title="`节点 id：${store.nodeId(n)}`">{{ store.nodeId(n) }}</span>
               <span class="chip">{{ n.strategy_ref }}</span>
               <span class="mode">{{ store.modeOf(n.strategy_ref) }}</span>
               <span v-if="n.wait_before" class="pill">wait</span>
@@ -283,6 +284,12 @@ function doDelete() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.id-chip {
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
 }
 
 .mode {

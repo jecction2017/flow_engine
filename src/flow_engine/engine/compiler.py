@@ -30,10 +30,10 @@ def _build_parent_map(flow: FlowDefinition) -> dict[str, str | None]:
 
     def rec(members: list[FlowMember], p: str | None) -> None:
         for m in members:
-            nid = m.id or m.name
-            parent[nid] = p
+            # id 是唯一逻辑主键
+            parent[m.id] = p
             if isinstance(m, (LoopNode, SubflowNode)):
-                rec(m.children, nid)
+                rec(m.children, m.id)
 
     rec(flow.nodes, None)
     return parent
@@ -43,7 +43,7 @@ def _scope_list_for(flow: FlowDefinition, node_id: str) -> list[str]:
     """Returns ids in the same member list as node_id (including node_id)."""
 
     def find_list(members: list[FlowMember]) -> list[str] | None:
-        ids = [x.id or x.name for x in members]
+        ids = [x.id for x in members]
         if node_id in ids:
             return ids
         for m in members:
@@ -86,11 +86,11 @@ def compile_flow(flow: FlowDefinition) -> FlowDefinition:
     all_ids = collect_all_node_ids(flow.nodes)
     if len(all_ids) != len(set(all_ids)):
         dup = [x for x in all_ids if all_ids.count(x) > 1]
-        raise CompilationError(f"Duplicate node ids/names: {sorted(set(dup))}")
+        raise CompilationError(f"Duplicate node ids: {sorted(set(dup))}")
 
     for m in _walk(flow.nodes):
         if m.strategy_ref not in flow.strategies:
-            raise CompilationError(f"Missing strategy {m.strategy_ref!r} for node {m.id or m.name!r}")
+            raise CompilationError(f"Missing strategy {m.strategy_ref!r} for node {m.id!r}")
 
     parent = _build_parent_map(flow)
 
@@ -101,7 +101,7 @@ def compile_flow(flow: FlowDefinition) -> FlowDefinition:
         act = oe.action
         if isinstance(act, str):
             act = OnErrorAction(act)
-        src = m.id or m.name
+        src = m.id
         if act == OnErrorAction.JUMP:
             if not oe.target:
                 raise CompilationError(f"on_error.action=jump on node {src!r} requires 'target'")

@@ -166,7 +166,8 @@ class FlowRuntime:
         self._cancel_dereg: Any = None
 
     def _nid(self, m: FlowMember) -> str:
-        return m.id or m.name
+        # id 是节点唯一逻辑主键；模型层已保证非空，此处无需回落 name。
+        return m.id
 
     def _now_ms(self) -> int:
         """Milliseconds since :meth:`run` started tracking (0 before start)."""
