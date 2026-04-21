@@ -129,6 +129,11 @@ function showMsg(type: "ok" | "err", text: string) {
   saveMsgTimer = setTimeout(() => (saveMsg.value = null), 3000);
 }
 
+function flushActiveInput() {
+  const el = document.activeElement;
+  if (el instanceof HTMLElement) el.blur();
+}
+
 const currentVersionBadge = computed(() => {
   if (!store.activeFlowId) return "";
   if (selectedVersion.value === "draft") return hasDraft.value ? "草稿" : "";
@@ -161,10 +166,12 @@ onMounted(async () => {
 });
 
 async function refresh() {
+  store.clearAllNodeDrafts();
   await store.refreshFlowList();
-  if (store.activeFlowId) {
-    await refreshVersionList(store.activeFlowId);
-  }
+  const fid = store.activeFlowId;
+  if (!fid) return;
+  await refreshVersionList(fid);
+  await onSelectVersion();
 }
 
 async function refreshVersionList(flowId: string) {
@@ -200,6 +207,7 @@ async function onSelectVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
   try {
+    store.clearAllNodeDrafts();
     let data: Record<string, unknown>;
     if (selectedVersion.value === "draft") {
       data = await fetchDraft(fid);
@@ -215,11 +223,14 @@ async function onSelectVersion() {
 async function saveDraft() {
   const fid = store.activeFlowId;
   if (!fid) return;
+  flushActiveInput();
+  store.flushNodeDraftsToDocument();
   saving.value = "draft";
   try {
     await apiSaveDraft(fid, store.doc as unknown as Record<string, unknown>);
     await refreshVersionList(fid);
     selectedVersion.value = "draft";
+    await onSelectVersion();
     showMsg("ok", "草稿已保存");
   } catch (e) {
     showMsg("err", e instanceof Error ? e.message : String(e));
@@ -231,6 +242,8 @@ async function saveDraft() {
 async function saveNewVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
+  flushActiveInput();
+  store.flushNodeDraftsToDocument();
   saving.value = "version";
   try {
     // Save current doc to draft first, then commit
@@ -238,6 +251,7 @@ async function saveNewVersion() {
     const res = await commitVersion(fid);
     await refreshVersionList(fid);
     selectedVersion.value = String(res.version);
+    await onSelectVersion();
     showMsg("ok", `版本 V${res.version} 已提交`);
   } catch (e) {
     showMsg("err", e instanceof Error ? e.message : String(e));

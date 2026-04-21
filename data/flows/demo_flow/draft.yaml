@@ -32,10 +32,12 @@ nodes:
     wait_before: false
     script: "alarm = $.item\nalarm = {\n  \"alarm_id\": alarm.get(\"id\"),\n  \"alarm_grade\"\
       : alarm.get(\"activity_level\"),\n  \"alarm_type\": alarm.get(\"activity_feature\"\
-      )\n}\nreturn {\"alarm\": alarm}"
+      )\n}\nreturn {\"a\": alarm, \"b\": \"b\"}"
     boundary:
       inputs: {}
-      outputs: {}
+      outputs:
+        a: $.global.al
+        b: $.global.ald
   copy_item: shared
   iteration_isolation: shared
 initial_context:

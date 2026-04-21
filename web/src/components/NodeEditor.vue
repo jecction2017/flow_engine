@@ -56,7 +56,7 @@
         <input
           class="inp mono"
           :value="String(pathKey)"
-          @change="renameInPath(String(pathKey), ($event.target as HTMLInputElement).value)"
+          @blur="renameInPath(String(pathKey), ($event.target as HTMLInputElement).value)"
         />
         <span class="arrow">→</span>
         <input
@@ -67,9 +67,21 @@
         <button type="button" class="x" @click="delIn(String(pathKey))">×</button>
       </div>
       <div class="kv new">
-        <input v-model="newIn.path" class="inp mono" placeholder="$.global.x" />
+        <input
+          v-model="newIn.path"
+          class="inp mono"
+          placeholder="$.global.x"
+          @blur="maybeAddInFromDraft"
+          @keydown.enter.prevent="addIn"
+        />
         <span class="arrow">→</span>
-        <input v-model="newIn.var" class="inp mono" placeholder="var" />
+        <input
+          v-model="newIn.var"
+          class="inp mono"
+          placeholder="var"
+          @blur="maybeAddInFromDraft"
+          @keydown.enter.prevent="addIn"
+        />
         <button type="button" class="mini" @click="addIn">添加</button>
       </div>
 
@@ -80,7 +92,7 @@
         <input
           class="inp mono"
           :value="String(outKey)"
-          @change="renameOutKey(String(outKey), ($event.target as HTMLInputElement).value)"
+          @blur="renameOutKey(String(outKey), ($event.target as HTMLInputElement).value)"
         />
         <span class="arrow">→</span>
         <input
@@ -91,9 +103,21 @@
         <button type="button" class="x" @click="delOut(String(outKey))">×</button>
       </div>
       <div class="kv new">
-        <input v-model="newOut.key" class="inp mono" placeholder="field" />
+        <input
+          v-model="newOut.key"
+          class="inp mono"
+          placeholder="field"
+          @blur="maybeAddOutFromDraft"
+          @keydown.enter.prevent="addOut"
+        />
         <span class="arrow">→</span>
-        <input v-model="newOut.path" class="inp mono" placeholder="$.global.y" />
+        <input
+          v-model="newOut.path"
+          class="inp mono"
+          placeholder="$.global.y"
+          @blur="maybeAddOutFromDraft"
+          @keydown.enter.prevent="addOut"
+        />
         <button type="button" class="mini" @click="addOut">添加</button>
       </div>
     </section>
@@ -147,7 +171,7 @@ onMounted(() => {
   void ensureRegistry();
 });
 
-const node = computed(() => store.getNode(props.path) as FlowNode | null);
+const node = computed(() => store.editableNode(props.path) as FlowNode | null);
 
 const title = computed(() => {
   if (!node.value) return "";
@@ -179,7 +203,7 @@ watch(
 
 function commit() {
   if (!node.value) return;
-  store.replaceNode(props.path, JSON.parse(JSON.stringify(node.value)) as FlowNode);
+  store.updateNodeDraft(props.path, JSON.parse(JSON.stringify(node.value)) as FlowNode);
 }
 
 function addIn() {
@@ -193,6 +217,11 @@ function addIn() {
   commit();
 }
 
+function maybeAddInFromDraft() {
+  if (!newIn.path.trim() || !newIn.var.trim()) return;
+  addIn();
+}
+
 function addOut() {
   if (!node.value || node.value.type !== "task") return;
   const k = newOut.key.trim();
@@ -202,6 +231,11 @@ function addOut() {
   newOut.key = "";
   newOut.path = "";
   commit();
+}
+
+function maybeAddOutFromDraft() {
+  if (!newOut.key.trim() || !newOut.path.trim()) return;
+  addOut();
 }
 
 function delIn(k: string) {

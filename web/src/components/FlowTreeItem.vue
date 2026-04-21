@@ -20,7 +20,10 @@
           <div class="indent" :style="{ width: 10 + depth * 12 + 'px' }" />
           <span class="glyph">{{ glyph(n) }}</span>
           <div class="meta">
-            <div class="name mono">{{ store.nodeId(n) }}</div>
+            <div class="name mono">
+              {{ store.nodeId(n) }}
+              <span v-if="store.isNodeDirty([...pathPrefix, i])" class="dirty-dot" title="该节点有未保存修改">●</span>
+            </div>
             <div class="sub">
               <span class="chip">{{ n.strategy_ref }}</span>
               <span class="mode">{{ store.modeOf(n.strategy_ref) }}</span>
@@ -253,6 +256,13 @@ function doDelete() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 10px;
+  vertical-align: middle;
 }
 
 .sub {

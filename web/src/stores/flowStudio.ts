@@ -83,6 +83,8 @@ function isNonSync(mode: string | undefined): boolean {
 export const useFlowStudioStore = defineStore("flowStudio", () => {
   const doc = ref<FlowDocument>(clone(SAMPLE));
   const selection = ref<Selection>({ kind: "flow" });
+  const nodeDrafts = ref<Record<string, FlowNode>>({});
+  const dirtyNodePaths = ref<Set<string>>(new Set());
   /** 当前绑定的服务端流程 id（对应 ``data/flows/{id}.yaml``） */
   const activeFlowId = ref<string | null>(null);
   const serverFlowsDir = ref<string | null>(null);
@@ -95,6 +97,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
 
   function touch() {
     doc.value = clone(doc.value);
+  }
+
+  function pathKey(path: number[]): string {
+    return path.join("/");
   }
 
   function select(sel: Selection) {
@@ -166,7 +172,56 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     touch();
   }
 
+  function editableNode(path: number[]): FlowNode | null {
+    const key = pathKey(path);
+    const cached = nodeDrafts.value[key];
+    if (cached) return cached;
+    const base = getNode(path);
+    if (!base) return null;
+    const draft = clone(base);
+    nodeDrafts.value = { ...nodeDrafts.value, [key]: draft };
+    return draft;
+  }
+
+  function updateNodeDraft(path: number[], node: FlowNode) {
+    const key = pathKey(path);
+    nodeDrafts.value = { ...nodeDrafts.value, [key]: clone(node) };
+    dirtyNodePaths.value.add(key);
+  }
+
+  function isNodeDirty(path: number[]): boolean {
+    return dirtyNodePaths.value.has(pathKey(path));
+  }
+
+  function clearNodeDraft(path: number[]) {
+    const key = pathKey(path);
+    const next = { ...nodeDrafts.value };
+    delete next[key];
+    nodeDrafts.value = next;
+    dirtyNodePaths.value.delete(key);
+  }
+
+  function clearAllNodeDrafts() {
+    nodeDrafts.value = {};
+    dirtyNodePaths.value = new Set();
+  }
+
+  function flushNodeDraftsToDocument() {
+    const keys = Object.keys(nodeDrafts.value);
+    // Apply deeper paths first to avoid parent replacement overriding child draft.
+    keys.sort((a, b) => b.split("/").length - a.split("/").length);
+    for (const key of keys) {
+      const node = nodeDrafts.value[key];
+      if (!node) continue;
+      const path = key.split("/").filter(Boolean).map((x) => Number(x));
+      if (path.some((n) => Number.isNaN(n))) continue;
+      replaceNode(path, clone(node));
+    }
+    clearAllNodeDrafts();
+  }
+
   function addRoot(kind: "task" | "loop" | "subflow") {
+    clearAllNodeDrafts();
     const n =
       kind === "task"
         ? emptyTask(`task_${doc.value.nodes.length + 1}`)
@@ -179,6 +234,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   }
 
   function addSibling(path: number[], kind: "task" | "loop" | "subflow") {
+    clearAllNodeDrafts();
     const r = getListRef(path);
     if (!r) return;
     const insertAt = r.index + 1;
@@ -203,6 +259,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   }
 
   function addChild(path: number[], kind: "task" | "loop" | "subflow") {
+    clearAllNodeDrafts();
     const p = getNode(path);
     if (!p || (p.type !== "loop" && p.type !== "subflow")) return;
     const n =
@@ -217,6 +274,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   }
 
   function removeNode(path: number[]) {
+    clearAllNodeDrafts();
     const r = getListRef(path);
     if (!r) return;
     r.list.splice(r.index, 1);
@@ -235,6 +293,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     touch();
     select({ kind: "flow" });
     activeFlowId.value = null;
+    clearAllNodeDrafts();
   }
 
   function loadDocument(data: FlowDocument, flowId: string | null = null) {
@@ -243,6 +302,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     touch();
     select({ kind: "flow" });
     activeFlowId.value = flowId;
+    clearAllNodeDrafts();
   }
 
   async function refreshFlowList() {
@@ -344,6 +404,12 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     removeStrategy,
     getNode,
     replaceNode,
+    editableNode,
+    updateNodeDraft,
+    isNodeDirty,
+    clearNodeDraft,
+    clearAllNodeDrafts,
+    flushNodeDraftsToDocument,
     addRoot,
     addSibling,
     addChild,
