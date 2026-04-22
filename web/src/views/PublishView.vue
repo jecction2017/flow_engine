@@ -12,8 +12,13 @@
       <div class="pub-toolbar">
         <select v-model="selectedFlowId" class="sel" @change="onSelectFlow">
           <option value="" disabled>选择流程…</option>
-          <option v-for="f in flowList" :key="(f as any).id" :value="(f as any).id">
-            {{ (f as any).name }} ({{ (f as any).id }})
+          <option
+            v-for="f in flowList"
+            :key="(f as any).id"
+            :value="(f as any).id"
+            :title="(f as any).id"
+          >
+            {{ flowOptionLabel(f) }}
           </option>
         </select>
         <button class="btn ghost" :disabled="!selectedFlowId || pStore.loading" @click="pStore.refresh()">
@@ -178,6 +183,13 @@ function fmtAgo(epoch: number): string {
 
 function channelLabel(ch: string): string {
   return ch === "production" ? "生产" : ch === "gray" ? "灰度" : ch;
+}
+
+function flowOptionLabel(f: unknown): string {
+  const item = f as { id: string; display_name?: string };
+  const dn = (item.display_name ?? "").trim();
+  if (!dn || dn === item.id) return item.id;
+  return `${dn} (${item.id})`;
 }
 </script>
 

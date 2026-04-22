@@ -167,12 +167,12 @@ class VersionStore:
         new_num = meta.latest_version + 1
         path = self.versions_dir / f"v{new_num}.yaml"
         _write_yaml(path, data)
-        flow_name = str(data.get("name", self.flow_id))
+        display_name = str(data.get("display_name") or data.get("name") or self.flow_id)
         version_meta = FlowVersionMeta(
             version=new_num,
             created_at=time.time(),
             description=description,
-            flow_name=flow_name,
+            display_name=display_name,
         )
         meta.versions.append(version_meta)
         meta.latest_version = new_num
@@ -307,6 +307,7 @@ class FlowVersionRegistry:
         self.directory = directory or _flows_dir()
         self.directory.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy()
+        self._migrate_name_field()
 
     def _migrate_legacy(self) -> None:
         """Promote old-style ``{id}.yaml`` files to v1 snapshots.
@@ -334,6 +335,77 @@ class FlowVersionRegistry:
             vs.save_draft(data)
             # Original file stays – backward compatible
 
+    def _migrate_name_field(self) -> None:
+        """一次性迁移：流程顶层 ``name`` → ``display_name``；meta.json 里 ``flow_name`` → ``display_name``。
+
+        幂等：文件已经是新格式时跳过。只改**顶层** key，不会误伤节点级 ``name``。
+        """
+        for flow_dir in self.directory.iterdir():
+            if not flow_dir.is_dir():
+                continue
+            try:
+                validate_flow_id(flow_dir.name)
+            except ValueError:
+                continue
+            # 1) draft.yaml + versions/vN.yaml ——顶层 name → display_name
+            yaml_paths: list[Path] = []
+            draft = flow_dir / "draft.yaml"
+            if draft.is_file():
+                yaml_paths.append(draft)
+            versions_dir = flow_dir / "versions"
+            if versions_dir.is_dir():
+                yaml_paths.extend(sorted(versions_dir.glob("v*.yaml")))
+            for yp in yaml_paths:
+                try:
+                    data = _read_yaml(yp)
+                except (ValueError, OSError, yaml.YAMLError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if "name" not in data:
+                    continue
+                if "display_name" in data:
+                    # 已经迁移过；清掉残留的顶层 name 即可。
+                    new_data = {k: v for k, v in data.items() if k != "name"}
+                else:
+                    new_data = {}
+                    for k, v in data.items():
+                        if k == "name":
+                            new_data["display_name"] = v
+                        else:
+                            new_data[k] = v
+                try:
+                    _write_yaml(yp, new_data)
+                except OSError:
+                    continue
+            # 2) meta.json：versions[].flow_name → display_name
+            meta_path = flow_dir / "meta.json"
+            if not meta_path.is_file():
+                continue
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict):
+                continue
+            versions = raw.get("versions")
+            if not isinstance(versions, list):
+                continue
+            mutated = False
+            for entry in versions:
+                if not isinstance(entry, dict):
+                    continue
+                if "flow_name" in entry:
+                    if "display_name" not in entry:
+                        entry["display_name"] = entry.get("flow_name", "")
+                    entry.pop("flow_name", None)
+                    mutated = True
+            if mutated:
+                try:
+                    _atomic_write_json(meta_path, raw)
+                except OSError:
+                    continue
+
     def version_store(self, flow_id: str) -> VersionStore:
         return VersionStore(self.directory, flow_id)
 
@@ -357,25 +429,28 @@ class FlowVersionRegistry:
                 continue
             vs = VersionStore(self.directory, fid)
             meta = vs.read_meta()
-            name = fid
+            display_name = ""
             latest = meta.latest_version
-            if latest > 0:
-                try:
-                    raw = vs.read_version(latest)
-                    name = str(raw.get("name", fid))
-                except (FileNotFoundError, ValueError):
-                    pass
-            elif vs.has_draft():
+            # 优先从 draft 取 display_name，这样用户改了草稿名还没提交版本时，
+            # 下拉/列表也能立即反映新的显示名，避免和编辑器打架。
+            if vs.has_draft():
                 try:
                     raw = vs.read_draft()
-                    name = str(raw.get("name", fid))
+                    display_name = str(raw.get("display_name") or raw.get("name") or "")
                 except (FileNotFoundError, ValueError):
                     pass
+            if not display_name and latest > 0:
+                try:
+                    raw = vs.read_version(latest)
+                    display_name = str(raw.get("display_name") or raw.get("name") or "")
+                except (FileNotFoundError, ValueError):
+                    pass
+            # UI 约定：空字符串表示没有自定义显示名，前端会 fallback 到 id。
             stat = p.stat()
             out.append(
                 {
                     "id": fid,
-                    "name": name,
+                    "display_name": display_name,
                     "path": str(p),
                     "updated_at": stat.st_mtime,
                     "latest_version": latest,

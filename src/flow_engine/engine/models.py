@@ -196,14 +196,39 @@ SubflowNode.model_rebuild()
 
 
 class FlowDefinition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # 注意：允许 extra="ignore" 仅为兼容历史 yaml 中残留的顶层 `name` 字段。
+    # `name` 已迁移至 `display_name`；在 `_migrate_name_field` 中会擦除。
+    model_config = ConfigDict(extra="ignore")
 
-    name: str
+    # 展示名：允许中文/空格，仅用于 UI；为空时 UI 回落 flow_id。
+    # 不参与任何业务逻辑；流程的唯一逻辑主键是目录名 / API 路径上的 `flow_id`。
+    display_name: str | None = None
     version: str = "1.0.0"
     strategies: dict[str, ExecutionStrategy]
     nodes: list[FlowMember]
     hooks: FlowHooks | None = None
     initial_context: dict[str, Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_name(cls, data: Any) -> Any:
+        """兼容历史 yaml：若只有顶层 ``name`` 而无 ``display_name``，将其迁移为 ``display_name``。
+
+        只处理 mapping 形态的输入；其它类型原样返回，交由后续字段校验报错。
+        """
+        if isinstance(data, dict):
+            if "display_name" not in data and "name" in data:
+                new_data = dict(data)
+                legacy = new_data.pop("name", None)
+                if isinstance(legacy, str):
+                    new_data["display_name"] = legacy
+                return new_data
+            # 若同时存在，丢弃旧字段避免 extra 引发误解。
+            if "display_name" in data and "name" in data:
+                new_data = dict(data)
+                new_data.pop("name", None)
+                return new_data
+        return data
 
 
 def iter_member_ids(member: FlowMember) -> list[str]:

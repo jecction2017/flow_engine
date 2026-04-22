@@ -1,4 +1,4 @@
-name: demo_flow
+display_name: demo_flow
 version: 1.0.0
 strategies:
   default_sync:

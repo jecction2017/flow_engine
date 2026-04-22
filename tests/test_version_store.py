@@ -30,9 +30,9 @@ from flow_engine.stores.version_store import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _sample_flow(name: str = "demo", version: str = "1.0.0") -> dict[str, Any]:
+def _sample_flow(display_name: str = "demo", version: str = "1.0.0") -> dict[str, Any]:
     return {
-        "name": name,
+        "display_name": display_name,
         "version": version,
         "strategies": {"default_sync": {"name": "default_sync", "mode": "sync"}},
         "nodes": [],
@@ -104,12 +104,12 @@ def test_version_store_commit_auto_increments(tmp_path: Path) -> None:
 
     meta = vs.read_meta()
     assert [v.version for v in meta.versions] == [1, 2, 3]
-    assert [v.flow_name for v in meta.versions] == ["v1-flow", "v2-flow", "v3-flow"]
+    assert [v.display_name for v in meta.versions] == ["v1-flow", "v2-flow", "v3-flow"]
 
     # Each version's data is independently retrievable
-    assert vs.read_version(1)["name"] == "v1-flow"
-    assert vs.read_version(2)["name"] == "v2-flow"
-    assert vs.read_version(3)["name"] == "v3-flow"
+    assert vs.read_version(1)["display_name"] == "v1-flow"
+    assert vs.read_version(2)["display_name"] == "v2-flow"
+    assert vs.read_version(3)["display_name"] == "v3-flow"
 
 
 def test_version_store_commit_from_draft(tmp_path: Path) -> None:
@@ -356,7 +356,9 @@ def test_registry_legacy_migration(tmp_path: Path) -> None:
     assert vs.latest_version_num() == 1
     assert vs.has_draft()
     v1 = vs.read_version(1)
-    assert v1["name"] == "legacy-flow"
+    # _migrate_name_field auto-promotes the legacy top-level `name` key to `display_name`.
+    assert v1["display_name"] == "legacy-flow"
+    assert "name" not in v1
 
     meta = vs.read_meta()
     assert "legacy" in (meta.versions[0].description or "").lower()
@@ -398,7 +400,7 @@ def test_registry_resolve_latest(registry: FlowVersionRegistry) -> None:
     vs.commit_version(_sample_flow("v2"))
     n, data = registry.resolve_version_data("foo", "latest")
     assert n == 2
-    assert data["name"] == "v2"
+    assert data["display_name"] == "v2"
 
 
 def test_registry_resolve_specific_version(registry: FlowVersionRegistry) -> None:
@@ -406,9 +408,9 @@ def test_registry_resolve_specific_version(registry: FlowVersionRegistry) -> Non
     vs.commit_version(_sample_flow("v1"))
     vs.commit_version(_sample_flow("v2"))
     n, data = registry.resolve_version_data("foo", "v1")
-    assert n == 1 and data["name"] == "v1"
+    assert n == 1 and data["display_name"] == "v1"
     n, data = registry.resolve_version_data("foo", "2")
-    assert n == 2 and data["name"] == "v2"
+    assert n == 2 and data["display_name"] == "v2"
 
 
 def test_registry_resolve_draft(registry: FlowVersionRegistry) -> None:
@@ -416,7 +418,7 @@ def test_registry_resolve_draft(registry: FlowVersionRegistry) -> None:
     vs.save_draft(_sample_flow("draft"))
     n, data = registry.resolve_version_data("foo", "draft")
     assert n is None
-    assert data["name"] == "draft"
+    assert data["display_name"] == "draft"
 
 
 def test_registry_resolve_production_channel(registry: FlowVersionRegistry) -> None:
@@ -428,7 +430,7 @@ def test_registry_resolve_production_channel(registry: FlowVersionRegistry) -> N
     state.production = ChannelState(version=1, status=PublishStatus.RUNNING)
     ps.write(state)
     n, data = registry.resolve_version_data("foo", "production")
-    assert n == 1 and data["name"] == "v1"
+    assert n == 1 and data["display_name"] == "v1"
 
 
 def test_registry_resolve_production_unpublished_raises(registry: FlowVersionRegistry) -> None:

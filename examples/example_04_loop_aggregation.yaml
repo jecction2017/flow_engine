@@ -4,7 +4,7 @@
 #   * copy_item=deep 保障跨迭代互不干扰
 #   * 循环内并发节点 + wait_before 屏障合并
 #   * 迭代内外 $.global 共享累加结果
-name: example_04_loop_aggregation
+display_name: example_04_loop_aggregation
 version: "1.0.0"
 
 initial_context:

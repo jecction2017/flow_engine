@@ -50,7 +50,8 @@ registry = FlowVersionRegistry()
 
 class CreateFlowBody(BaseModel):
     id: str = Field(..., min_length=1, max_length=128)
-    name: str | None = None
+    # 可选的展示名；留空时 UI 回落 flow_id，初始 yaml 里的 display_name 也留空。
+    display_name: str | None = None
 
 
 class DebugNodeBody(BaseModel):
@@ -246,9 +247,8 @@ def create_app() -> FastAPI:
         fid = _resolve_flow_id(body.id)
         if registry.exists(fid):
             raise HTTPException(status_code=409, detail="Flow id already exists")
-        name = body.name or fid
         minimal = FlowDefinition(
-            name=name,
+            display_name=body.display_name,
             version="1.0.0",
             strategies={"default_sync": ExecutionStrategy(name="default_sync", mode=StrategyMode.SYNC)},
             nodes=[],
@@ -589,7 +589,7 @@ def create_app() -> FastAPI:
             flow = FlowDefinition.model_validate(data)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"ok": True, "name": flow.name, "version": flow.version}
+        return {"ok": True, "display_name": flow.display_name or "", "version": flow.version}
 
     @app.post("/api/flows/{flow_id}/run")
     async def run_flow(

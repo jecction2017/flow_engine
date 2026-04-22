@@ -75,7 +75,7 @@ function writePersistedDebugContexts(
 }
 
 const SAMPLE: FlowDocument = {
-  name: "demo_flow",
+  display_name: "demo_flow",
   version: "1.0.0",
   strategies: {
     default_sync: { name: "default_sync", mode: "sync" },
@@ -143,7 +143,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     readPersistedDebugContexts(activeFlowId.value),
   );
   const serverFlowsDir = ref<string | null>(null);
-  const flowList = ref<{ id: string; name: string }[]>([]);
+  // 列表项里保留 display_name 字段（可能为空串，UI 会回落到 id）。
+  const flowList = ref<{ id: string; display_name: string }[]>([]);
   const apiError = ref<string | null>(null);
 
   const strategiesList = computed(() =>
@@ -171,7 +172,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     }
   }
 
-  function setFlowMeta(patch: Partial<Pick<FlowDocument, "name" | "version">>) {
+  function setFlowMeta(patch: Partial<Pick<FlowDocument, "display_name" | "version">>) {
     doc.value = { ...doc.value, ...patch };
   }
 
@@ -529,7 +530,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     try {
       const res = await fetchFlowList();
       serverFlowsDir.value = res.flows_dir;
-      flowList.value = res.flows.map((f) => ({ id: f.id, name: f.name }));
+      flowList.value = res.flows.map((f) => ({
+        id: f.id,
+        display_name: f.display_name ?? "",
+      }));
       apiError.value = null;
     } catch (e) {
       apiError.value = e instanceof Error ? e.message : String(e);

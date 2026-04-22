@@ -68,11 +68,31 @@ export interface SubflowNode {
 export type FlowNode = TaskNode | LoopNode | SubflowNode;
 
 export interface FlowDocument {
-  name: string;
+  /**
+   * 展示名：可选，允许中文/空格。仅用于 UI 渲染；为空时统一回落到 flow_id
+   * （详见 `flowDisplayName` 工具函数）。不参与任何业务逻辑 —— 流程的唯一逻辑
+   * 主键是目录/URL 上的 flow_id。
+   */
+  display_name?: string | null;
   version: string;
   strategies: Record<string, ExecutionStrategy>;
   nodes: FlowNode[];
   initial_context?: Record<string, unknown> | null;
+}
+
+/**
+ * UI 统一的流程显示名计算：优先取 document 的 display_name，其次 flow_id，
+ * 最后 fallback 为 "—"，保证永远有值可渲染。
+ */
+export function flowDisplayName(
+  doc: Pick<FlowDocument, "display_name"> | null | undefined,
+  flowId?: string | null,
+): string {
+  const name = (doc?.display_name ?? "").trim();
+  if (name) return name;
+  const id = (flowId ?? "").trim();
+  if (id) return id;
+  return "—";
 }
 
 export type Selection =

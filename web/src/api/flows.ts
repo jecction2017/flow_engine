@@ -4,7 +4,8 @@ import type { FlowDocument } from "@/types/flow";
 
 export type FlowListItem = {
   id: string;
-  name: string;
+  /** 展示名；为空字符串时前端应 fallback 到 id。 */
+  display_name: string;
   path: string;
   updated_at: number | null;
 };
@@ -40,11 +41,11 @@ export async function saveFlow(flowId: string, body: FlowDocument): Promise<void
   }
 }
 
-export async function createFlow(id: string, name?: string): Promise<void> {
+export async function createFlow(id: string, displayName?: string): Promise<void> {
   const r = await fetch("/api/flows", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ id, name: name ?? id }),
+    body: JSON.stringify({ id, display_name: displayName ?? null }),
   });
   if (!r.ok) {
     const t = await r.text();

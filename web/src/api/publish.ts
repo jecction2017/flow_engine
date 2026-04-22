@@ -33,7 +33,8 @@ export type FlowVersionMeta = {
   version: number;
   created_at: number;
   description: string | null;
-  flow_name: string;
+  /** 提交该版本时的展示名快照；历史字段名 `flow_name` 已被后端迁移。 */
+  display_name: string;
 };
 
 export type VersionListResponse = {

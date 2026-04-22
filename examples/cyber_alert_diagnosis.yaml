@@ -1,6 +1,6 @@
 # Simulated cybersecurity alert triage & diagnosis:
 # ingest/normalize -> parallel per-IOC enrichment with barriers -> intel fusion -> decision -> closure.
-name: cyber_alert_diagnosis
+display_name: cyber_alert_diagnosis
 version: "1.0.0"
 
 initial_context:

@@ -44,9 +44,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def _sample_flow_payload(name: str = "demo") -> dict[str, Any]:
+def _sample_flow_payload(display_name: str = "demo") -> dict[str, Any]:
     return {
-        "name": name,
+        "display_name": display_name,
         "version": "1.0.0",
         "strategies": {"default_sync": {"name": "default_sync", "mode": "sync"}},
         "nodes": [],
@@ -54,7 +54,7 @@ def _sample_flow_payload(name: str = "demo") -> dict[str, Any]:
 
 
 def _create_flow(client: TestClient, flow_id: str = "demo") -> None:
-    r = client.post("/api/flows", json={"id": flow_id, "name": flow_id})
+    r = client.post("/api/flows", json={"id": flow_id, "display_name": flow_id})
     assert r.status_code == 200, r.text
 
 
@@ -124,7 +124,7 @@ def test_draft_put_and_get(client: TestClient) -> None:
     _create_flow(client, "foo")
     r = client.get("/api/flows/foo/draft")
     assert r.status_code == 200  # auto-created draft from minimal create
-    assert r.json()["name"] == "foo"
+    assert r.json()["display_name"] == "foo"
 
 
 def test_draft_put_validates_schema(client: TestClient) -> None:
@@ -154,7 +154,7 @@ def test_commit_with_inline_data(client: TestClient) -> None:
     assert r.json()["version"] == 1
     r = client.get("/api/flows/foo/versions/1")
     assert r.status_code == 200
-    assert r.json()["name"] == "inline"
+    assert r.json()["display_name"] == "inline"
 
 
 def test_commit_without_draft_or_data_fails(client: TestClient) -> None:
@@ -179,7 +179,7 @@ def test_get_flow_returns_draft_or_latest(client: TestClient) -> None:
     _create_flow(client, "foo")
     # Draft exists – GET /api/flows/foo returns it
     r = client.get("/api/flows/foo")
-    assert r.status_code == 200 and r.json()["name"] == "foo"
+    assert r.status_code == 200 and r.json()["display_name"] == "foo"
     # After deleting the draft and committing, returns the latest committed version
     import flow_engine.api.http_api as api_mod
 
@@ -304,7 +304,7 @@ def test_resolve_latest(client: TestClient) -> None:
     r = client.get("/api/flows/foo/resolve?channel=latest")
     body = r.json()
     assert body["version"] == 2
-    assert body["definition"]["name"] == "v2"
+    assert body["definition"]["display_name"] == "v2"
 
 
 def test_resolve_specific_version(client: TestClient) -> None:
@@ -432,7 +432,7 @@ def test_validate_returns_name_and_version(client: TestClient) -> None:
     _create_flow(client, "foo")
     r = client.post("/api/flows/foo/validate")
     assert r.status_code == 200
-    assert r.json()["name"] == "foo"
+    assert r.json()["display_name"] == "foo"
 
 
 async def test_run_empty_flow_completes(client: TestClient) -> None:
@@ -475,7 +475,7 @@ def test_full_lifecycle_e2e(client: TestClient) -> None:
 
     # Resolve production returns v1
     r = client.get("/api/flows/lifecycle/resolve?channel=production")
-    assert r.json()["version"] == 1 and r.json()["definition"]["name"] == "v1"
+    assert r.json()["version"] == 1 and r.json()["definition"]["display_name"] == "v1"
 
     # Deregister the only instance → channel auto-resets
     client.delete("/api/flows/lifecycle/instances/inst-lc-1")

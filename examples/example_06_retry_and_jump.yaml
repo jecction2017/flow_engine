@@ -4,7 +4,7 @@
 #   * on_error.action=ignore：吞掉异常并继续
 #   * 循环内 flow_break()：提前终止迭代
 #   * 跳转后被越过的节点 state 不应落入 SUCCESS
-name: example_06_retry_and_jump
+display_name: example_06_retry_and_jump
 version: "1.0.0"
 
 initial_context:

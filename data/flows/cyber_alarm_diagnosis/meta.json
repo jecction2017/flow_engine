@@ -7,7 +7,7 @@
       "version": 1,
       "created_at": 1776667864.117729,
       "description": "Migrated from legacy flat file",
-      "flow_name": "cyber_alarm_diagnosis"
+      "display_name": "cyber_alarm_diagnosis"
     }
   ]
 }

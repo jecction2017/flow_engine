@@ -16,8 +16,13 @@
           <!-- Flow selector -->
           <select v-model="selectedId" class="sel" @change="onSelectFlow">
             <option value="" disabled>选择流程…</option>
-            <option v-for="f in store.flowList" :key="(f as any).id" :value="(f as any).id">
-              {{ (f as any).name }} ({{ (f as any).id }})
+            <option
+              v-for="f in store.flowList"
+              :key="(f as any).id"
+              :value="(f as any).id"
+              :title="(f as any).id"
+            >
+              {{ flowOptionLabel(f) }}
             </option>
           </select>
 
@@ -272,11 +277,20 @@ async function newFlow() {
   }
 }
 
+function flowOptionLabel(f: unknown): string {
+  const item = f as { id: string; display_name?: string };
+  const dn = (item.display_name ?? "").trim();
+  // 当显示名与 id 相同（或缺失）时只显示一个值；否则 "显示名 (id)"。
+  if (!dn || dn === item.id) return item.id;
+  return `${dn} (${item.id})`;
+}
+
 function download() {
   const blob = new Blob([store.exportJson()], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `${store.doc.name || "flow"}.json`;
+  const base = (store.doc.display_name ?? "").trim() || store.activeFlowId || "flow";
+  a.download = `${base}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
 }

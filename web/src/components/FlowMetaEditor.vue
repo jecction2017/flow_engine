@@ -3,14 +3,14 @@
     <header class="hd">
       <div>
         <div class="t">流程属性</div>
-        <div class="s">名称、版本与初始全局上下文</div>
+        <div class="s">显示名、版本与初始全局上下文（业务逻辑以 flow_id 为唯一主键，显示名仅作展示）</div>
       </div>
     </header>
 
     <div class="grid">
       <label class="field">
-        <span>名称</span>
-        <input v-model="name" class="inp" />
+        <span>显示名（留空则使用 id）</span>
+        <input v-model="displayName" class="inp" :placeholder="store.activeFlowId ?? ''" />
       </label>
       <label class="field">
         <span>版本</span>
@@ -126,9 +126,9 @@ import { useFlowStudioStore } from "@/stores/flowStudio";
 
 const store = useFlowStudioStore();
 
-const name = computed({
-  get: () => store.doc.name,
-  set: (v: string) => store.setFlowMeta({ name: v }),
+const displayName = computed({
+  get: () => store.doc.display_name ?? "",
+  set: (v: string) => store.setFlowMeta({ display_name: v }),
 });
 
 const version = computed({

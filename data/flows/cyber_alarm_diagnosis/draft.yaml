@@ -1,4 +1,4 @@
-name: 告警诊断流程
+display_name: 告警诊断流程
 version: 1.0.0
 strategies:
   default_sync:

@@ -4,7 +4,7 @@
 #   * loop.hooks.pre_exec / post_exec / on_iteration_start / on_iteration_end
 # Hooks 脚本只有 resolve() 读路径能力（无写路径），这里仅通过 resolve 做校验 & 无副作用表达式，
 # 真正的状态由普通 task 节点驱动。
-name: example_07_hooks_lifecycle
+display_name: example_07_hooks_lifecycle
 version: "1.0.0"
 
 initial_context:

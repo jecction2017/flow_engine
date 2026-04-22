@@ -1,4 +1,4 @@
-name: cyber_alarm_diagnosis
+display_name: cyber_alarm_diagnosis
 version: 1.0.0
 initial_context:
   kafka_alarms:

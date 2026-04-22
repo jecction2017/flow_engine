@@ -3,7 +3,7 @@
 #   * wait_before=true 作为屏障，等待前序未决任务结束
 #   * 并发地向 $.global.bucket.* 写入不同路径（ContextStack 内部有锁）
 #   * 聚合节点读取所有分片结果
-name: example_02_parallel_fanout
+display_name: example_02_parallel_fanout
 version: "1.0.0"
 
 initial_context:

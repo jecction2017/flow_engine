@@ -2,7 +2,7 @@
 #   * condition: 表达式控制节点跳过 / 执行
 #   * 节点状态 SKIPPED vs SUCCESS
 #   * 分支两路最终汇总到同一上下文路径
-name: example_03_conditional_branch
+display_name: example_03_conditional_branch
 version: "1.0.0"
 
 initial_context:

@@ -2,7 +2,7 @@
 #   * subflow 推入一层 ContextFrame（有 alias），子任务写 $.global 与 $.<alias>
 #   * 子流程内执行完成后 frame 必须 pop（无 leak）
 #   * 父流程仅看到 $.global 侧的副作用
-name: example_05_subflow_namespace
+display_name: example_05_subflow_namespace
 version: "1.0.0"
 
 initial_context:

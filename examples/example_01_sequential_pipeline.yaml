@@ -4,7 +4,7 @@
 #   * boundary.outputs（starlark key -> 上下文路径）
 #   * resolve($.global....) 读路径
 #   * 多节点间通过 global 命名空间串联数据流
-name: example_01_sequential_pipeline
+display_name: example_01_sequential_pipeline
 version: "1.0.0"
 
 initial_context:

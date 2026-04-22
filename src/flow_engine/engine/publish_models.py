@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PublishStatus(str, Enum):
@@ -45,7 +45,25 @@ class FlowVersionMeta(BaseModel):
     version: int
     created_at: float
     description: str | None = None
-    flow_name: str = ""
+    # 提交版本时的展示名快照。历史 meta.json 里叫 ``flow_name``，
+    # 下方 validator 会兼容迁移。
+    display_name: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_flow_name(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "display_name" not in data and "flow_name" in data:
+                new_data = dict(data)
+                legacy = new_data.pop("flow_name", None)
+                if isinstance(legacy, str):
+                    new_data["display_name"] = legacy
+                return new_data
+            if "display_name" in data and "flow_name" in data:
+                new_data = dict(data)
+                new_data.pop("flow_name", None)
+                return new_data
+        return data
 
 
 class FlowMeta(BaseModel):
