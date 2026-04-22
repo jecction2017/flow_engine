@@ -318,7 +318,8 @@ function onImport(ev: Event) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 640px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .top {
@@ -501,7 +502,9 @@ function onImport(ev: Event) {
   min-height: 0;
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
+  overflow: hidden;
 }
 
 .left {
@@ -509,6 +512,7 @@ function onImport(ev: Event) {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   min-width: 280px;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -520,12 +524,22 @@ function onImport(ev: Event) {
 
 .right {
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: linear-gradient(180deg, #fbfcff 0%, #f6f8fc 100%);
+}
+
+.right > * {
+  flex: 1;
+  min-height: 0;
 }
 
 @media (max-width: 960px) {
   .body {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .left {
     border-right: none;

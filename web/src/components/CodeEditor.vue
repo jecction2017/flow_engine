@@ -1,5 +1,10 @@
 <template>
-  <div class="wrap" :data-readonly="readOnly ? 'true' : 'false'" :style="{ height: heightPx }">
+  <div
+    class="wrap"
+    :class="{ 'is-fill': fill }"
+    :data-readonly="readOnly ? 'true' : 'false'"
+    :style="fill ? undefined : { height: heightPx }"
+  >
     <CodeMirror
       class="cm-fill"
       :model-value="modelValue"
@@ -27,12 +32,14 @@ const props = withDefaults(
   defineProps<{
     modelValue: string;
     height?: number;
+    /** When true, editor stretches to fill its flex parent instead of using `height`. */
+    fill?: boolean;
     readOnly?: boolean;
     language?: "python" | "yaml" | "json";
     /** When set (python only), adds demo_add / dict_get / internal exports to completions. */
     registry?: RegistryDoc | null;
   }>(),
-  { height: 280, readOnly: false, language: "python", registry: null },
+  { height: 280, fill: false, readOnly: false, language: "python", registry: null },
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", v: string): void }>();
@@ -102,6 +109,12 @@ const extensions = computed(() => {
   flex-direction: column;
   min-height: 0;
   box-sizing: border-box;
+}
+
+.wrap.is-fill {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
 }
 
 .wrap[data-readonly="true"] {

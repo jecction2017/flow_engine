@@ -1,121 +1,170 @@
 <template>
   <div class="page">
     <header class="hd">
-      <div>
-        <div class="t">流程属性</div>
-        <div class="s">显示名、版本与初始全局上下文（业务逻辑以 flow_id 为唯一主键，显示名仅作展示）</div>
+      <div class="hd-main">
+        <span class="hd-title">流程属性</span>
+        <InfoTip
+          wide
+          text="业务逻辑以 flow_id 为唯一主键，显示名仅用于界面展示。initial_context 作为流程运行前的全局上下文。"
+        />
       </div>
     </header>
 
-    <div class="grid">
-      <label class="field">
-        <span>显示名（留空则使用 id）</span>
-        <input v-model="displayName" class="inp" :placeholder="store.activeFlowId ?? ''" />
-      </label>
-      <label class="field">
-        <span>版本</span>
-        <input v-model="version" class="inp" />
-      </label>
-    </div>
+    <section class="card">
+      <div class="grid">
+        <label class="field">
+          <span class="lbl-row">
+            显示名
+            <InfoTip text="留空时在界面上回落使用 flow_id。" />
+          </span>
+          <input v-model="displayName" class="inp" :placeholder="store.activeFlowId ?? ''" />
+        </label>
 
-    <label class="field">
-      <span>initial_context（JSON）</span>
-      <textarea v-model="ctx" class="area mono" rows="10" spellcheck="false" />
-    </label>
-    <div class="strategies-section">
-      <div class="hd" style="margin-top: 24px;">
-        <div>
-          <div class="t">运行策略</div>
-          <div class="s">管理流程节点的执行策略（如 sync、async、process、thread 及并发参数）</div>
+        <label class="field">
+          <span class="lbl-row">
+            版本<span class="req">*</span>
+          </span>
+          <input v-model="version" class="inp" placeholder="例如：1.0" />
+        </label>
+
+        <label class="field full">
+          <span class="lbl-row">
+            initial_context (JSON)
+            <InfoTip wide text="流程启动前注入的全局上下文。顶层字段会被写入 $.global，可在节点 Starlark 中直接读写。" />
+          </span>
+          <textarea v-model="ctx" class="area mono" rows="6" spellcheck="false" />
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-hd">
+        <div class="card-hd-main">
+          <span class="card-title">运行策略</span>
+          <InfoTip
+            wide
+            text="定义节点的执行模式（同步 / 异步 / 线程 / 进程）、并发、超时与重试。相邻节点引用非 sync 策略且未设置 wait_before 时，拓扑会出现隐式并行提示。"
+          />
         </div>
+        <button type="button" class="btn primary sm" @click="startAddStrategy">＋ 新增策略</button>
       </div>
 
       <div class="strategies-grid">
-        <div 
-          v-for="k in store.strategiesList" 
+        <div
+          v-for="k in store.strategiesList"
           :key="k"
           class="strategy-card"
-          :class="{ active: store.selection.kind === 'strategy' && store.selection.key === k }"
+          :class="{ active: selectedStrategyKey === k && !isCreatingStrategy }"
           @click="store.select({ kind: 'strategy', key: k })"
         >
           <div class="strategy-header">
             <span class="mono strategy-key">{{ k }}</span>
-            <span class="mode-badge">{{ store.modeOf(k) }}</span>
+            <span class="mode-badge" :data-mode="store.modeOf(k)">{{ store.modeOf(k) }}</span>
           </div>
-          <div class="strategy-meta" v-if="store.doc.strategies[k]">
-            <span class="meta-item" v-if="store.doc.strategies[k].name && store.doc.strategies[k].name !== k">{{ store.doc.strategies[k].name }}</span>
-            <span class="meta-item" v-if="store.doc.strategies[k].concurrency">并发: {{ store.doc.strategies[k].concurrency }}</span>
-            <span class="meta-item" v-if="store.doc.strategies[k].timeout">超时: {{ store.doc.strategies[k].timeout }}s</span>
-            <span class="meta-item" v-if="store.doc.strategies[k].retry_count">重试: {{ store.doc.strategies[k].retry_count }}</span>
-          </div>
-        </div>
-        
-        <!-- Add Strategy Button Card -->
-        <div class="strategy-card add-card" :class="{ active: isCreatingStrategy }" @click="startAddStrategy">
-          <div class="add-content">
-            <span class="add-icon">＋</span>
-            <span>新增策略</span>
+          <div v-if="store.doc.strategies[k]" class="strategy-meta">
+            <span v-if="store.doc.strategies[k].name && store.doc.strategies[k].name !== k" class="meta-item">
+              {{ store.doc.strategies[k].name }}
+            </span>
+            <span v-if="store.doc.strategies[k].concurrency" class="meta-item">并发 {{ store.doc.strategies[k].concurrency }}</span>
+            <span v-if="store.doc.strategies[k].timeout" class="meta-item">超时 {{ store.doc.strategies[k].timeout }}s</span>
+            <span v-if="store.doc.strategies[k].retry_count" class="meta-item">重试 {{ store.doc.strategies[k].retry_count }}</span>
           </div>
         </div>
       </div>
-      
-      <div v-if="isCreatingStrategy || (store.selection.kind === 'strategy' && store.selection.key && store.doc.strategies[store.selection.key])" 
-           class="strategy-editor-inline"
-           :class="{ 'creating': isCreatingStrategy }">
-        <div class="hd" style="margin-top: 0; align-items: center;">
-          <div>
-            <div class="t" style="font-size: 14px;" v-if="isCreatingStrategy">新增策略</div>
-            <div class="t" style="font-size: 14px;" v-else>编辑策略：<span class="mono">{{ store.selection.key }}</span></div>
-          </div>
-          <div style="display: flex; gap: 8px;">
+
+      <div
+        v-if="isCreatingStrategy || (selectedStrategyKey && store.doc.strategies[selectedStrategyKey])"
+        class="strategy-editor-inline"
+      >
+        <div class="inline-hd">
+          <span class="inline-title">
+            <template v-if="isCreatingStrategy">新增策略</template>
+            <template v-else>编辑：<span class="mono">{{ selectedStrategyKey }}</span></template>
+          </span>
+          <div class="inline-actions">
             <template v-if="isCreatingStrategy">
-              <button type="button" class="btn ghost" @click="cancelCreateStrategy">取消</button>
-              <button type="button" class="btn primary" @click="createStrategy">创建并保存</button>
+              <button type="button" class="btn ghost sm" @click="cancelCreateStrategy">取消</button>
+              <button type="button" class="btn primary sm" @click="createStrategy">创建</button>
             </template>
             <template v-else>
-              <button v-if="store.selection.key !== 'default_sync'" type="button" class="danger btn" @click="removeStrategy(store.selection.key)">删除策略</button>
+              <button
+                v-if="selectedStrategyKey && selectedStrategyKey !== 'default_sync'"
+                type="button"
+                class="btn danger sm"
+                @click="removeStrategy(selectedStrategyKey)"
+              >删除</button>
             </template>
           </div>
         </div>
 
         <div class="grid">
-          <label class="field" v-if="isCreatingStrategy">
-            <span>策略 Key (唯一英文标识)</span>
-            <input v-model="newStrategyKey" class="inp" placeholder="如: my_strategy" />
+          <label v-if="isCreatingStrategy" class="field">
+            <span class="lbl-row">
+              策略 Key<span class="req">*</span>
+              <InfoTip text="唯一英文标识，一经创建不可修改。" />
+            </span>
+            <input v-model="newStrategyKey" class="inp mono" placeholder="my_strategy" />
           </label>
           <label class="field">
-            <span>显示名称</span>
+            <span class="lbl-row">显示名称</span>
             <input v-model="editSt.name" class="inp" @change="!isCreatingStrategy && saveStrategy()" />
           </label>
           <label class="field">
-            <span>模式</span>
+            <span class="lbl-row">
+              模式<span class="req">*</span>
+              <InfoTip
+                wide
+                text="sync：同步阻塞；async：协程派发；thread：线程池；process：进程池。"
+              />
+            </span>
             <select v-model="editSt.mode" class="inp" @change="!isCreatingStrategy && saveStrategy()">
-              <option value="sync">sync（同步阻塞）</option>
-              <option value="async">async（协程派发）</option>
-              <option value="thread">thread（线程池）</option>
-              <option value="process">process（进程池）</option>
+              <option value="sync">sync</option>
+              <option value="async">async</option>
+              <option value="thread">thread</option>
+              <option value="process">process</option>
             </select>
           </label>
           <label class="field">
-            <span>并发 / 池大小</span>
-            <input v-model.number="editSt.concurrency" class="inp" type="number" min="1" @change="!isCreatingStrategy && saveStrategy()" />
+            <span class="lbl-row">
+              并发 / 池大小<span class="req">*</span>
+            </span>
+            <input
+              v-model.number="editSt.concurrency"
+              class="inp"
+              type="number"
+              min="1"
+              @change="!isCreatingStrategy && saveStrategy()"
+            />
           </label>
           <label class="field">
-            <span>超时（秒，可选）</span>
-            <input :value="editTimeout" @input="updateTimeout($event)" class="inp" type="number" min="0" step="1" @change="!isCreatingStrategy && saveStrategy()" />
+            <span class="lbl-row">
+              超时 (秒)
+              <InfoTip text="可选。为空表示不限制。" />
+            </span>
+            <input
+              :value="editTimeout"
+              class="inp"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="不限"
+              @input="updateTimeout($event)"
+              @change="!isCreatingStrategy && saveStrategy()"
+            />
           </label>
           <label class="field">
-            <span>重试次数</span>
-            <input v-model.number="editSt.retry_count" class="inp" type="number" min="0" @change="!isCreatingStrategy && saveStrategy()" />
+            <span class="lbl-row">重试次数</span>
+            <input
+              v-model.number="editSt.retry_count"
+              class="inp"
+              type="number"
+              min="0"
+              @change="!isCreatingStrategy && saveStrategy()"
+            />
           </label>
-        </div>
-
-        <div class="note">
-          相邻节点若引用非 <span class="mono">sync</span> 策略，且右侧节点未设置
-          <span class="mono">wait_before</span>，左侧拓扑会出现「隐式并行」提示带。
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -123,8 +172,13 @@
 import { computed, reactive, watch, ref } from "vue";
 import type { ExecutionStrategy } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import InfoTip from "./InfoTip.vue";
 
 const store = useFlowStudioStore();
+
+const selectedStrategyKey = computed<string | null>(() =>
+  store.selection.kind === "strategy" ? store.selection.key : null,
+);
 
 const displayName = computed({
   get: () => store.doc.display_name ?? "",
@@ -162,8 +216,8 @@ const editSt = reactive<ExecutionStrategy>({
 function startAddStrategy() {
   isCreatingStrategy.value = true;
   newStrategyKey.value = `strategy_${Date.now()}`;
-  store.select({ kind: "flow" }); // unselect current strategy if any
-  
+  store.select({ kind: "flow" });
+
   editSt.name = newStrategyKey.value;
   editSt.mode = "async";
   editSt.concurrency = 4;
@@ -181,7 +235,7 @@ function createStrategy() {
     alert("该策略 Key 已存在");
     return;
   }
-  
+
   store.upsertStrategy(k, { ...editSt });
   isCreatingStrategy.value = false;
   store.select({ kind: "strategy", key: k });
@@ -202,12 +256,12 @@ watch(
   () => store.selection,
   (sel) => {
     if (sel.kind === "strategy" && sel.key) {
-      isCreatingStrategy.value = false; // exit create mode if selected from list
+      isCreatingStrategy.value = false;
       const cur = store.doc.strategies[sel.key];
       if (cur) Object.assign(editSt, cur);
     }
   },
-  { immediate: true, deep: true }
+  { immediate: true, deep: true },
 );
 
 function saveStrategy() {
@@ -226,230 +280,298 @@ function removeStrategy(key: string) {
 
 <style scoped>
 .page {
-  padding: 16px;
-  max-width: 980px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 1000px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.page::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.page::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.page::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.page::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .hd {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 12px;
+  padding: 2px 2px 0;
 }
 
-.t {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+.hd-main {
+  display: inline-flex;
+  align-items: center;
 }
 
-.s {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--muted);
+.hd-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+
+.card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.card-hd-main {
+  display: inline-flex;
+  align-items: center;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
 }
 
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 10px 12px;
 }
 
 .field {
   display: grid;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 4px;
   font-size: 12px;
   color: var(--muted);
 }
 
+.field.full {
+  grid-column: 1 / -1;
+}
+
+.lbl-row {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+  color: #475569;
+}
+
 .inp {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 10px;
+  border-radius: 8px;
+  padding: 7px 10px;
   outline: none;
-  font-size: 13px;
+  font-size: 12.5px;
+  background: #fff;
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.inp:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .area {
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px;
+  border-radius: 8px;
+  padding: 8px 10px;
   outline: none;
   resize: vertical;
   background: #fbfdff;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.inp:focus,
 .area:focus {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-@media (max-width: 720px) {
-  .grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.strategies-section {
-  margin-top: 32px;
-  border-top: 1px dashed var(--border);
-  padding-top: 8px;
-}
-
+/* Strategies grid */
 .strategies-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  margin-top: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
 }
 
 .strategy-card {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 12px 14px;
-  background: var(--surface);
+  padding: 9px 11px;
+  background: #fff;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  gap: 6px;
 }
 
 .strategy-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 30%, #fff);
 }
 
-.strategy-card.add-card {
-  border: 1px dashed var(--border);
-  background: color-mix(in srgb, var(--surface) 50%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  box-shadow: none;
-}
-
-.strategy-card.add-card:hover {
+.strategy-card.active {
   border-color: var(--accent);
-  color: var(--accent);
-  background: var(--surface);
-  border-style: solid;
-}
-
-.strategy-card.add-card.active {
-  border-color: var(--accent);
-  color: var(--accent);
   background: var(--accent-soft);
-  border-style: solid;
-}
-
-.add-content {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.add-icon {
-  font-size: 16px;
-}
-
-.strategy-editor-inline {
-  margin-top: 12px; /* reduced to bring it closer to the cards */
-  padding: 20px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--accent-soft) 20%, var(--surface));
-  position: relative;
-}
-
-/* Arrow pointing up to the selected card */
-.strategy-editor-inline::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 30px; /* Default position */
-  width: 10px;
-  height: 10px;
-  background: color-mix(in srgb, var(--accent-soft) 20%, var(--surface));
-  border-top: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-left: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  transform: rotate(45deg);
-  display: none; /* Hide the old arrow, we use the downward caret from the active card instead */
-}
-
-.strategy-editor-inline.creating::before {
-  display: none; /* Hide the arrow when creating a new strategy as it's harder to position correctly under the add card */
-}
-
-.strategy-editor-inline .hd {
-  margin-top: 0 !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .strategy-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 6px;
 }
 
 .strategy-key {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mode-badge {
   font-size: 10px;
   font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.mode-badge[data-mode="sync"] {
+  background: #e0f2fe;
+  color: #075985;
+}
+.mode-badge[data-mode="async"] {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+.mode-badge[data-mode="thread"] {
+  background: #dcfce7;
+  color: #166534;
+}
+.mode-badge[data-mode="process"] {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .strategy-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 11px;
+  gap: 4px;
+  font-size: 10.5px;
   color: var(--muted);
 }
 
 .meta-item {
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--border) 40%, transparent);
 }
 
+/* Inline strategy editor */
+.strategy-editor-inline {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 25%, #fff);
+}
+
+.inline-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.inline-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.inline-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* Buttons */
 .btn {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 6px 12px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  transition: all 0.15s ease;
   white-space: nowrap;
 }
 
-.btn.outline {
-  border-color: var(--border);
-  color: var(--text);
+.btn.sm {
+  padding: 5px 10px;
+  font-size: 11.5px;
 }
 
-.btn.outline:hover {
+.btn.ghost:hover {
+  border-color: var(--border-strong);
+  background: #f8fafc;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
   border-color: var(--accent);
-  color: var(--accent);
+}
+
+.btn.primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.btn.danger {
+  border-color: color-mix(in srgb, #ef4444 45%, transparent);
+  color: #b91c1c;
+  background: #fff;
+}
+
+.btn.danger:hover {
+  background: #fef2f2;
+}
+
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

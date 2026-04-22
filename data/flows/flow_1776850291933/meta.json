@@ -1,0 +1,19 @@
+{
+  "flow_id": "flow_1776850291933",
+  "latest_version": 2,
+  "has_draft": true,
+  "versions": [
+    {
+      "version": 1,
+      "created_at": 1776850313.7446501,
+      "description": null,
+      "display_name": "flow_1776850291933"
+    },
+    {
+      "version": 2,
+      "created_at": 1776850413.750003,
+      "description": null,
+      "display_name": "flow_1776850291933"
+    }
+  ]
+}

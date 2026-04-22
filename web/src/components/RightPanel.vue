@@ -21,7 +21,14 @@ const store = useFlowStudioStore();
 .wrap {
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.wrap > * {
+  flex: 1;
+  min-height: 0;
 }
 
 .empty {

@@ -1,24 +1,22 @@
 <template>
   <section class="card">
     <div class="head">
-      <div>
-        <div class="h">节点调试</div>
-        <div class="d">
-          每个节点拥有独立、可完全自定义的调试上下文；顶层 key 会直接绑定为 Starlark 全局变量
-          （不走边界映射）。上下文仅存在于前端，不写回流程定义。
-        </div>
+      <div class="head-title">
+        <span class="h">节点调试</span>
+        <InfoTip
+          wide
+          text="每个节点拥有独立的调试上下文。顶层 key 会直接绑定为 Starlark 全局变量（不走边界映射），仅前端保存，不写回流程定义。"
+        />
       </div>
       <button type="button" class="btn" :disabled="pending" @click="run">
-        {{ pending ? "请求中…" : "发送调试" }}
+        {{ pending ? "请求中…" : "▶ 调试" }}
       </button>
     </div>
 
     <div class="lbl row">
-      <span>调试上下文（JSON）</span>
+      <span class="lbl-row">调试上下文 (JSON)</span>
       <span class="actions">
-        <button type="button" class="mini" @click="resetFromInitialContext">
-          重置为 initial_context
-        </button>
+        <button type="button" class="mini" @click="resetFromInitialContext">重置</button>
         <button type="button" class="mini" @click="clearCtx">清空</button>
       </span>
     </div>
@@ -26,23 +24,26 @@
       v-model="ctxText"
       class="area mono"
       :class="{ invalid: !ctxValid }"
-      rows="8"
+      rows="4"
       spellcheck="false"
       placeholder="{}"
     />
     <div class="ctx-hint" :class="{ err: !ctxValid }">
-      {{ ctxValid ? ctxHint : "JSON 无法解析，调试时会被视为空对象。" }}
+      {{ ctxValid ? ctxHint : "JSON 无法解析，调试时会被视为空对象" }}
     </div>
 
     <div class="lbl row">
-      <span>响应</span>
+      <span class="lbl-row">响应</span>
       <span class="hint">{{ hint }}</span>
     </div>
     <pre class="out mono">{{ responseText }}</pre>
 
     <div v-if="logs.length" class="lbl row">
-      <span>运行日志</span>
-      <span class="hint">{{ logs.length }} 条 · 脚本中调用 log / log_info / log_warn / log_error 产生</span>
+      <span class="lbl-row">
+        运行日志
+        <InfoTip text="脚本中调用 log / log_info / log_warn / log_error 产生。" />
+      </span>
+      <span class="hint">{{ logs.length }} 条</span>
     </div>
     <ul v-if="logs.length" class="logs mono">
       <li v-for="(entry, i) in logs" :key="i" class="log-row" :class="`lvl-${entry.level}`">
@@ -61,6 +62,7 @@ import { computed, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
 import type { TaskNode } from "@/types/flow";
+import InfoTip from "./InfoTip.vue";
 
 const props = defineProps<{
   path: number[];
@@ -195,45 +197,51 @@ async function run() {
 <style scoped>
 .card {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--surface);
-  padding: 12px;
+  padding: 10px 14px 12px;
   box-shadow: var(--shadow);
 }
 
 .head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+}
+
+.head-title {
+  display: inline-flex;
+  align-items: center;
 }
 
 .h {
   font-weight: 700;
-  font-size: 13px;
-}
-
-.d {
   font-size: 12px;
-  color: var(--muted);
-  margin-top: 2px;
-  line-height: 1.35;
+  color: var(--text);
+  letter-spacing: 0.01em;
 }
 
 .btn {
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px solid var(--accent);
   background: var(--accent);
   color: #fff;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 12px;
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
 }
 
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -241,7 +249,7 @@ async function run() {
   display: block;
   font-size: 11px;
   color: var(--muted);
-  margin: 8px 0 6px;
+  margin: 8px 0 4px;
 }
 
 .lbl.row {
@@ -249,6 +257,12 @@ async function run() {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.lbl .lbl-row {
+  font-weight: 500;
+  color: #475569;
+  font-size: 11.5px;
 }
 
 .hint {
@@ -265,10 +279,11 @@ async function run() {
   border: 1px solid var(--border);
   background: #fff;
   color: var(--muted);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 3px 8px;
   font-size: 11px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .mini:hover {
@@ -293,31 +308,35 @@ async function run() {
 
 .area {
   width: 100%;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  padding: 10px;
+  padding: 8px 10px;
   font-size: 12px;
+  line-height: 1.55;
   resize: vertical;
   outline: none;
   background: #fbfdff;
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .area:focus {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .out {
   margin: 0;
   padding: 10px;
-  border-radius: 10px;
-  border: 1px dashed var(--border);
-  background: #0b1220;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f172a;
   color: #e2e8f0;
-  min-height: 120px;
+  min-height: 72px;
+  max-height: 200px;
   overflow: auto;
   font-size: 11px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .logs {
@@ -325,8 +344,8 @@ async function run() {
   padding: 0;
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  max-height: 240px;
+  border-radius: 8px;
+  max-height: 180px;
   overflow: auto;
   background: #fff;
 }

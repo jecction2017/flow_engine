@@ -1,0 +1,17 @@
+version: 1.0.0
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+    concurrency: 4
+    retry_count: 0
+nodes:
+- type: task
+  id: task_1
+  name: task_1
+  strategy_ref: default_sync
+  wait_before: false
+  script: "{\n  \"ok\": True\n}\n"
+  boundary:
+    inputs: {}
+    outputs: {}
