@@ -494,6 +494,14 @@ function onImport(ev: Event) {
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   min-width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.left > * {
+  flex: 1;
+  min-height: 0;
 }
 
 .right {

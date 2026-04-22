@@ -150,6 +150,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     Object.keys(doc.value.strategies).sort(),
   );
 
+  const searchQuery = ref("");
+
   function touch() {
     doc.value = clone(doc.value);
   }
@@ -425,6 +427,77 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     select({ kind: "flow" });
   }
 
+  function copyNode(path: number[]) {
+    clearAllNodeDrafts();
+    const r = getListRef(path);
+    if (!r) return;
+    
+    // Create deep copy of the node
+    const nodeCopy = clone(r.list[r.index]);
+    
+    // Allocate new IDs for the copied node and all its children
+    const assignNewIds = (n: FlowNode) => {
+      const newId = allocateNodeId(n.type);
+      if (n.id !== undefined) {
+        n.id = newId;
+      }
+      
+      // Update name to indicate it's a copy
+      if (n.name) {
+        n.name = `${n.name}_copy`;
+      }
+      
+      if (n.type === "loop" || n.type === "subflow") {
+        for (const c of n.children) {
+          assignNewIds(c);
+        }
+      }
+    };
+    
+    assignNewIds(nodeCopy);
+    
+    // Insert after the original node
+    r.list.splice(r.index + 1, 0, nodeCopy);
+    touch();
+    
+    // Create new path for selection (same prefix, index + 1)
+    const newPath = [...path];
+    newPath[newPath.length - 1] = r.index + 1;
+    select({ kind: "node", path: newPath });
+  }
+
+  function moveNodeUp(path: number[]) {
+    const r = getListRef(path);
+    if (!r || r.index === 0) return; // Already at top
+    
+    clearAllNodeDrafts();
+    const temp = r.list[r.index];
+    r.list[r.index] = r.list[r.index - 1];
+    r.list[r.index - 1] = temp;
+    touch();
+    
+    // Update selection path
+    const newPath = [...path];
+    newPath[newPath.length - 1] = r.index - 1;
+    select({ kind: "node", path: newPath });
+  }
+
+  function moveNodeDown(path: number[]) {
+    const r = getListRef(path);
+    if (!r || r.index === r.list.length - 1) return; // Already at bottom
+    
+    clearAllNodeDrafts();
+    const temp = r.list[r.index];
+    r.list[r.index] = r.list[r.index + 1];
+    r.list[r.index + 1] = temp;
+    touch();
+    
+    // Update selection path
+    const newPath = [...path];
+    newPath[newPath.length - 1] = r.index + 1;
+    select({ kind: "node", path: newPath });
+  }
+
   function exportJson(): string {
     return JSON.stringify(doc.value, null, 2);
   }
@@ -570,6 +643,9 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     addSibling,
     addChild,
     removeNode,
+    copyNode,
+    moveNodeUp,
+    moveNodeDown,
     exportJson,
     importJson,
     loadDocument,
@@ -577,6 +653,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     serverFlowsDir,
     flowList,
     apiError,
+    searchQuery,
     refreshFlowList,
     loadFlowFromServer,
     saveFlowToServer,

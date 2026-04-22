@@ -1,11 +1,10 @@
 <template>
   <div class="wrap">
-    <FlowMetaEditor v-if="store.selection.kind === 'flow'" />
-    <StrategyEditor v-else-if="store.selection.kind === 'strategy'" />
+    <FlowMetaEditor v-if="store.selection.kind === 'flow' || store.selection.kind === 'strategy'" />
     <NodeEditor v-else-if="store.selection.kind === 'node'" :path="store.selection.path" />
     <div v-else class="empty">
       <div class="t">选择左侧对象开始编辑</div>
-      <div class="d">流程、策略或节点</div>
+      <div class="d">流程或节点</div>
     </div>
   </div>
 </template>
@@ -14,7 +13,6 @@
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import FlowMetaEditor from "./FlowMetaEditor.vue";
 import NodeEditor from "./NodeEditor.vue";
-import StrategyEditor from "./StrategyEditor.vue";
 
 const store = useFlowStudioStore();
 </script>

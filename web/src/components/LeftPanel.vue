@@ -11,30 +11,20 @@
       </button>
     </section>
 
-    <section class="block">
-      <div class="block-title row">
-        <span>运行策略</span>
-        <button type="button" class="mini" @click="addStrategy">＋</button>
-      </div>
-      <div class="list">
-        <button
-          v-for="k in store.strategiesList"
-          :key="k"
-          type="button"
-          class="sel small"
-          :class="{ on: store.selection.kind === 'strategy' && store.selection.key === k }"
-          @click="store.select({ kind: 'strategy', key: k })"
-        >
-          <span class="mono">{{ k }}</span>
-          <span class="mode">{{ store.modeOf(k) }}</span>
-        </button>
-      </div>
-    </section>
-
     <section class="block grow">
       <div class="block-title row">
         <span>节点拓扑</span>
         <span class="hint">左侧竖线连接同一隐式并行组</span>
+      </div>
+
+      <div class="search-bar">
+        <input 
+          type="text" 
+          v-model="store.searchQuery" 
+          placeholder="搜索节点..." 
+          class="search-input"
+        />
+        <button v-if="store.searchQuery" @click="store.searchQuery = ''" class="clear-search" title="清空搜索">×</button>
       </div>
 
       <div class="toolbar">
@@ -55,19 +45,6 @@ import { useFlowStudioStore } from "@/stores/flowStudio";
 import FlowTreeItem from "./FlowTreeItem.vue";
 
 const store = useFlowStudioStore();
-
-function addStrategy() {
-  const name = prompt("策略 key（英文标识）", "strategy_new");
-  if (!name) return;
-  store.upsertStrategy(name, {
-    name,
-    mode: "async",
-    concurrency: 4,
-    timeout: 120,
-    retry_count: 0,
-  });
-  store.select({ kind: "strategy", key: name });
-}
 </script>
 
 <style scoped>
@@ -109,6 +86,19 @@ function addStrategy() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.fold-icon {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.mt-2 {
+  margin-top: 8px;
 }
 
 .mini {
@@ -189,6 +179,44 @@ function addStrategy() {
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
+}
+
+.search-bar {
+  position: relative;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.search-input {
+  width: 100%;
+  padding: 6px 24px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  background: #fff;
+  transition: border-color 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.clear-search {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.clear-search:hover {
+  color: var(--text);
 }
 
 .toolbar {

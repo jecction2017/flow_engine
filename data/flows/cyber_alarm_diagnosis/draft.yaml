@@ -1,5 +1,354 @@
-name: cyber_alarm_diagnosis
+name: 告警诊断流程
 version: 1.0.0
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+    concurrency: 4
+    retry_count: 0
+  alarm_worker_pool:
+    name: alarm_worker_pool
+    mode: process
+    concurrency: 3
+    timeout: 60.0
+    retry_count: 0
+  io_enrich:
+    name: io_enrich
+    mode: async
+    concurrency: 4
+    timeout: 20.0
+    retry_count: 0
+  cpu_compute:
+    name: cpu_compute
+    mode: thread
+    concurrency: 2
+    timeout: 15.0
+    retry_count: 0
+nodes:
+- type: task
+  id: init_flow_node
+  name: init_flow_node
+  strategy_ref: default_sync
+  wait_before: false
+  script: "alarms = resolve(\"$.global.kafka_alarms\")\n{\n  \"meta\": {\n    \"flow\"\
+    : \"cyber_alarm_diagnosis\",\n    \"batch_size\": len(alarms),\n    \"version\"\
+    : \"1.0.0\",\n  }\n}\n"
+  boundary:
+    inputs: {}
+    outputs:
+      meta: $.global.flow_meta
+- type: loop
+  id: alarm_loop
+  name: alarm_loop
+  strategy_ref: alarm_worker_pool
+  wait_before: false
+  iterable: resolve("$.global.kafka_alarms")
+  alias: alarm
+  children:
+  - type: task
+    id: alarm_normalize_node
+    name: alarm_normalize_node
+    strategy_ref: default_sync
+    wait_before: false
+    script: "it = resolve(\"$.item\")\nioc_count = len(it[\"indicators\"])\nsev =\
+      \ it[\"severity\"]\nsev_weight = 4 if sev == \"CRITICAL\" else (3 if sev ==\
+      \ \"HIGH\" else (2 if sev == \"MEDIUM\" else 1))\n{\n  \"alarm\": {\n    \"\
+      id\": it[\"id\"],\n    \"severity\": sev,\n    \"severity_weight\": sev_weight,\n\
+      \    \"title\": it[\"title\"],\n    \"src\": it[\"source_ip\"],\n    \"dst\"\
+      : it[\"dest_ip\"],\n    \"ioc_count\": ioc_count,\n    \"indicators\": it[\"\
+      indicators\"],\n  }\n}\n"
+    boundary:
+      inputs: {}
+      outputs:
+        alarm: $.global.alarm
+  - type: subflow
+    id: evidence_enrich_subflow
+    name: evidence_enrich_subflow
+    strategy_ref: default_sync
+    wait_before: false
+    alias: evidence
+    children:
+    - type: task
+      id: enrich_ip
+      name: enrich_ip
+      strategy_ref: io_enrich
+      wait_before: false
+      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
+        ] == \"ip\"]\n# 模拟 IO：以命中策略代替真实威胁情报查询\nhits = [\n  {\n    \"value\": x[\"\
+        value\"],\n    \"reputation\": \"malicious\" if (x[\"value\"].startswith(\"\
+        198.51.\") or x[\"value\"].startswith(\"203.0.113.\")) else \"clean\",\n \
+        \   \"source\": \"intel_ip\",\n  }\n  for x in ind\n]\n{\"evidence_ip\": {\"\
+        count\": len(ind), \"hits\": hits}}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          evidence_ip: $.global.ev_ip
+    - type: task
+      id: enrich_domain
+      name: enrich_domain
+      strategy_ref: io_enrich
+      wait_before: false
+      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
+        ] == \"domain\"]\nhits = [\n  {\n    \"value\": x[\"value\"],\n    \"reputation\"\
+        : \"suspicious\" if x[\"value\"].endswith(\".invalid\") else \"clean\",\n\
+        \    \"source\": \"intel_domain\",\n  }\n  for x in ind\n]\n{\"evidence_domain\"\
+        : {\"count\": len(ind), \"hits\": hits}}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          evidence_domain: $.global.ev_domain
+    - type: task
+      id: enrich_hash
+      name: enrich_hash
+      strategy_ref: io_enrich
+      wait_before: false
+      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
+        ] == \"hash\"]\n# 简单模拟：以 \"bad\" / \"deadbeef\" 等特征命中黑名单\nhits = [\n  {\n\
+        \    \"value\": x[\"value\"],\n    \"reputation\": \"malicious\" if (\"bad\"\
+        \ in x[\"value\"] or \"deadbeef\" in x[\"value\"]) else \"clean\",\n    \"\
+        source\": \"intel_hash\",\n  }\n  for x in ind\n]\n{\"evidence_hash\": {\"\
+        count\": len(ind), \"hits\": hits}}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          evidence_hash: $.global.ev_hash
+    - type: task
+      id: merge_evidence
+      name: merge_evidence
+      strategy_ref: default_sync
+      wait_before: true
+      script: "ev_ip = resolve(\"$.global.ev_ip\")\nev_dom = resolve(\"$.global.ev_domain\"\
+        )\nev_hash = resolve(\"$.global.ev_hash\")\nmal = (\n  len([h for h in ev_ip[\"\
+        hits\"] if h[\"reputation\"] == \"malicious\"])\n  + len([h for h in ev_hash[\"\
+        hits\"] if h[\"reputation\"] == \"malicious\"])\n)\nsus = len([h for h in\
+        \ ev_dom[\"hits\"] if h[\"reputation\"] == \"suspicious\"])\n{\n  \"evidence\"\
+        : {\n    \"ip\": ev_ip,\n    \"domain\": ev_dom,\n    \"hash\": ev_hash,\n\
+        \    \"malicious_hits\": mal,\n    \"suspicious_hits\": sus,\n  }\n}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          evidence: $.global.evidence
+  - type: subflow
+    id: feature_calculate_subflow
+    name: feature_calculate_subflow
+    strategy_ref: default_sync
+    wait_before: false
+    alias: features
+    children:
+    - type: task
+      id: feat_ioc_stats
+      name: feat_ioc_stats
+      strategy_ref: default_sync
+      wait_before: false
+      script: "a = resolve(\"$.global.alarm\")\nev = resolve(\"$.global.evidence\"\
+        )\n{\n  \"ioc_stats\": {\n    \"ioc_count\": a[\"ioc_count\"],\n    \"malicious_hits\"\
+        : ev[\"malicious_hits\"],\n    \"suspicious_hits\": ev[\"suspicious_hits\"\
+        ],\n  }\n}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          ioc_stats: $.global.feat_ioc_stats
+    - type: task
+      id: feat_behavior
+      name: feat_behavior
+      strategy_ref: default_sync
+      wait_before: false
+      script: "a = resolve(\"$.global.alarm\")\n# 行为特征简单建模：源/目的是否跨网段、标题关键词\nsrc =\
+        \ a[\"src\"]\ndst = a[\"dst\"]\ninternal_src = src.startswith(\"10.\") or\
+        \ src.startswith(\"192.168.\")\ninternal_dst = dst.startswith(\"10.\") or\
+        \ dst.startswith(\"192.168.\")\nlateral = internal_src and internal_dst\n\
+        outbound = internal_src and (not internal_dst)\ntitle_lower = a[\"title\"\
+        ].lower()\nbeaconing = \"beacon\" in title_lower\n{\n  \"behavior\": {\n \
+        \   \"lateral\": lateral,\n    \"outbound\": outbound,\n    \"beaconing\"\
+        : beaconing,\n  }\n}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          behavior: $.global.feat_behavior
+    - type: task
+      id: feat_context
+      name: feat_context
+      strategy_ref: default_sync
+      wait_before: false
+      script: "a = resolve(\"$.global.alarm\")\n# 资产/环境上下文：模拟从资产库查询资产重要性\ndst = a[\"\
+        dst\"]\nasset_criticality = 3 if dst == \"10.0.0.90\" else 1\n{\n  \"context\"\
+        : {\n    \"asset_criticality\": asset_criticality,\n    \"severity_weight\"\
+        : a[\"severity_weight\"],\n  }\n}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          context: $.global.feat_context
+  - type: subflow
+    id: scoring_subflow
+    name: scoring_subflow
+    strategy_ref: default_sync
+    wait_before: false
+    alias: scoring
+    children:
+    - type: task
+      id: score_base
+      name: score_base
+      strategy_ref: cpu_compute
+      wait_before: false
+      script: 'ioc = resolve("$.global.feat_ioc_stats")
+
+        base = 10 * ioc["malicious_hits"] + 4 * ioc["suspicious_hits"] + 1 * ioc["ioc_count"]
+
+        {"base": base}
+
+        '
+      boundary:
+        inputs: {}
+        outputs:
+          base: $.global.score_base_v
+    - type: task
+      id: score_weights
+      name: score_weights
+      strategy_ref: cpu_compute
+      wait_before: false
+      script: "beh = resolve(\"$.global.feat_behavior\")\nctx = resolve(\"$.global.feat_context\"\
+        )\nw = (\n  ctx[\"severity_weight\"] * 3\n  + ctx[\"asset_criticality\"] *\
+        \ 5\n  + (12 if beh[\"lateral\"] else 0)\n  + (8 if beh[\"beaconing\"] else\
+        \ 0)\n  + (4 if beh[\"outbound\"] else 0)\n)\n{\"weights\": w}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          weights: $.global.score_weights_v
+    - type: task
+      id: score_final
+      name: score_final
+      strategy_ref: default_sync
+      wait_before: true
+      script: 'base = resolve("$.global.score_base_v")
+
+        wts = resolve("$.global.score_weights_v")
+
+        raw = base + wts
+
+        # 归一化到 0-100
+
+        score = 100 if raw > 100 else raw
+
+        {"score": {"raw": raw, "normalized": score}}
+
+        '
+      boundary:
+        inputs: {}
+        outputs:
+          score: $.global.score
+  - type: task
+    id: diagnose_node
+    name: diagnose_node
+    strategy_ref: default_sync
+    wait_before: false
+    script: "s = resolve(\"$.global.score.normalized\")\na = resolve(\"$.global.alarm\"\
+      )\nverdict = (\n  \"true_positive_critical\" if s >= 50 else (\n    \"true_positive\"\
+      \ if s >= 30 else (\n      \"needs_review\" if s >= 15 else \"false_positive\"\
+      \n    )\n  )\n)\n{\n  \"diagnosis\": {\n    \"alarm_id\": a[\"id\"],\n    \"\
+      score\": s,\n    \"verdict\": verdict,\n  }\n}\n"
+    boundary:
+      inputs: {}
+      outputs:
+        diagnosis: $.global.diagnosis
+  - type: task
+    id: upgrade_node
+    name: upgrade_node
+    strategy_ref: default_sync
+    wait_before: false
+    condition: resolve("$.global.diagnosis.verdict") == "true_positive_critical"
+    script: "d = resolve(\"$.global.diagnosis\")\n{\n  \"upgrade\": {\n    \"should_upgrade\"\
+      : True,\n    \"target_severity\": \"CRITICAL\",\n    \"playbook\": \"isolate_host_and_block_ioc\"\
+      ,\n    \"owner\": \"soc-oncall\",\n    \"alarm_id\": d[\"alarm_id\"],\n  }\n\
+      }\n"
+    boundary:
+      inputs: {}
+      outputs:
+        upgrade: $.global.upgrade
+  - type: subflow
+    id: talking_subflow
+    name: talking_subflow
+    strategy_ref: default_sync
+    wait_before: false
+    alias: talking
+    children:
+    - type: task
+      id: build_explanation
+      name: build_explanation
+      strategy_ref: default_sync
+      wait_before: false
+      script: "a = resolve(\"$.global.alarm\")\nev = resolve(\"$.global.evidence\"\
+        )\nbeh = resolve(\"$.global.feat_behavior\")\nbase_parts = [\n  \"告警 \" +\
+        \ a[\"id\"] + \" 标题: \" + a[\"title\"] + \"。\",\n  \"严重度 \" + a[\"severity\"\
+        ] + \"；源 \" + a[\"src\"] + \" -> 目的 \" + a[\"dst\"] + \"。\",\n  \"证据: 恶意命中\
+        \ \" + str(ev[\"malicious_hits\"]) + \" 次，可疑命中 \" + str(ev[\"suspicious_hits\"\
+        ]) + \" 次。\",\n]\n# Starlark 标准方言不允许顶层 if，这里用条件表达式 + 过滤空串\nextras = [\n  \"\
+        检测到横向移动特征。\" if beh[\"lateral\"] else \"\",\n  \"检测到 C2 心跳行为。\" if beh[\"\
+        beaconing\"] else \"\",\n  \"存在异常外连。\" if beh[\"outbound\"] else \"\",\n]\n\
+        parts = base_parts + [s for s in extras if s]\n{\"explanation\": \" \".join(parts)}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          explanation: $.global.talking_explanation
+    - type: task
+      id: build_action_hint
+      name: build_action_hint
+      strategy_ref: default_sync
+      wait_before: false
+      script: "v = resolve(\"$.global.diagnosis.verdict\")\nhint = (\n  \"立即隔离主机并封禁\
+        \ IOC，派单 SOC 处置。\" if v == \"true_positive_critical\" else (\n    \"建议阻断 IOC\
+        \ 并加强监控。\" if v == \"true_positive\" else (\n      \"建议人工复核，补充上下文。\" if v\
+        \ == \"needs_review\" else \"可关闭该告警。\"\n    )\n  )\n)\n{\"hint\": hint}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          hint: $.global.talking_hint
+    - type: task
+      id: assemble_talking
+      name: assemble_talking
+      strategy_ref: default_sync
+      wait_before: false
+      script: "d = resolve(\"$.global.diagnosis\")\nexp = resolve(\"$.global.talking_explanation\"\
+        )\nhint = resolve(\"$.global.talking_hint\")\n{\n  \"talking\": {\n    \"\
+        alarm_id\": d[\"alarm_id\"],\n    \"verdict\": d[\"verdict\"],\n    \"score\"\
+        : d[\"score\"],\n    \"explanation\": exp,\n    \"action_hint\": hint,\n \
+        \ }\n}\n"
+      boundary:
+        inputs: {}
+        outputs:
+          talking: $.global.talking
+  - type: task
+    id: finalize_per_alarm
+    name: finalize_per_alarm
+    strategy_ref: default_sync
+    wait_before: false
+    script: "a = resolve(\"$.global.alarm\")\nd = resolve(\"$.global.diagnosis\")\n\
+      s = resolve(\"$.global.score\")\ntk = resolve(\"$.global.talking\")\n{\n  \"\
+      per_alarm_result\": {\n    \"alarm_id\": a[\"id\"],\n    \"verdict\": d[\"verdict\"\
+      ],\n    \"score\": s[\"normalized\"],\n    \"upgraded\": d[\"verdict\"] == \"\
+      true_positive_critical\",\n    \"talking\": tk,\n  }\n}\n"
+    boundary:
+      inputs: {}
+      outputs:
+        per_alarm_result: $.global.per_alarm_result
+  copy_item: deep
+  iteration_isolation: fork
+  iteration_collect:
+    from_path: $.global.per_alarm_result
+    append_to: $.global.diagnoses
+- type: task
+  id: aggregate_report_node
+  name: aggregate_report_node
+  strategy_ref: default_sync
+  wait_before: true
+  script: "ds = resolve(\"$.global.diagnoses\")\nverdicts = [\"true_positive_critical\"\
+    , \"true_positive\", \"needs_review\", \"false_positive\"]\nby_verdict = {v: len([x\
+    \ for x in ds if x[\"verdict\"] == v]) for v in verdicts}\n{\n  \"report\": {\n\
+    \    \"total\": len(ds),\n    \"upgraded\": len([x for x in ds if x[\"upgraded\"\
+    ]]),\n    \"by_verdict\": by_verdict,\n    \"items\": ds,\n  }\n}\n"
+  boundary:
+    inputs: {}
+    outputs:
+      report: $.global.final_report
 initial_context:
   kafka_alarms:
   - id: ALT-0001
@@ -50,307 +399,3 @@ initial_context:
     indicators: []
   diagnoses: []
   final_report: {}
-strategies:
-  default_sync:
-    name: default_sync
-    mode: sync
-  alarm_worker_pool:
-    name: alarm_worker_pool
-    mode: process
-    concurrency: 3
-    timeout: 60
-  io_enrich:
-    name: io_enrich
-    mode: async
-    concurrency: 4
-    timeout: 20
-  cpu_compute:
-    name: cpu_compute
-    mode: thread
-    concurrency: 2
-    timeout: 15
-nodes:
-- name: init_flow_node
-  id: init_flow_node
-  type: task
-  strategy_ref: default_sync
-  script: "alarms = resolve(\"$.global.kafka_alarms\")\n{\n  \"meta\": {\n    \"flow\"\
-    : \"cyber_alarm_diagnosis\",\n    \"batch_size\": len(alarms),\n    \"version\"\
-    : \"1.0.0\",\n  }\n}\n"
-  boundary:
-    outputs:
-      meta: $.global.flow_meta
-- name: alarm_loop
-  id: alarm_loop
-  type: loop
-  alias: alarm
-  strategy_ref: alarm_worker_pool
-  iterable: resolve("$.global.kafka_alarms")
-  iteration_isolation: fork
-  iteration_collect:
-    from_path: $.global.per_alarm_result
-    append_to: $.global.diagnoses
-  copy_item: deep
-  children:
-  - name: alarm_normalize_node
-    id: alarm_normalize_node
-    type: task
-    strategy_ref: default_sync
-    script: "it = resolve(\"$.item\")\nioc_count = len(it[\"indicators\"])\nsev =\
-      \ it[\"severity\"]\nsev_weight = 4 if sev == \"CRITICAL\" else (3 if sev ==\
-      \ \"HIGH\" else (2 if sev == \"MEDIUM\" else 1))\n{\n  \"alarm\": {\n    \"\
-      id\": it[\"id\"],\n    \"severity\": sev,\n    \"severity_weight\": sev_weight,\n\
-      \    \"title\": it[\"title\"],\n    \"src\": it[\"source_ip\"],\n    \"dst\"\
-      : it[\"dest_ip\"],\n    \"ioc_count\": ioc_count,\n    \"indicators\": it[\"\
-      indicators\"],\n  }\n}\n"
-    boundary:
-      outputs:
-        alarm: $.global.alarm
-  - name: evidence_enrich_subflow
-    id: evidence_enrich_subflow
-    type: subflow
-    strategy_ref: default_sync
-    alias: evidence
-    children:
-    - name: enrich_ip
-      id: enrich_ip
-      type: task
-      strategy_ref: io_enrich
-      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
-        ] == \"ip\"]\n# 模拟 IO：以命中策略代替真实威胁情报查询\nhits = [\n  {\n    \"value\": x[\"\
-        value\"],\n    \"reputation\": \"malicious\" if (x[\"value\"].startswith(\"\
-        198.51.\") or x[\"value\"].startswith(\"203.0.113.\")) else \"clean\",\n \
-        \   \"source\": \"intel_ip\",\n  }\n  for x in ind\n]\n{\"evidence_ip\": {\"\
-        count\": len(ind), \"hits\": hits}}\n"
-      boundary:
-        outputs:
-          evidence_ip: $.global.ev_ip
-    - name: enrich_domain
-      id: enrich_domain
-      type: task
-      strategy_ref: io_enrich
-      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
-        ] == \"domain\"]\nhits = [\n  {\n    \"value\": x[\"value\"],\n    \"reputation\"\
-        : \"suspicious\" if x[\"value\"].endswith(\".invalid\") else \"clean\",\n\
-        \    \"source\": \"intel_domain\",\n  }\n  for x in ind\n]\n{\"evidence_domain\"\
-        : {\"count\": len(ind), \"hits\": hits}}\n"
-      boundary:
-        outputs:
-          evidence_domain: $.global.ev_domain
-    - name: enrich_hash
-      id: enrich_hash
-      type: task
-      strategy_ref: io_enrich
-      script: "ind = [x for x in resolve(\"$.global.alarm.indicators\") if x[\"type\"\
-        ] == \"hash\"]\n# 简单模拟：以 \"bad\" / \"deadbeef\" 等特征命中黑名单\nhits = [\n  {\n\
-        \    \"value\": x[\"value\"],\n    \"reputation\": \"malicious\" if (\"bad\"\
-        \ in x[\"value\"] or \"deadbeef\" in x[\"value\"]) else \"clean\",\n    \"\
-        source\": \"intel_hash\",\n  }\n  for x in ind\n]\n{\"evidence_hash\": {\"\
-        count\": len(ind), \"hits\": hits}}\n"
-      boundary:
-        outputs:
-          evidence_hash: $.global.ev_hash
-    - name: merge_evidence
-      id: merge_evidence
-      type: task
-      strategy_ref: default_sync
-      wait_before: true
-      script: "ev_ip = resolve(\"$.global.ev_ip\")\nev_dom = resolve(\"$.global.ev_domain\"\
-        )\nev_hash = resolve(\"$.global.ev_hash\")\nmal = (\n  len([h for h in ev_ip[\"\
-        hits\"] if h[\"reputation\"] == \"malicious\"])\n  + len([h for h in ev_hash[\"\
-        hits\"] if h[\"reputation\"] == \"malicious\"])\n)\nsus = len([h for h in\
-        \ ev_dom[\"hits\"] if h[\"reputation\"] == \"suspicious\"])\n{\n  \"evidence\"\
-        : {\n    \"ip\": ev_ip,\n    \"domain\": ev_dom,\n    \"hash\": ev_hash,\n\
-        \    \"malicious_hits\": mal,\n    \"suspicious_hits\": sus,\n  }\n}\n"
-      boundary:
-        outputs:
-          evidence: $.global.evidence
-  - name: feature_calculate_subflow
-    id: feature_calculate_subflow
-    type: subflow
-    strategy_ref: default_sync
-    alias: features
-    children:
-    - name: feat_ioc_stats
-      id: feat_ioc_stats
-      type: task
-      strategy_ref: default_sync
-      script: "a = resolve(\"$.global.alarm\")\nev = resolve(\"$.global.evidence\"\
-        )\n{\n  \"ioc_stats\": {\n    \"ioc_count\": a[\"ioc_count\"],\n    \"malicious_hits\"\
-        : ev[\"malicious_hits\"],\n    \"suspicious_hits\": ev[\"suspicious_hits\"\
-        ],\n  }\n}\n"
-      boundary:
-        outputs:
-          ioc_stats: $.global.feat_ioc_stats
-    - name: feat_behavior
-      id: feat_behavior
-      type: task
-      strategy_ref: default_sync
-      script: "a = resolve(\"$.global.alarm\")\n# 行为特征简单建模：源/目的是否跨网段、标题关键词\nsrc =\
-        \ a[\"src\"]\ndst = a[\"dst\"]\ninternal_src = src.startswith(\"10.\") or\
-        \ src.startswith(\"192.168.\")\ninternal_dst = dst.startswith(\"10.\") or\
-        \ dst.startswith(\"192.168.\")\nlateral = internal_src and internal_dst\n\
-        outbound = internal_src and (not internal_dst)\ntitle_lower = a[\"title\"\
-        ].lower()\nbeaconing = \"beacon\" in title_lower\n{\n  \"behavior\": {\n \
-        \   \"lateral\": lateral,\n    \"outbound\": outbound,\n    \"beaconing\"\
-        : beaconing,\n  }\n}\n"
-      boundary:
-        outputs:
-          behavior: $.global.feat_behavior
-    - name: feat_context
-      id: feat_context
-      type: task
-      strategy_ref: default_sync
-      script: "a = resolve(\"$.global.alarm\")\n# 资产/环境上下文：模拟从资产库查询资产重要性\ndst = a[\"\
-        dst\"]\nasset_criticality = 3 if dst == \"10.0.0.90\" else 1\n{\n  \"context\"\
-        : {\n    \"asset_criticality\": asset_criticality,\n    \"severity_weight\"\
-        : a[\"severity_weight\"],\n  }\n}\n"
-      boundary:
-        outputs:
-          context: $.global.feat_context
-  - name: scoring_subflow
-    id: scoring_subflow
-    type: subflow
-    strategy_ref: default_sync
-    alias: scoring
-    children:
-    - name: score_base
-      id: score_base
-      type: task
-      strategy_ref: cpu_compute
-      script: 'ioc = resolve("$.global.feat_ioc_stats")
-
-        base = 10 * ioc["malicious_hits"] + 4 * ioc["suspicious_hits"] + 1 * ioc["ioc_count"]
-
-        {"base": base}
-
-        '
-      boundary:
-        outputs:
-          base: $.global.score_base_v
-    - name: score_weights
-      id: score_weights
-      type: task
-      strategy_ref: cpu_compute
-      script: "beh = resolve(\"$.global.feat_behavior\")\nctx = resolve(\"$.global.feat_context\"\
-        )\nw = (\n  ctx[\"severity_weight\"] * 3\n  + ctx[\"asset_criticality\"] *\
-        \ 5\n  + (12 if beh[\"lateral\"] else 0)\n  + (8 if beh[\"beaconing\"] else\
-        \ 0)\n  + (4 if beh[\"outbound\"] else 0)\n)\n{\"weights\": w}\n"
-      boundary:
-        outputs:
-          weights: $.global.score_weights_v
-    - name: score_final
-      id: score_final
-      type: task
-      strategy_ref: default_sync
-      wait_before: true
-      script: 'base = resolve("$.global.score_base_v")
-
-        wts = resolve("$.global.score_weights_v")
-
-        raw = base + wts
-
-        # 归一化到 0-100
-
-        score = 100 if raw > 100 else raw
-
-        {"score": {"raw": raw, "normalized": score}}
-
-        '
-      boundary:
-        outputs:
-          score: $.global.score
-  - name: diagnose_node
-    id: diagnose_node
-    type: task
-    strategy_ref: default_sync
-    script: "s = resolve(\"$.global.score.normalized\")\na = resolve(\"$.global.alarm\"\
-      )\nverdict = (\n  \"true_positive_critical\" if s >= 50 else (\n    \"true_positive\"\
-      \ if s >= 30 else (\n      \"needs_review\" if s >= 15 else \"false_positive\"\
-      \n    )\n  )\n)\n{\n  \"diagnosis\": {\n    \"alarm_id\": a[\"id\"],\n    \"\
-      score\": s,\n    \"verdict\": verdict,\n  }\n}\n"
-    boundary:
-      outputs:
-        diagnosis: $.global.diagnosis
-  - name: upgrade_node
-    id: upgrade_node
-    type: task
-    strategy_ref: default_sync
-    condition: resolve("$.global.diagnosis.verdict") == "true_positive_critical"
-    script: "d = resolve(\"$.global.diagnosis\")\n{\n  \"upgrade\": {\n    \"should_upgrade\"\
-      : True,\n    \"target_severity\": \"CRITICAL\",\n    \"playbook\": \"isolate_host_and_block_ioc\"\
-      ,\n    \"owner\": \"soc-oncall\",\n    \"alarm_id\": d[\"alarm_id\"],\n  }\n\
-      }\n"
-    boundary:
-      outputs:
-        upgrade: $.global.upgrade
-  - name: talking_subflow
-    id: talking_subflow
-    type: subflow
-    strategy_ref: default_sync
-    alias: talking
-    children:
-    - name: build_explanation
-      id: build_explanation
-      type: task
-      strategy_ref: default_sync
-      script: "a = resolve(\"$.global.alarm\")\nev = resolve(\"$.global.evidence\"\
-        )\nbeh = resolve(\"$.global.feat_behavior\")\nbase_parts = [\n  \"告警 \" +\
-        \ a[\"id\"] + \" 标题: \" + a[\"title\"] + \"。\",\n  \"严重度 \" + a[\"severity\"\
-        ] + \"；源 \" + a[\"src\"] + \" -> 目的 \" + a[\"dst\"] + \"。\",\n  \"证据: 恶意命中\
-        \ \" + str(ev[\"malicious_hits\"]) + \" 次，可疑命中 \" + str(ev[\"suspicious_hits\"\
-        ]) + \" 次。\",\n]\n# Starlark 标准方言不允许顶层 if，这里用条件表达式 + 过滤空串\nextras = [\n  \"\
-        检测到横向移动特征。\" if beh[\"lateral\"] else \"\",\n  \"检测到 C2 心跳行为。\" if beh[\"\
-        beaconing\"] else \"\",\n  \"存在异常外连。\" if beh[\"outbound\"] else \"\",\n]\n\
-        parts = base_parts + [s for s in extras if s]\n{\"explanation\": \" \".join(parts)}\n"
-      boundary:
-        outputs:
-          explanation: $.global.talking_explanation
-    - name: build_action_hint
-      id: build_action_hint
-      type: task
-      strategy_ref: default_sync
-      script: "v = resolve(\"$.global.diagnosis.verdict\")\nhint = (\n  \"立即隔离主机并封禁\
-        \ IOC，派单 SOC 处置。\" if v == \"true_positive_critical\" else (\n    \"建议阻断 IOC\
-        \ 并加强监控。\" if v == \"true_positive\" else (\n      \"建议人工复核，补充上下文。\" if v\
-        \ == \"needs_review\" else \"可关闭该告警。\"\n    )\n  )\n)\n{\"hint\": hint}\n"
-      boundary:
-        outputs:
-          hint: $.global.talking_hint
-    - name: assemble_talking
-      id: assemble_talking
-      type: task
-      strategy_ref: default_sync
-      script: "d = resolve(\"$.global.diagnosis\")\nexp = resolve(\"$.global.talking_explanation\"\
-        )\nhint = resolve(\"$.global.talking_hint\")\n{\n  \"talking\": {\n    \"\
-        alarm_id\": d[\"alarm_id\"],\n    \"verdict\": d[\"verdict\"],\n    \"score\"\
-        : d[\"score\"],\n    \"explanation\": exp,\n    \"action_hint\": hint,\n \
-        \ }\n}\n"
-      boundary:
-        outputs:
-          talking: $.global.talking
-  - name: finalize_per_alarm
-    id: finalize_per_alarm
-    type: task
-    strategy_ref: default_sync
-    script: "a = resolve(\"$.global.alarm\")\nd = resolve(\"$.global.diagnosis\")\n\
-      s = resolve(\"$.global.score\")\ntk = resolve(\"$.global.talking\")\n{\n  \"\
-      per_alarm_result\": {\n    \"alarm_id\": a[\"id\"],\n    \"verdict\": d[\"verdict\"\
-      ],\n    \"score\": s[\"normalized\"],\n    \"upgraded\": d[\"verdict\"] == \"\
-      true_positive_critical\",\n    \"talking\": tk,\n  }\n}\n"
-    boundary:
-      outputs:
-        per_alarm_result: $.global.per_alarm_result
-- name: aggregate_report_node
-  id: aggregate_report_node
-  type: task
-  strategy_ref: default_sync
-  wait_before: true
-  script: "ds = resolve(\"$.global.diagnoses\")\nverdicts = [\"true_positive_critical\"\
-    , \"true_positive\", \"needs_review\", \"false_positive\"]\nby_verdict = {v: len([x\
-    \ for x in ds if x[\"verdict\"] == v]) for v in verdicts}\n{\n  \"report\": {\n\
-    \    \"total\": len(ds),\n    \"upgraded\": len([x for x in ds if x[\"upgraded\"\
-    ]]),\n    \"by_verdict\": by_verdict,\n    \"items\": ds,\n  }\n}\n"
-  boundary:
-    outputs:
-      report: $.global.final_report
