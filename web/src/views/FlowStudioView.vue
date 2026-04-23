@@ -28,16 +28,13 @@
 
           <!-- Version selector -->
           <select v-if="store.activeFlowId" v-model="selectedVersion" class="sel-ver" @change="onSelectVersion">
-            <option value="draft" :disabled="!hasDraft">草稿{{ hasDraft ? "" : "（无）" }}</option>
+            <option value="draft" :disabled="!hasDraft">草稿{{ hasDraft ? "（可编辑）" : "（无）" }}</option>
             <option v-for="v in versionList" :key="v.version" :value="String(v.version)">
-              V{{ v.version }}{{ v.version === latestVersion ? " (最新)" : "" }}
+              V{{ v.version }}{{ v.version === latestVersion ? "（已发布，最新）" : "（已发布）" }}
             </option>
           </select>
 
-          <!-- Version badge -->
-          <span v-if="currentVersionBadge" class="ver-badge">{{ currentVersionBadge }}</span>
-
-          <button type="button" class="btn ghost" title="重新扫描 flows 目录" @click="refresh">刷新</button>
+          <span v-if="store.activeFlowId" class="hint-text">先保存草稿，再提交新版本</span>
 
           <!-- Save draft -->
           <button
@@ -58,7 +55,7 @@
             title="将当前草稿提交为新版本（V+1）"
             @click="saveNewVersion"
           >
-            {{ saving === "version" ? "提交中…" : `提交 V${latestVersion + 1}` }}
+            {{ saving === "version" ? "提交中…" : `提交为 V${latestVersion + 1}` }}
           </button>
 
           <button
@@ -70,20 +67,35 @@
           >
             ▶ 运行流程
           </button>
-          <button type="button" class="btn ghost" @click="newFlow">新建流程</button>
         </div>
-        <div class="grp">
-          <button type="button" class="btn ghost" @click="download">导出 JSON</button>
-          <label class="btn ghost">
-            导入
-            <input hidden type="file" accept="application/json" @change="onImport" />
-          </label>
+        <div class="grp menu-wrap" ref="moreMenuRef">
+          <button type="button" class="btn ghost" :aria-expanded="moreMenuOpen" aria-haspopup="menu" @click="toggleMoreMenu">
+            更多{{ moreMenuOpen ? " ▴" : " ▾" }}
+          </button>
+          <div v-if="moreMenuOpen" class="menu-panel">
+            <button type="button" class="menu-item" @click="onNewFlowFromMenu">新建流程</button>
+            <label class="menu-item">
+              导入 JSON
+              <input hidden type="file" accept="application/json" @change="onImport" />
+            </label>
+            <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 JSON</button>
+          </div>
         </div>
       </div>
     </header>
 
     <!-- Save message -->
     <div v-if="saveMsg" class="save-msg" :class="saveMsg.type">{{ saveMsg.text }}</div>
+    <div v-if="versionConfirmOpen" class="confirm-mask" @click.self="closeVersionConfirm">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="确认提交版本">
+        <div class="confirm-title">确认提交新版本</div>
+        <p class="confirm-text">确认将当前草稿提交为 V{{ pendingVersion }} 吗？</p>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="closeVersionConfirm">取消</button>
+          <button type="button" class="btn primary" @click="confirmSaveNewVersion">确认提交</button>
+        </div>
+      </div>
+    </div>
 
     <FlowRunPanel
       :flow-id="store.activeFlowId"
@@ -105,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { FlowDocument } from "@/types/flow";
 import LeftPanel from "@/components/LeftPanel.vue";
@@ -119,6 +131,10 @@ const selectedId = ref("");
 const selectedVersion = ref("draft");
 const saving = ref<false | "draft" | "version">(false);
 const runVisible = ref(false);
+const moreMenuOpen = ref(false);
+const moreMenuRef = ref<HTMLElement | null>(null);
+const versionConfirmOpen = ref(false);
+const pendingVersion = ref(0);
 
 const versionList = ref<FlowVersionMeta[]>([]);
 const latestVersion = ref(0);
@@ -139,14 +155,39 @@ function flushActiveInput() {
   if (el instanceof HTMLElement) el.blur();
 }
 
-const currentVersionBadge = computed(() => {
-  if (!store.activeFlowId) return "";
-  if (selectedVersion.value === "draft") return hasDraft.value ? "草稿" : "";
-  return `V${selectedVersion.value}`;
-});
-
 function toggleRun() {
   runVisible.value = !runVisible.value;
+}
+
+function toggleMoreMenu() {
+  moreMenuOpen.value = !moreMenuOpen.value;
+}
+
+function closeMoreMenu() {
+  moreMenuOpen.value = false;
+}
+
+function openVersionConfirm() {
+  pendingVersion.value = latestVersion.value + 1;
+  versionConfirmOpen.value = true;
+}
+
+function closeVersionConfirm() {
+  versionConfirmOpen.value = false;
+}
+
+function onWindowMouseDown(ev: MouseEvent) {
+  if (!moreMenuOpen.value) return;
+  const el = moreMenuRef.value;
+  if (!el) return;
+  const target = ev.target;
+  if (target instanceof Node && !el.contains(target)) closeMoreMenu();
+}
+
+function onWindowKeydown(ev: KeyboardEvent) {
+  if (ev.key !== "Escape") return;
+  closeMoreMenu();
+  closeVersionConfirm();
 }
 
 watch(
@@ -158,6 +199,8 @@ watch(
 );
 
 onMounted(async () => {
+  window.addEventListener("mousedown", onWindowMouseDown);
+  window.addEventListener("keydown", onWindowKeydown);
   await store.refreshFlowList();
   try {
     if (store.flowList.some((f) => (f as any).id === "demo_flow")) {
@@ -170,14 +213,10 @@ onMounted(async () => {
   }
 });
 
-async function refresh() {
-  store.clearAllNodeDrafts();
-  await store.refreshFlowList();
-  const fid = store.activeFlowId;
-  if (!fid) return;
-  await refreshVersionList(fid);
-  await onSelectVersion();
-}
+onBeforeUnmount(() => {
+  window.removeEventListener("mousedown", onWindowMouseDown);
+  window.removeEventListener("keydown", onWindowKeydown);
+});
 
 async function refreshVersionList(flowId: string) {
   try {
@@ -196,7 +235,13 @@ async function loadFlowWithVersions(flowId: string) {
   await store.loadFlowFromServer(flowId);
   await refreshVersionList(flowId);
   // Show draft if it exists, otherwise latest version
-  selectedVersion.value = hasDraft.value ? "draft" : String(latestVersion.value || "draft");
+  if (hasDraft.value) {
+    selectedVersion.value = "draft";
+  } else if (latestVersion.value > 0) {
+    selectedVersion.value = String(latestVersion.value);
+  } else {
+    selectedVersion.value = "draft";
+  }
 }
 
 async function onSelectFlow() {
@@ -247,6 +292,13 @@ async function saveDraft() {
 async function saveNewVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
+  openVersionConfirm();
+}
+
+async function confirmSaveNewVersion() {
+  const fid = store.activeFlowId;
+  if (!fid) return;
+  closeVersionConfirm();
   flushActiveInput();
   store.flushNodeDraftsToDocument();
   saving.value = "version";
@@ -277,6 +329,16 @@ async function newFlow() {
   }
 }
 
+async function onNewFlowFromMenu() {
+  closeMoreMenu();
+  await newFlow();
+}
+
+function onDownloadFromMenu() {
+  closeMoreMenu();
+  download();
+}
+
 function flowOptionLabel(f: unknown): string {
   const item = f as { id: string; display_name?: string };
   const dn = (item.display_name ?? "").trim();
@@ -296,6 +358,7 @@ function download() {
 }
 
 function onImport(ev: Event) {
+  closeMoreMenu();
   const input = ev.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
@@ -384,6 +447,11 @@ function onImport(ev: Event) {
   align-items: center;
 }
 
+.hint-text {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .sel {
   min-width: 200px;
   max-width: 260px;
@@ -402,18 +470,6 @@ function onImport(ev: Event) {
   padding: 6px 8px;
   font-size: 12px;
   background: #fff;
-}
-
-.ver-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--accent-soft);
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .btn {
@@ -458,6 +514,43 @@ function onImport(ev: Event) {
   border-color: var(--border-strong);
 }
 
+.menu-wrap {
+  position: relative;
+}
+
+.menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  z-index: 5;
+}
+
+.menu-item {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  display: block;
+}
+
+.menu-item:hover {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -467,6 +560,44 @@ function onImport(ev: Event) {
   padding: 5px 16px;
   font-size: 12px;
   border-bottom: 1px solid transparent;
+}
+
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.confirm-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .save-msg.ok {

@@ -1,4 +1,4 @@
-display_name: 示例流程
+display_name: demo_flow
 version: 1.0.0
 strategies:
   default_sync:
