@@ -1,29 +1,14 @@
-"""Tests for versioned flow storage: VersionStore / PublishStore / InstanceStore /
-FlowVersionRegistry and legacy migration."""
+"""Tests for versioned flow storage: VersionStore, FlowVersionRegistry, and legacy migration."""
 
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from flow_engine.engine.publish_models import (
-    ChannelState,
-    FlowInstance,
-    FlowPublishState,
-    PublishStatus,
-)
-from flow_engine.stores.version_store import (
-    FlowVersionRegistry,
-    InstanceStore,
-    PublishStore,
-    VersionStore,
-    validate_flow_id,
-)
+from flow_engine.stores.version_store import FlowVersionRegistry, VersionStore, validate_flow_id
 
 
 # ---------------------------------------------------------------------------
@@ -150,161 +135,6 @@ def test_version_store_delete_removes_tree(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PublishStore
-# ---------------------------------------------------------------------------
-
-
-def test_publish_store_default_state(tmp_path: Path) -> None:
-    ps = PublishStore(tmp_path, "demo")
-    state = ps.read()
-    assert state.flow_id == "demo"
-    assert state.production.status == PublishStatus.UNPUBLISHED
-    assert state.gray.status == PublishStatus.UNPUBLISHED
-    assert state.production.version is None
-
-
-def test_publish_store_atomic_write(tmp_path: Path) -> None:
-    ps = PublishStore(tmp_path, "demo")
-    state = FlowPublishState(flow_id="demo")
-    state.production = ChannelState(version=2, status=PublishStatus.PUBLISHING, published_at=time.time())
-    state.gray = ChannelState(version=3, status=PublishStatus.RUNNING, published_at=time.time())
-    ps.write(state)
-
-    # No temp files left behind
-    tmp_files = list((tmp_path / "demo").glob("*.tmp"))
-    assert tmp_files == []
-
-    reloaded = ps.read()
-    assert reloaded.production.version == 2
-    assert reloaded.production.status == PublishStatus.PUBLISHING
-    assert reloaded.gray.version == 3
-    assert reloaded.gray.status == PublishStatus.RUNNING
-
-
-def test_publish_store_reset(tmp_path: Path) -> None:
-    ps = PublishStore(tmp_path, "demo")
-    state = FlowPublishState(flow_id="demo")
-    state.gray = ChannelState(version=1, status=PublishStatus.PUBLISHING)
-    ps.write(state)
-    ps.reset()
-    # After reset, default state returns
-    assert ps.read().gray.status == PublishStatus.UNPUBLISHED
-
-
-# ---------------------------------------------------------------------------
-# InstanceStore
-# ---------------------------------------------------------------------------
-
-
-def _make_instance(instance_id: str = "i1", version: int = 1) -> FlowInstance:
-    now = time.time()
-    return FlowInstance(
-        instance_id=instance_id,
-        flow_id="demo",
-        version=version,
-        channel="production",
-        started_at=now,
-        last_heartbeat=now,
-        status="running",
-        pid=1234,
-        host="localhost",
-    )
-
-
-def test_instance_store_register_list_deregister(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    assert s.list_instances() == []
-    s.register(_make_instance("a"))
-    s.register(_make_instance("b"))
-    ids = [i.instance_id for i in s.list_instances()]
-    assert sorted(ids) == ["a", "b"]
-
-    assert s.deregister("a") is True
-    assert s.deregister("a") is False
-    assert [i.instance_id for i in s.list_instances()] == ["b"]
-
-
-def test_instance_store_register_idempotent(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    inst = _make_instance("a", version=1)
-    s.register(inst)
-    s.register(inst)  # re-register same id
-    assert len(s.list_instances()) == 1
-
-
-def test_instance_store_heartbeat_updates_timestamp(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    inst = _make_instance("a")
-    inst.last_heartbeat = time.time() - 100
-    s.register(inst)
-    # Slight delay to ensure heartbeat advances the clock
-    time.sleep(0.01)
-    updated = s.heartbeat("a")
-    assert updated is not None
-    assert updated.last_heartbeat > inst.last_heartbeat
-
-
-def test_instance_store_heartbeat_missing(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    assert s.heartbeat("nope") is None
-
-
-def test_instance_store_update_status(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    s.register(_make_instance("a"))
-    inst = s.update_status("a", "failed")
-    assert inst is not None and inst.status == "failed"
-    assert s.list_instances()[0].status == "failed"
-
-
-def test_instance_store_stale_filtering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Reload module-level TTL by importing fresh
-    import importlib
-
-    monkeypatch.setenv("FLOW_ENGINE_INSTANCE_TTL", "0.05")
-    import flow_engine.stores.version_store as vs_mod
-
-    importlib.reload(vs_mod)
-    try:
-        s = vs_mod.InstanceStore(tmp_path, "demo")
-        # Construct a new "current" instance then manually backdate the heartbeat
-        inst = FlowInstance(
-            instance_id="old",
-            flow_id="demo",
-            version=1,
-            channel="production",
-            started_at=time.time() - 10,
-            last_heartbeat=time.time() - 10,
-            status="running",
-        )
-        s.register(inst)
-        # Stale by default (TTL=0.05s) – should be filtered out
-        assert s.list_instances() == []
-        # But include_stale=True returns them
-        assert len(s.list_instances(include_stale=True)) == 1
-    finally:
-        # Reset env / reimport so other tests see default TTL
-        monkeypatch.delenv("FLOW_ENGINE_INSTANCE_TTL", raising=False)
-        importlib.reload(vs_mod)
-
-
-def test_instance_store_count_running(tmp_path: Path) -> None:
-    s = InstanceStore(tmp_path, "demo")
-    s.register(_make_instance("a"))
-    s.register(_make_instance("b"))
-    assert s.count_running() == 2
-    s.update_status("a", "stopped")
-    assert s.count_running() == 1
-
-
-def test_instance_store_corrupt_file_returns_empty(tmp_path: Path) -> None:
-    (tmp_path / "demo").mkdir()
-    (tmp_path / "demo" / "instances.json").write_text("not valid json", encoding="utf-8")
-    s = InstanceStore(tmp_path, "demo")
-    assert s.list_instances() == []
-
-
-# ---------------------------------------------------------------------------
 # FlowVersionRegistry
 # ---------------------------------------------------------------------------
 
@@ -419,24 +249,6 @@ def test_registry_resolve_draft(registry: FlowVersionRegistry) -> None:
     n, data = registry.resolve_version_data("foo", "draft")
     assert n is None
     assert data["display_name"] == "draft"
-
-
-def test_registry_resolve_production_channel(registry: FlowVersionRegistry) -> None:
-    vs = registry.version_store("foo")
-    vs.commit_version(_sample_flow("v1"))
-    vs.commit_version(_sample_flow("v2"))
-    ps = registry.publish_store("foo")
-    state = ps.read()
-    state.production = ChannelState(version=1, status=PublishStatus.RUNNING)
-    ps.write(state)
-    n, data = registry.resolve_version_data("foo", "production")
-    assert n == 1 and data["display_name"] == "v1"
-
-
-def test_registry_resolve_production_unpublished_raises(registry: FlowVersionRegistry) -> None:
-    registry.version_store("foo").commit_version(_sample_flow())
-    with pytest.raises(ValueError):
-        registry.resolve_version_data("foo", "production")
 
 
 def test_registry_resolve_latest_no_versions_raises(registry: FlowVersionRegistry) -> None:

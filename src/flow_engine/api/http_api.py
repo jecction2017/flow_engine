@@ -1,4 +1,4 @@
-"""FastAPI HTTP service: versioned flow CRUD, publish management, instance tracking, SSE."""
+"""FastAPI HTTP service: versioned flow CRUD and execution."""
 
 from __future__ import annotations
 
@@ -6,24 +6,17 @@ import asyncio
 import json
 import time
 import traceback
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from flow_engine.engine.compiler import compile_flow
-from flow_engine.engine.event_bus import get_event_bus, make_event
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
 from flow_engine.engine.orchestrator import FlowRuntime
-from flow_engine.engine.publish_models import (
-    ChannelState,
-    FlowInstance,
-    FlowPublishState,
-    PublishStatus,
-)
 from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import merge_imported_rows, put_table
@@ -92,28 +85,9 @@ class CommitVersionBody(BaseModel):
     data: dict[str, Any] | None = None
 
 
-class PublishBody(BaseModel):
-    version: int = Field(..., ge=1)
-    channel: str = Field(..., pattern="^(production|gray)$")
-
-
-class RegisterInstanceBody(BaseModel):
-    instance_id: str
-    version: int
-    channel: str = "latest"
-    pid: int | None = None
-    host: str | None = None
-
-
-class HeartbeatBody(BaseModel):
-    status: str = "running"
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-_PUBLISH_TIMEOUT = float(__import__("os").environ.get("FLOW_ENGINE_PUBLISH_TIMEOUT", "60"))
 
 
 def _resolve_flow_id(flow_id: str) -> str:
@@ -137,47 +111,6 @@ def _load_flow_data(flow_id: str) -> dict[str, Any]:
     if meta.latest_version > 0:
         return vs.read_version(meta.latest_version)
     raise HTTPException(status_code=404, detail="Flow has no draft or committed versions")
-
-
-def _channel_state(state: FlowPublishState, channel: str) -> ChannelState:
-    return state.production if channel == "production" else state.gray
-
-
-def _set_channel(state: FlowPublishState, channel: str, ch: ChannelState) -> None:
-    if channel == "production":
-        state.production = ch
-    else:
-        state.gray = ch
-
-
-def _apply_publish_timeouts(state: FlowPublishState) -> tuple[FlowPublishState, bool]:
-    """Lazily demote any ``PUBLISHING`` channel that has exceeded the timeout
-    to ``FAILED``. Returns ``(state, mutated)``.
-
-    This is called on every publish-state read so the state machine converges
-    even if a background task didn't run (e.g. TestClient with a short-lived
-    event loop, or server restart before the timeout fired).
-    """
-    mutated = False
-    now = time.time()
-    for ch_name in ("production", "gray"):
-        ch = _channel_state(state, ch_name)
-        if ch.status == PublishStatus.PUBLISHING and ch.published_at is not None:
-            if now - ch.published_at > _PUBLISH_TIMEOUT:
-                ch.status = PublishStatus.FAILED
-                _set_channel(state, ch_name, ch)
-                mutated = True
-    return state, mutated
-
-
-def _read_publish_state(flow_id: str) -> FlowPublishState:
-    """Read publish state + apply lazy timeout check (persists if demoted)."""
-    ps = registry.publish_store(flow_id)
-    state = ps.read()
-    state, mutated = _apply_publish_timeouts(state)
-    if mutated:
-        ps.write(state)
-    return state
 
 
 # ---------------------------------------------------------------------------
@@ -339,102 +272,9 @@ def create_app() -> FastAPI:
         new_ver = vs.commit_version(data, description=body.description)
         return {"ok": True, "flow_id": flow_id, "version": new_ver}
 
-    # -----------------------------------------------------------------------
-    # Publish management
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/flows/{flow_id}/publish")
-    def get_publish_state(flow_id: str) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        _require_flow(flow_id)
-        return _read_publish_state(flow_id).model_dump()
-
-    @app.post("/api/flows/{flow_id}/publish")
-    async def publish_version(flow_id: str, body: PublishBody) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        _require_flow(flow_id)
-        vs = registry.version_store(flow_id)
-        ps = registry.publish_store(flow_id)
-
-        # Verify version exists
-        try:
-            vs.read_version(body.version)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"Version v{body.version} not found") from None
-
-        # Apply lazy timeout check before evaluating conflict: if the channel
-        # is stuck in PUBLISHING past the timeout it auto-demotes to FAILED,
-        # which frees the channel for a new publish.
-        state = _read_publish_state(flow_id)
-        ch = _channel_state(state, body.channel)
-
-        # Enforce: must stop existing active channel before publishing new version
-        if ch.status in (PublishStatus.PUBLISHING, PublishStatus.RUNNING):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Channel '{body.channel}' is already {ch.status.value}. Stop it first.",
-            )
-
-        new_ch = ChannelState(
-            version=body.version,
-            status=PublishStatus.PUBLISHING,
-            published_at=time.time(),
-        )
-        _set_channel(state, body.channel, new_ch)
-        ps.write(state)
-
-        bus = get_event_bus()
-        await bus.publish(make_event(
-            "flow.published",
-            flow_id,
-            {"channel": body.channel, "version": body.version},
-        ))
-        await bus.publish(make_event("publish.state_changed", flow_id, state.model_dump()))
-
-        # Background task: auto-fail after timeout if no instance registers
-        async def _timeout_watcher() -> None:
-            await asyncio.sleep(_PUBLISH_TIMEOUT)
-            current = ps.read()
-            cur_ch = _channel_state(current, body.channel)
-            if cur_ch.status == PublishStatus.PUBLISHING and cur_ch.version == body.version:
-                cur_ch.status = PublishStatus.FAILED
-                _set_channel(current, body.channel, cur_ch)
-                ps.write(current)
-                await bus.publish(make_event("publish.state_changed", flow_id, current.model_dump()))
-
-        asyncio.create_task(_timeout_watcher())
-
-        return {"ok": True, "flow_id": flow_id, "channel": body.channel, "version": body.version, "status": "publishing"}
-
-    @app.delete("/api/flows/{flow_id}/publish/{channel}")
-    async def stop_publish(flow_id: str, channel: str) -> dict[str, Any]:
-        if channel not in ("production", "gray"):
-            raise HTTPException(status_code=400, detail="channel must be 'production' or 'gray'")
-        _resolve_flow_id(flow_id)
-        _require_flow(flow_id)
-
-        ps = registry.publish_store(flow_id)
-        state = ps.read()
-        ch = _channel_state(state, channel)
-        stopped_version = ch.version
-
-        new_ch = ChannelState(status=PublishStatus.UNPUBLISHED, stopped_at=time.time())
-        _set_channel(state, channel, new_ch)
-        ps.write(state)
-
-        bus = get_event_bus()
-        await bus.publish(make_event(
-            "flow.stopped",
-            flow_id,
-            {"channel": channel, "version": stopped_version},
-        ))
-        await bus.publish(make_event("publish.state_changed", flow_id, state.model_dump()))
-
-        return {"ok": True, "flow_id": flow_id, "channel": channel}
-
     @app.get("/api/flows/{flow_id}/resolve")
     def resolve_channel(flow_id: str, channel: str = Query(default="latest")) -> dict[str, Any]:
-        """Resolve channel/version string to a concrete flow definition (used by runners)."""
+        """Resolve ``latest``, ``draft``, or ``vN`` / ``N`` to a concrete flow definition."""
         _resolve_flow_id(flow_id)
         _require_flow(flow_id)
         try:
@@ -442,139 +282,6 @@ def create_app() -> FastAPI:
         except (ValueError, FileNotFoundError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         return {"flow_id": flow_id, "channel": channel, "version": version_num, "definition": data}
-
-    # -----------------------------------------------------------------------
-    # Instance management
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/flows/{flow_id}/instances")
-    def list_instances(flow_id: str) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        _require_flow(flow_id)
-        inst_store = registry.instance_store(flow_id)
-        return {"flow_id": flow_id, "instances": [i.model_dump() for i in inst_store.list_instances()]}
-
-    @app.post("/api/flows/{flow_id}/instances")
-    async def register_instance(flow_id: str, body: RegisterInstanceBody) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        _require_flow(flow_id)
-        inst = FlowInstance(
-            instance_id=body.instance_id,
-            flow_id=flow_id,
-            version=body.version,
-            channel=body.channel,
-            started_at=time.time(),
-            last_heartbeat=time.time(),
-            status="running",
-            pid=body.pid,
-            host=body.host,
-        )
-        registry.instance_store(flow_id).register(inst)
-
-        # Transition publish state → RUNNING if a channel is waiting for this
-        # version. Also resurrect FAILED back to RUNNING when a late instance
-        # arrives (e.g. after the lazy timeout check demoted it).
-        ps = registry.publish_store(flow_id)
-        state = ps.read()
-        changed = False
-        for ch_name in ("production", "gray"):
-            ch = _channel_state(state, ch_name)
-            if ch.version == body.version and ch.status in (
-                PublishStatus.PUBLISHING,
-                PublishStatus.FAILED,
-            ):
-                ch.status = PublishStatus.RUNNING
-                _set_channel(state, ch_name, ch)
-                changed = True
-        if changed:
-            ps.write(state)
-
-        bus = get_event_bus()
-        await bus.publish(make_event("instance.registered", flow_id, inst.model_dump()))
-        if changed:
-            await bus.publish(make_event("publish.state_changed", flow_id, state.model_dump()))
-
-        return {"ok": True, "instance_id": body.instance_id}
-
-    @app.put("/api/flows/{flow_id}/instances/{instance_id}")
-    async def heartbeat_instance(flow_id: str, instance_id: str, body: HeartbeatBody = Body(default_factory=HeartbeatBody)) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        inst_store = registry.instance_store(flow_id)
-        inst = inst_store.heartbeat(instance_id)
-        if inst is None:
-            raise HTTPException(status_code=404, detail="Instance not found")
-        if body.status != inst.status:
-            inst_store.update_status(instance_id, body.status)
-        bus = get_event_bus()
-        await bus.publish(make_event("instance.heartbeat", flow_id, {"instance_id": instance_id, "status": body.status}))
-        return {"ok": True}
-
-    @app.delete("/api/flows/{flow_id}/instances/{instance_id}")
-    async def deregister_instance(flow_id: str, instance_id: str) -> dict[str, Any]:
-        _resolve_flow_id(flow_id)
-        inst_store = registry.instance_store(flow_id)
-        inst_store.update_status(instance_id, "stopped")
-        found = inst_store.deregister(instance_id)
-
-        # Transition publish state back if no running instances remain
-        ps = registry.publish_store(flow_id)
-        state = ps.read()
-        running_count = inst_store.count_running()
-        changed = False
-        if running_count == 0:
-            for ch_name in ("production", "gray"):
-                ch = _channel_state(state, ch_name)
-                if ch.status == PublishStatus.RUNNING:
-                    ch.status = PublishStatus.UNPUBLISHED
-                    ch.stopped_at = time.time()
-                    _set_channel(state, ch_name, ch)
-                    changed = True
-            if changed:
-                ps.write(state)
-
-        bus = get_event_bus()
-        await bus.publish(make_event("instance.stopped", flow_id, {"instance_id": instance_id}))
-        if changed:
-            await bus.publish(make_event("publish.state_changed", flow_id, state.model_dump()))
-
-        return {"ok": True, "found": found}
-
-    # -----------------------------------------------------------------------
-    # SSE – real-time event stream
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/flows/{flow_id}/events")
-    async def flow_events(flow_id: str) -> StreamingResponse:
-        _resolve_flow_id(flow_id)
-
-        async def generator() -> AsyncGenerator[str, None]:
-            # Send initial state snapshot
-            if registry.exists(flow_id):
-                inst_store = registry.instance_store(flow_id)
-                snapshot = {
-                    "type": "snapshot",
-                    "flow_id": flow_id,
-                    "publish": _read_publish_state(flow_id).model_dump(),
-                    "instances": [i.model_dump() for i in inst_store.list_instances()],
-                    "ts": time.time(),
-                }
-                yield f"data: {json.dumps(snapshot)}\n\n"
-
-            bus = get_event_bus()
-            sub = bus.subscribe()
-            async with sub as events:
-                async for event in events:
-                    if event.get("flow_id") == flow_id:
-                        yield f"data: {json.dumps(event)}\n\n"
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
 
     # -----------------------------------------------------------------------
     # Flow validate + run  (updated to work with versioned store)

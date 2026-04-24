@@ -9,8 +9,6 @@ Directory layout::
         versions/
           v1.yaml          - immutable snapshot
           v2.yaml
-        publish.json       - FlowPublishState
-        instances.json     - list[FlowInstance]
 
 Migration: legacy flat ``{flow_id}.yaml`` files are automatically promoted to
 ``{flow_id}/versions/v1.yaml`` on first access.
@@ -30,14 +28,7 @@ from typing import Any
 import yaml
 
 from flow_engine._repo_root import repo_root
-from flow_engine.engine.publish_models import (
-    ChannelState,
-    FlowInstance,
-    FlowMeta,
-    FlowPublishState,
-    FlowVersionMeta,
-    PublishStatus,
-)
+from flow_engine.engine.version_meta import FlowMeta, FlowVersionMeta
 
 _SAFE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")
 
@@ -189,110 +180,6 @@ class VersionStore:
 
 
 # ---------------------------------------------------------------------------
-# PublishStore
-# ---------------------------------------------------------------------------
-
-
-class PublishStore:
-    """Reads/writes the ``publish.json`` file for a flow."""
-
-    def __init__(self, base_dir: Path, flow_id: str) -> None:
-        self.flow_id = flow_id
-        self._path = base_dir / flow_id / "publish.json"
-
-    def read(self) -> FlowPublishState:
-        if not self._path.is_file():
-            return FlowPublishState(flow_id=self.flow_id)
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
-        return FlowPublishState.model_validate(raw)
-
-    def write(self, state: FlowPublishState) -> None:
-        _atomic_write_json(self._path, state.model_dump())
-
-    def reset(self) -> None:
-        if self._path.is_file():
-            self._path.unlink()
-
-
-# ---------------------------------------------------------------------------
-# InstanceStore
-# ---------------------------------------------------------------------------
-
-_HEARTBEAT_TTL = float(os.environ.get("FLOW_ENGINE_INSTANCE_TTL", "120"))
-
-
-class InstanceStore:
-    """Reads/writes the ``instances.json`` registry for a flow."""
-
-    def __init__(self, base_dir: Path, flow_id: str) -> None:
-        self.flow_id = flow_id
-        self._path = base_dir / flow_id / "instances.json"
-
-    def _load_raw(self) -> list[dict[str, Any]]:
-        if not self._path.is_file():
-            return []
-        try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-
-    def _save_raw(self, items: list[dict[str, Any]]) -> None:
-        _atomic_write_json(self._path, items)
-
-    def list_instances(self, include_stale: bool = False) -> list[FlowInstance]:
-        now = time.time()
-        out: list[FlowInstance] = []
-        for raw in self._load_raw():
-            inst = FlowInstance.model_validate(raw)
-            if not include_stale and now - inst.last_heartbeat > _HEARTBEAT_TTL:
-                continue
-            out.append(inst)
-        return out
-
-    def register(self, instance: FlowInstance) -> None:
-        items = self._load_raw()
-        items = [i for i in items if i.get("instance_id") != instance.instance_id]
-        items.append(instance.model_dump())
-        self._save_raw(items)
-
-    def heartbeat(self, instance_id: str) -> FlowInstance | None:
-        items = self._load_raw()
-        found: FlowInstance | None = None
-        for item in items:
-            if item.get("instance_id") == instance_id:
-                item["last_heartbeat"] = time.time()
-                found = FlowInstance.model_validate(item)
-                break
-        if found:
-            self._save_raw(items)
-        return found
-
-    def update_status(self, instance_id: str, status: str) -> FlowInstance | None:
-        items = self._load_raw()
-        found: FlowInstance | None = None
-        for item in items:
-            if item.get("instance_id") == instance_id:
-                item["status"] = status
-                item["last_heartbeat"] = time.time()
-                found = FlowInstance.model_validate(item)
-                break
-        if found:
-            self._save_raw(items)
-        return found
-
-    def deregister(self, instance_id: str) -> bool:
-        items = self._load_raw()
-        new_items = [i for i in items if i.get("instance_id") != instance_id]
-        if len(new_items) < len(items):
-            self._save_raw(new_items)
-            return True
-        return False
-
-    def count_running(self) -> int:
-        return sum(1 for i in self.list_instances() if i.status == "running")
-
-
-# ---------------------------------------------------------------------------
 # FlowVersionRegistry  (top-level: manages all flows)
 # ---------------------------------------------------------------------------
 
@@ -409,12 +296,6 @@ class FlowVersionRegistry:
     def version_store(self, flow_id: str) -> VersionStore:
         return VersionStore(self.directory, flow_id)
 
-    def publish_store(self, flow_id: str) -> PublishStore:
-        return PublishStore(self.directory, flow_id)
-
-    def instance_store(self, flow_id: str) -> InstanceStore:
-        return InstanceStore(self.directory, flow_id)
-
     def list_flows(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if not self.directory.is_dir():
@@ -480,20 +361,11 @@ class FlowVersionRegistry:
         """Resolve a channel/version string to (version_num, flow_data).
 
         channel values:
-          - "production" | "gray"  → look up publish state
-          - "latest"               → latest committed version
-          - "draft"                → draft
-          - "v3" or "3"           → specific version number
+          - "latest"     → latest committed version
+          - "draft"      → draft
+          - "v3" or "3"  → specific version number
         """
         vs = self.version_store(flow_id)
-        ps = self.publish_store(flow_id)
-
-        if channel in ("production", "gray"):
-            state = ps.read()
-            ch = state.production if channel == "production" else state.gray
-            if ch.version is None:
-                raise ValueError(f"Channel '{channel}' is not published for flow '{flow_id}'")
-            return ch.version, vs.read_version(ch.version)
 
         if channel == "latest":
             meta = vs.read_meta()

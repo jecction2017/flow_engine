@@ -123,8 +123,8 @@ import type { FlowDocument } from "@/types/flow";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import FlowRunPanel from "@/components/FlowRunPanel.vue";
-import { fetchVersionList, commitVersion, saveDraft as apiSaveDraft, fetchVersion, fetchDraft } from "@/api/publish";
-import type { FlowVersionMeta } from "@/api/publish";
+import { fetchVersionList, commitVersion, saveDraft as apiSaveDraft, fetchVersion, fetchDraft } from "@/api/flowVersions";
+import type { FlowVersionMeta } from "@/api/flowVersions";
 
 const store = useFlowStudioStore();
 const selectedId = ref("");

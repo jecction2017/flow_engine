@@ -1,1 +1,1 @@
-"Managed flow runner package."
+"""Optional runner utilities (package reserved for future use)."""
