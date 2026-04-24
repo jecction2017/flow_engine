@@ -37,3 +37,4 @@ env/
 # 日志 & 数据库
 *.log
 *.sqlite3
+.env

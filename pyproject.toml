@@ -16,6 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+mysql = [
+  "sqlalchemy>=2.0",
+  "pymysql>=1.1",
+  "python-dotenv>=1.0",
+  "mcp>=1.2.0",
+]
 api = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
@@ -25,6 +31,7 @@ api = [
 
 [project.scripts]
 flow-api = "flow_engine.http_api:main"
+flow-db = "flow_engine.db.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

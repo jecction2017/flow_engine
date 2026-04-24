@@ -1,0 +1,17 @@
+---
+description: 本机 MySQL — MCP 读写、flow-db 建表与 Agent 约定
+globs: src/flow_engine/db/**,src/flow_engine/mcp_mysql/**,.env.example,.cursor/mcp.json
+alwaysApply: false
+---
+
+# Local MySQL（Agent）
+
+## Agent 约定
+
+- 查数据/看表结构：优先 `schema_info` 与 `select_execute`；不要编造结果。
+- 改数据：优先 `dml_execute`；`UPDATE/DELETE` 前先 `SELECT COUNT(*)` 预估，执行后回查确认。
+- 建表或改模型：修改 `src/flow_engine/db/models.py` 后在本机执行 `flow-db apply`（`create_all` 仅保证新表创建，不自动迁移已有列）。
+- 已知业务表查询（如 `users`）：先读 `src/flow_engine/db/models.py` 确认字段语义，再写 SQL；若模型与库不一致，再用 `schema_info(table_name=...)` 回退校验。
+- MCP 连接配置：`\.cursor\mcp.json` 使用 `python -m flow_engine.mcp_mysql`、`PYTHONPATH=${workspaceFolder}/src`、`envFile=.env`；改配置后重启 Cursor。
+- 数据库连接优先级：`DATABASE_URL` > `MYSQL_*`（见 `.env.example`）；不要在规则或 `mcp.json` 写明文密码。
+- 工具行为与语句限制以实现为准：`src/flow_engine/mcp_mysql/read_validation.py`、`src/flow_engine/mcp_mysql/dml_validation.py`。
