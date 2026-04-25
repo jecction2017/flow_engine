@@ -32,12 +32,33 @@
 
     <div class="body">
       <aside class="left">
+        <div class="search-box">
+          <input
+            v-model="searchQuery"
+            class="search-input mono"
+            type="text"
+            placeholder="搜索模块ID或内容..."
+          />
+          <button
+            v-if="searchQuery.trim()"
+            type="button"
+            class="search-clear"
+            title="清空搜索"
+            @click="searchQuery = ''"
+          >
+            ×
+          </button>
+        </div>
+        <div class="search-meta">
+          <span>base 命中 {{ filteredBaseModules.length }}</span>
+          <span>profile 命中 {{ filteredProfileModules.length }}</span>
+        </div>
         <div class="section-title">
           <span>Base Modules</span>
           <button type="button" class="link" @click="startNew('base')">新增</button>
         </div>
         <button
-          v-for="m in sortedBaseModules"
+          v-for="m in filteredBaseModules"
           :key="`base:${m.module_id}`"
           type="button"
           class="module-btn"
@@ -47,13 +68,14 @@
           <span class="mono">{{ m.module_id }}</span>
           <span v-if="m.module_id === 'core'" class="module-lock" title="核心模块（固定）" aria-label="core-locked">🔒</span>
         </button>
+        <p v-if="filteredBaseModules.length === 0" class="empty">未找到匹配的 base 模块。</p>
 
         <div class="section-title profile-title">
           <span>Profile Overrides</span>
           <button type="button" class="link" @click="startNew('profile')">新增</button>
         </div>
         <button
-          v-for="m in profileModules"
+          v-for="m in filteredProfileModules"
           :key="`profile:${m.module_id}`"
           type="button"
           class="module-btn"
@@ -62,7 +84,8 @@
         >
           <span class="mono">{{ m.module_id }}</span>
         </button>
-        <p v-if="profileModules.length === 0" class="empty">当前 profile 暂无覆盖模块。</p>
+        <p v-if="!debouncedSearch && profileModules.length === 0" class="empty">当前 profile 暂无覆盖模块。</p>
+        <p v-if="debouncedSearch && filteredProfileModules.length === 0" class="empty">未找到匹配的 profile 模块。</p>
       </aside>
 
       <div class="right">
@@ -98,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import {
   deleteDictModule,
@@ -125,6 +148,28 @@ const editorYaml = ref("{}\n");
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
+const searchQuery = ref("");
+const debouncedSearch = ref("");
+const moduleContentCache = ref<Record<string, string>>({});
+const modulePathHintsCache = ref<Record<string, string>>({});
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => searchQuery.value,
+  (q) => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedSearch.value = q.trim().toLowerCase();
+    }, 160);
+  },
+);
+
+watch(
+  () => debouncedSearch.value,
+  () => {
+    void hydrateSearchCache();
+  },
+);
 const sortedBaseModules = computed(() => {
   const arr = [...baseModules.value];
   arr.sort((a, b) => {
@@ -134,6 +179,8 @@ const sortedBaseModules = computed(() => {
   });
   return arr;
 });
+const filteredBaseModules = computed(() => filterModules(sortedBaseModules.value, "base"));
+const filteredProfileModules = computed(() => filterModules(profileModules.value, "profile"));
 
 const resolvedText = computed({
   get: () => (resolved.value ? JSON.stringify(resolved.value.resolved_dictionary, null, 2) : "{}"),
@@ -165,9 +212,100 @@ async function reloadProfile() {
   baseModules.value = base.modules;
   profileModules.value = prof.modules;
   resolved.value = res;
+  moduleContentCache.value = {};
+  modulePathHintsCache.value = {};
+  await hydrateSearchCache();
   if (!selected.value && base.modules.length) {
     await selectModule("base", base.modules[0].module_id);
   }
+}
+
+function moduleCacheKey(layer: DictLayer, moduleId: string): string {
+  return layer === "profile" ? `${layer}:${selectedProfile.value}:${moduleId}` : `${layer}:${moduleId}`;
+}
+
+function filterModules(modules: DictModuleInfo[], layer: DictLayer): DictModuleInfo[] {
+  const q = debouncedSearch.value;
+  if (!q) return modules;
+  return modules.filter((m) => {
+    const idHit = m.module_id.toLowerCase().includes(q);
+    if (idHit) return true;
+    const key = moduleCacheKey(layer, m.module_id);
+    const content = moduleContentCache.value[key] ?? "";
+    if (content.toLowerCase().includes(q)) return true;
+    // Support dot-path queries like `app.http.timeout_sec`.
+    if (q.includes(".")) {
+      const hints = modulePathHintsCache.value[key] ?? "";
+      return hints.includes(q);
+    }
+    return false;
+  });
+}
+
+function extractYamlPathHints(moduleId: string, yamlText: string): string {
+  const out = new Set<string>();
+  const base = moduleId.trim().toLowerCase();
+  if (base) out.add(base);
+
+  const lines = yamlText.split(/\r?\n/);
+  const stack: Array<{ indent: number; key: string }> = [];
+  for (const raw of lines) {
+    const line = raw.replace(/\t/g, "  ");
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const m = /^(\s*)([A-Za-z0-9_-]+)\s*:/.exec(line);
+    if (!m) continue;
+    const indent = m[1]?.length ?? 0;
+    const key = (m[2] ?? "").trim().toLowerCase();
+    while (stack.length && indent <= stack[stack.length - 1]!.indent) {
+      stack.pop();
+    }
+    stack.push({ indent, key });
+    const relPath = stack.map((s) => s.key).join(".");
+    out.add(relPath);
+    if (base) out.add(`${base}.${relPath}`);
+  }
+  return Array.from(out).join("\n");
+}
+
+async function hydrateSearchCache(): Promise<void> {
+  const q = debouncedSearch.value;
+  if (!q) return;
+  const tasks: Array<Promise<void>> = [];
+  for (const m of baseModules.value) {
+    const key = moduleCacheKey("base", m.module_id);
+    if (!(key in moduleContentCache.value)) {
+      tasks.push(
+        fetchDictModule("base", m.module_id)
+          .then((mod) => {
+            const yaml = mod.yaml || "";
+            moduleContentCache.value[key] = yaml;
+            modulePathHintsCache.value[key] = extractYamlPathHints(m.module_id, yaml);
+          })
+          .catch(() => {
+            moduleContentCache.value[key] = "";
+            modulePathHintsCache.value[key] = m.module_id.toLowerCase();
+          }),
+      );
+    }
+  }
+  for (const m of profileModules.value) {
+    const key = moduleCacheKey("profile", m.module_id);
+    if (!(key in moduleContentCache.value)) {
+      tasks.push(
+        fetchDictModule("profile", m.module_id, selectedProfile.value)
+          .then((mod) => {
+            const yaml = mod.yaml || "";
+            moduleContentCache.value[key] = yaml;
+            modulePathHintsCache.value[key] = extractYamlPathHints(m.module_id, yaml);
+          })
+          .catch(() => {
+            moduleContentCache.value[key] = "";
+            modulePathHintsCache.value[key] = m.module_id.toLowerCase();
+          }),
+      );
+    }
+  }
+  if (tasks.length) await Promise.all(tasks);
 }
 
 async function selectModule(layer: DictLayer, moduleId: string) {
@@ -203,6 +341,8 @@ async function saveModule() {
       editorLayer.value === "profile" ? selectedProfile.value : undefined,
     );
     selected.value = { layer: editorLayer.value, module_id: moduleId };
+    moduleContentCache.value = {};
+    modulePathHintsCache.value = {};
     await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -225,6 +365,8 @@ async function removeModule() {
     selected.value = null;
     editorModuleId.value = "";
     editorYaml.value = "{}\n";
+    moduleContentCache.value = {};
+    modulePathHintsCache.value = {};
     await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -378,6 +520,50 @@ void reload();
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   overflow: auto;
   padding: 10px 12px;
+}
+
+.search-box {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 7px 28px 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.search-clear {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.search-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 2px 10px;
 }
 
 .section-title {
