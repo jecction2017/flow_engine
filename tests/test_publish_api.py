@@ -343,3 +343,21 @@ def test_lookup_api_and_runtime_use_selected_profile(client: TestClient) -> None
     r = client.post("/api/flows/foo/run", json={"profile": "sit"})
     assert r.status_code == 200, r.text
     assert r.json()["global_ns"]["rows"] == [{"appid": "sit-1"}]
+
+
+def test_lookup_put_accepts_json_schema_types(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "required": ["appid", "status"],
+            "properties": {
+                "appid": {"type": "string"},
+                "status": {"type": "integer", "enum": [0, 1]},
+            },
+            "additionalProperties": False,
+        },
+        "rows": [{"appid": "demo-001", "status": 1}],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text

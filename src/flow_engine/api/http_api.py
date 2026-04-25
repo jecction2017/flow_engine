@@ -83,6 +83,7 @@ class SetDefaultProfileBody(BaseModel):
 
 
 class PutLookupBody(BaseModel):
+    schema: dict[str, Any] | None = None
     fields: list[str] | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
