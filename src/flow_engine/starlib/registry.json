@@ -35,7 +35,7 @@
       "id": "python://dict/get",
       "starlark_name": "dict_get",
       "category": "dictionary",
-      "summary": "按点路径读取数据字典（dictionary.yaml），缺省返回 default，等同 dict.get 语义",
+      "summary": "按点路径读取当前已解析数据字典，缺省返回 default，等同 dict.get 语义",
       "signature": [
         { "name": "path", "type": "str", "required": true },
         { "name": "default", "type": "any", "required": false }

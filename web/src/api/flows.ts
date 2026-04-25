@@ -62,6 +62,16 @@ export type RunFlowRequest = {
   initial_context?: Record<string, unknown> | null;
   merge?: boolean;
   timeout_sec?: number;
+  profile?: string | null;
+  runtime_patch?: Record<string, unknown> | null;
+};
+
+export type ResolvedModuleInfo = {
+  module_id: string;
+  base_path?: string | null;
+  profile_path?: string | null;
+  from_base: boolean;
+  from_profile: boolean;
 };
 
 export type NodeRunTransition = {
@@ -111,6 +121,9 @@ export type RunFlowResponse = {
   node_runs?: NodeRunInfo[];
   flow_logs?: LogEntry[];
   global_ns: Record<string, unknown>;
+  resolved_profile?: string;
+  resolved_modules?: ResolvedModuleInfo[];
+  resolved_hash?: string;
 };
 
 export async function runFlow(flowId: string, body: RunFlowRequest = {}): Promise<RunFlowResponse> {

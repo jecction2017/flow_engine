@@ -12,85 +12,149 @@
         </div>
       </div>
       <div class="actions">
+        <label class="profile-row">
+          <span>Profile</span>
+          <select v-model="selectedProfile" class="inp-mini" :disabled="loading" @change="reloadProfile">
+            <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
+          </select>
+        </label>
+        <input v-model="newProfile" class="inp-mini mono" placeholder="new_profile" />
+        <button type="button" class="btn ghost" :disabled="loading || !newProfile.trim()" @click="addProfile">
+          新建 profile
+        </button>
         <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
-        <button type="button" class="btn primary" :disabled="saving || loading" @click="saveSubtree">
-          {{ saving ? "保存中…" : "保存当前节点 (YAML)" }}
-        </button>
-        <button type="button" class="btn ghost" :disabled="loading" @click="saveFullFromEditor">
-          用右侧内容覆盖整份 dictionary
-        </button>
-        <button type="button" class="btn ghost danger" :disabled="loading" @click="removeSelected">删除选中</button>
       </div>
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
 
     <div class="hint-bar">
-      树节点对应点路径（如 <code class="mono">app.http.timeout_sec</code>）。流程 / Starlark 使用
-      <code class="mono">dict_get("app.http.timeout_sec")</code>或上下文快照
-      <code class="mono">resolve("$.global.dictionary.app.http.timeout_sec")</code>。
+      模块文件按 dot 命名展开为字典树路径，如 <code class="mono">middleware.kafka</code> 对应
+      <code class="mono">$.global.dictionary.middleware.kafka</code>。运行时 <code class="mono">dict_get()</code>
+      与上下文快照读取同一份 resolved dictionary。
     </div>
 
     <div class="body">
       <aside class="left">
+        <div class="section-title">
+          <span>Base Modules</span>
+          <button type="button" class="link" @click="startNew('base')">新增</button>
+        </div>
         <button
+          v-for="m in sortedBaseModules"
+          :key="`base:${m.module_id}`"
           type="button"
-          class="root-btn"
-          :class="{ active: selectedPath === '' }"
-          @click="selectPath('')"
+          class="module-btn"
+          :class="{ active: selected?.layer === 'base' && selected.module_id === m.module_id }"
+          @click="selectModule('base', m.module_id)"
         >
-          （根）dictionary.yaml
+          <span class="mono">{{ m.module_id }}</span>
+          <span v-if="m.module_id === 'core'" class="module-lock" title="核心模块（固定）" aria-label="core-locked">🔒</span>
         </button>
-        <DictTreeItem
-          v-if="treeKeys.length"
-          :node="tree"
-          :path-prefix="[]"
-          :selected-path="selectedPath"
-          @select="selectPath"
-        />
-        <p v-else class="empty">暂无键，可在右侧编辑根 YAML 保存。</p>
+
+        <div class="section-title profile-title">
+          <span>Profile Overrides</span>
+          <button type="button" class="link" @click="startNew('profile')">新增</button>
+        </div>
+        <button
+          v-for="m in profileModules"
+          :key="`profile:${m.module_id}`"
+          type="button"
+          class="module-btn"
+          :class="{ active: selected?.layer === 'profile' && selected.module_id === m.module_id }"
+          @click="selectModule('profile', m.module_id)"
+        >
+          <span class="mono">{{ m.module_id }}</span>
+        </button>
+        <p v-if="profileModules.length === 0" class="empty">当前 profile 暂无覆盖模块。</p>
       </aside>
 
       <div class="right">
         <div class="meta">
-          <span class="lbl">当前路径</span>
-          <code class="mono path">{{ selectedPath || "（根）" }}</code>
+          <span class="lbl">当前模块</span>
+          <select v-model="editorLayer" class="inp-mini">
+            <option value="base">base</option>
+            <option value="profile">profile</option>
+          </select>
+          <input v-model="editorModuleId" class="inp-mini mono module-input" placeholder="app.feature" />
+          <button type="button" class="btn primary" :disabled="saving || !editorModuleId.trim()" @click="saveModule">
+            {{ saving ? "保存中…" : "保存模块" }}
+          </button>
+          <button
+            type="button"
+            class="btn ghost danger"
+            :disabled="loading || !selected || (selected.layer === 'base' && selected.module_id === 'core')"
+            @click="removeModule"
+          >
+            删除
+          </button>
         </div>
-        <CodeEditor v-model="editorYaml" language="yaml" :height="520" />
+        <CodeEditor v-model="editorYaml" language="yaml" :height="280" />
+
+        <div class="preview-head">
+          <span class="lbl">Resolved Preview</span>
+          <span v-if="resolved" class="mono hash">{{ resolved.resolved_hash }}</span>
+        </div>
+        <CodeEditor v-model="resolvedText" language="json" :height="280" read-only />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
-import DictTreeItem from "@/components/DictTreeItem.vue";
 import {
-  deleteDictSubtree,
-  fetchDictDocument,
-  fetchDictSubtree,
-  saveDictFull,
-  saveDictSubtree,
+  createDictProfile,
+  deleteDictModule,
+  fetchDictModule,
+  fetchDictModules,
+  fetchDictResolved,
+  fetchDictSummary,
+  saveDictModule,
+  type DictLayer,
+  type DictModuleInfo,
+  type DictResolveResponse,
 } from "@/api/dict";
 
 const dictDir = ref("");
-const tree = ref<Record<string, unknown>>({});
-const selectedPath = ref("");
-const editorYaml = ref("#加载中…\n");
+const profiles = ref<string[]>(["default"]);
+const selectedProfile = ref("default");
+const newProfile = ref("");
+const baseModules = ref<DictModuleInfo[]>([]);
+const profileModules = ref<DictModuleInfo[]>([]);
+const resolved = ref<DictResolveResponse | null>(null);
+const selected = ref<{ layer: DictLayer; module_id: string } | null>(null);
+const editorLayer = ref<DictLayer>("base");
+const editorModuleId = ref("");
+const editorYaml = ref("{}\n");
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
+const sortedBaseModules = computed(() => {
+  const arr = [...baseModules.value];
+  arr.sort((a, b) => {
+    if (a.module_id === "core" && b.module_id !== "core") return -1;
+    if (a.module_id !== "core" && b.module_id === "core") return 1;
+    return a.module_id.localeCompare(b.module_id);
+  });
+  return arr;
+});
 
-const treeKeys = computed(() => Object.keys(tree.value));
+const resolvedText = computed({
+  get: () => (resolved.value ? JSON.stringify(resolved.value.resolved_dictionary, null, 2) : "{}"),
+  set: () => {},
+});
 
 async function reload() {
   error.value = "";
   loading.value = true;
   try {
-    const doc = await fetchDictDocument();
-    dictDir.value = doc.dict_dir;
-    tree.value = doc.tree && typeof doc.tree === "object" ? doc.tree : {};
+    const summary = await fetchDictSummary();
+    dictDir.value = summary.dict_dir;
+    profiles.value = summary.profiles.length ? summary.profiles : ["default"];
+    if (!profiles.value.includes(selectedProfile.value)) selectedProfile.value = profiles.value[0] ?? "default";
+    await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -98,34 +162,68 @@ async function reload() {
   }
 }
 
-async function loadEditorForPath(path: string) {
+async function reloadProfile() {
+  const [base, prof, res] = await Promise.all([
+    fetchDictModules("base"),
+    fetchDictModules("profile", selectedProfile.value),
+    fetchDictResolved(selectedProfile.value),
+  ]);
+  baseModules.value = base.modules;
+  profileModules.value = prof.modules;
+  resolved.value = res;
+  if (!selected.value && base.modules.length) {
+    await selectModule("base", base.modules[0].module_id);
+  }
+}
+
+async function selectModule(layer: DictLayer, moduleId: string) {
   error.value = "";
   try {
-    const sub = await fetchDictSubtree(path);
-    editorYaml.value = sub.yaml ?? "";
+    const mod = await fetchDictModule(layer, moduleId, layer === "profile" ? selectedProfile.value : undefined);
+    selected.value = { layer, module_id: moduleId };
+    editorLayer.value = layer;
+    editorModuleId.value = moduleId;
+    editorYaml.value = mod.yaml || "{}\n";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
-function selectPath(path: string) {
-  selectedPath.value = path;
+function startNew(layer: DictLayer) {
+  selected.value = null;
+  editorLayer.value = layer;
+  editorModuleId.value = "";
+  editorYaml.value = "{}\n";
 }
 
-watch(
-  () => selectedPath.value,
-  (p) => {
-    void loadEditorForPath(p);
-  },
-  { immediate: true },
-);
+async function addProfile() {
+  const p = newProfile.value.trim();
+  if (!p) return;
+  error.value = "";
+  try {
+    await createDictProfile(p);
+    selectedProfile.value = p;
+    newProfile.value = "";
+    await reload();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
 
-async function saveSubtree() {
+async function saveModule() {
+  const moduleId = editorModuleId.value.trim();
+  if (!moduleId) return;
   saving.value = true;
   error.value = "";
   try {
-    await saveDictSubtree(selectedPath.value, editorYaml.value);
-    await reload();
+    await saveDictModule(
+      editorLayer.value,
+      moduleId,
+      editorYaml.value,
+      editorLayer.value === "profile" ? selectedProfile.value : undefined,
+    );
+    selected.value = { layer: editorLayer.value, module_id: moduleId };
+    await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -133,31 +231,21 @@ async function saveSubtree() {
   }
 }
 
-async function saveFullFromEditor() {
-  if (!confirm("将用右侧 YAML 完整覆盖 dictionary.yaml 根文档，确定？")) return;
-  saving.value = true;
-  error.value = "";
-  try {
-    await saveDictFull(editorYaml.value);
-    selectedPath.value = "";
-    await reload();
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function removeSelected() {
-  const p = selectedPath.value;
-  const msg = p ? `删除路径「${p}」及其子树？` : "清空整份字典（根）？";
-  if (!confirm(msg)) return;
+async function removeModule() {
+  if (!selected.value) return;
+  if (!confirm(`删除 ${selected.value.layer}:${selected.value.module_id}？`)) return;
   error.value = "";
   loading.value = true;
   try {
-    await deleteDictSubtree(p);
-    selectedPath.value = "";
-    await reload();
+    await deleteDictModule(
+      selected.value.layer,
+      selected.value.module_id,
+      selected.value.layer === "profile" ? selectedProfile.value : undefined,
+    );
+    selected.value = null;
+    editorModuleId.value = "";
+    editorYaml.value = "{}\n";
+    await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -228,6 +316,23 @@ void reload();
   align-items: center;
 }
 
+.profile-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.inp-mini {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .btn {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -295,6 +400,71 @@ void reload();
   padding: 10px 12px;
 }
 
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.profile-title {
+  margin-top: 14px;
+}
+
+.link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.module-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.module-btn:hover {
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
+}
+
+.module-btn.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+}
+
+.module-lock {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
 .right {
   min-width: 0;
   padding: 12px 16px;
@@ -331,6 +501,25 @@ void reload();
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.module-input {
+  min-width: 220px;
+}
+
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hash {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .lbl {

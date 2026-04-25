@@ -27,6 +27,16 @@
           <input v-model="version" class="inp" placeholder="例如：1.0" />
         </label>
 
+        <label class="field">
+          <span class="lbl-row">
+            默认 Profile
+            <InfoTip text="流程运行默认绑定的数据字典 profile；运行时可临时覆盖。" />
+          </span>
+          <select v-model="defaultProfile" class="inp mono">
+            <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+          </select>
+        </label>
+
         <label class="field full">
           <span class="lbl-row">
             initial_context (JSON)
@@ -169,12 +179,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch, ref } from "vue";
+import { computed, reactive, watch, ref, onMounted } from "vue";
 import type { ExecutionStrategy } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import InfoTip from "./InfoTip.vue";
+import { fetchDictProfiles } from "@/api/dict";
 
 const store = useFlowStudioStore();
+const profileOptions = ref<string[]>(["default"]);
 
 const selectedStrategyKey = computed<string | null>(() =>
   store.selection.kind === "strategy" ? store.selection.key : null,
@@ -188,6 +200,26 @@ const displayName = computed({
 const version = computed({
   get: () => store.doc.version,
   set: (v: string) => store.setFlowMeta({ version: v }),
+});
+
+const defaultProfile = computed({
+  get: () => {
+    const cur = (store.doc.default_profile ?? "default").trim() || "default";
+    if (!profileOptions.value.includes(cur)) profileOptions.value = [...profileOptions.value, cur].sort();
+    return cur;
+  },
+  set: (v: string) => store.setFlowMeta({ default_profile: v.trim() || "default" }),
+});
+
+onMounted(async () => {
+  try {
+    const res = await fetchDictProfiles();
+    if (Array.isArray(res.profiles) && res.profiles.length) {
+      profileOptions.value = [...res.profiles];
+    }
+  } catch {
+    profileOptions.value = profileOptions.value.length ? profileOptions.value : ["default"];
+  }
 });
 
 const ctx = computed({

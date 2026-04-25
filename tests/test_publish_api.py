@@ -14,10 +14,13 @@ from fastapi.testclient import TestClient
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Spin up a fresh FastAPI app backed by an isolated flows directory."""
     monkeypatch.setenv("FLOW_ENGINE_FLOWS_DIR", str(tmp_path / "flows"))
+    monkeypatch.setenv("FLOW_ENGINE_DICT_DIR", str(tmp_path / "dict"))
 
     import flow_engine.api.http_api as api_mod
+    import flow_engine.stores.data_dict as dict_mod
     import flow_engine.stores.version_store as vs_mod
 
+    dict_mod.invalidate_store_cache()
     importlib.reload(vs_mod)
     importlib.reload(api_mod)
 
@@ -29,6 +32,7 @@ def _sample_flow_payload(display_name: str = "demo") -> dict[str, Any]:
     return {
         "display_name": display_name,
         "version": "1.0.0",
+        "default_profile": "default",
         "strategies": {"default_sync": {"name": "default_sync", "mode": "sync"}},
         "nodes": [],
     }
@@ -224,3 +228,52 @@ def test_run_empty_flow_completes(client: TestClient) -> None:
     body = r.json()
     assert body["state"] == "COMPLETED"
     assert body["ok"] is True
+    assert body["resolved_profile"] == "default"
+    assert body["resolved_hash"]
+
+
+def test_run_uses_profile_and_runtime_patch_for_dict_get(client: TestClient) -> None:
+    _create_flow(client, "foo")
+    r = client.put("/api/dict/module?layer=base&module_id=app", json={"yaml": "http:\n  timeout_sec: 10\n"})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/dict/profiles", json={"profile": "dev"})
+    assert r.status_code == 200, r.text
+    r = client.put(
+        "/api/dict/module?layer=profile&profile=dev&module_id=app",
+        json={"yaml": "http:\n  timeout_sec: 20\n"},
+    )
+    assert r.status_code == 200, r.text
+
+    payload = _sample_flow_payload("dict-run")
+    payload["default_profile"] = "dev"
+    payload["nodes"] = [
+        {
+            "type": "task",
+            "id": "read_dict",
+            "name": "read_dict",
+            "strategy_ref": "default_sync",
+            "script": (
+                '{"builtin": dict_get("app.http.timeout_sec"), '
+                '"snapshot": resolve("$.global.dictionary.app.http.timeout_sec")}\n'
+            ),
+            "boundary": {
+                "inputs": {},
+                "outputs": {
+                    "builtin": "$.global.builtin",
+                    "snapshot": "$.global.snapshot",
+                },
+            },
+        }
+    ]
+    r = client.put("/api/flows/foo/draft", json=payload)
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/api/flows/foo/run",
+        json={"runtime_patch": {"app": {"http": {"timeout_sec": 30}}}},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["resolved_profile"] == "dev"
+    assert body["global_ns"]["builtin"] == 30
+    assert body["global_ns"]["snapshot"] == 30

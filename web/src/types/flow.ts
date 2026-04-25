@@ -75,6 +75,7 @@ export interface FlowDocument {
    */
   display_name?: string | null;
   version: string;
+  default_profile?: string | null;
   strategies: Record<string, ExecutionStrategy>;
   nodes: FlowNode[];
   initial_context?: Record<string, unknown> | null;

@@ -257,6 +257,12 @@
         <details class="dbg-details" open>
           <summary class="dbg-sum">调试（上下文 JSON + 输出）</summary>
           <div class="row dbg">
+            <label class="lbl">字典 Profile</label>
+            <select v-model="debugProfile" class="sel">
+              <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+            </select>
+          </div>
+          <div class="row dbg">
             <label class="lbl">初始上下文 JSON</label>
             <textarea v-model="ctxJson" class="area mono" rows="4" spellcheck="false" />
           </div>
@@ -283,6 +289,7 @@ import {
   type RegistryInternalModule,
   type RegistryPythonFn,
 } from "@/api/starlark";
+import { fetchDictProfiles } from "@/api/dict";
 import {
   filterPythonModuleGroups,
   formatPythonExampleCall,
@@ -315,6 +322,8 @@ const userScriptContent = ref(`load("internal://lib/helpers.star", "double_int")
 `);
 const ctxJson = ref("{}");
 const debugOut = ref("// 在「用户脚本」分区点击「调试」");
+const profileOptions = ref<string[]>(["default"]);
+const debugProfile = ref("default");
 
 const loading = ref(false);
 const saving = ref(false);
@@ -503,7 +512,7 @@ async function runDebug() {
   }
   pendingDebug.value = true;
   try {
-    const res = await debugNode(userScriptContent.value, ctx);
+    const res = await debugNode(userScriptContent.value, ctx, debugProfile.value);
     debugOut.value = JSON.stringify(res, null, 2);
   } catch (e) {
     debugOut.value = e instanceof Error ? e.message : String(e);
@@ -513,7 +522,15 @@ async function runDebug() {
 }
 
 onMounted(() => {
-  void refreshAll().then(() => {
+  void refreshAll().then(async () => {
+    try {
+      const pf = await fetchDictProfiles();
+      if (Array.isArray(pf.profiles) && pf.profiles.length) {
+        profileOptions.value = [...pf.profiles];
+      }
+    } catch {
+      // keep fallback
+    }
     void loadFromPath();
   });
 });

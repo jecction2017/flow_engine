@@ -77,6 +77,7 @@ function writePersistedDebugContexts(
 const SAMPLE: FlowDocument = {
   display_name: "demo_flow",
   version: "1.0.0",
+  default_profile: "default",
   strategies: {
     default_sync: { name: "default_sync", mode: "sync" },
     async_io: { name: "async_io", mode: "async", concurrency: 8, timeout: 120 },
@@ -172,7 +173,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     }
   }
 
-  function setFlowMeta(patch: Partial<Pick<FlowDocument, "display_name" | "version">>) {
+  function setFlowMeta(patch: Partial<Pick<FlowDocument, "display_name" | "version" | "default_profile">>) {
     doc.value = { ...doc.value, ...patch };
   }
 

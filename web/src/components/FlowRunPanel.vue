@@ -29,8 +29,15 @@
 
     <div class="grid">
       <section class="col">
+        <div class="lbl">Profile 覆盖（可留空）</div>
+        <select v-model="profileText" class="one-line mono">
+          <option value="">使用流程默认（{{ props.defaultProfile || "default" }}）</option>
+          <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+        </select>
         <div class="lbl">initial_context 覆盖（JSON，可留空）</div>
         <textarea v-model="ctxText" class="area mono" rows="10" spellcheck="false" />
+        <div class="lbl">runtime_patch（JSON，可留空）</div>
+        <textarea v-model="runtimePatchText" class="area mono" rows="7" spellcheck="false" placeholder="{ }" />
         <p v-if="error" class="err">{{ error }}</p>
       </section>
       <section class="col timeline-col">
@@ -203,6 +210,11 @@
       </section>
       <section class="col">
         <div class="lbl">全局上下文（global_ns）</div>
+        <div v-if="response" class="dict-meta">
+          <span>profile: <code class="mono">{{ response.resolved_profile ?? "—" }}</code></span>
+          <span>hash: <code class="mono">{{ response.resolved_hash ?? "—" }}</code></span>
+          <span>modules: {{ response.resolved_modules?.length ?? 0 }}</span>
+        </div>
         <pre class="out mono">{{ globalsText }}</pre>
         <p v-if="response?.message" class="msg">{{ response.message }}</p>
       </section>
@@ -214,6 +226,7 @@
 import { computed, reactive, ref, watch } from "vue";
 import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
+import { fetchDictProfiles } from "@/api/dict";
 
 const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
@@ -234,10 +247,14 @@ const props = defineProps<{
   flowId: string | null;
   visible: boolean;
   initialContext: Record<string, unknown> | null | undefined;
+  defaultProfile?: string | null;
 }>();
 defineEmits<{ (e: "close"): void }>();
 
 const ctxText = ref("");
+const profileText = ref("");
+const profileOptions = ref<string[]>(["default"]);
+const runtimePatchText = ref("");
 const merge = ref(true);
 const timeoutSec = ref(30);
 const pending = ref(false);
@@ -266,6 +283,25 @@ watch(
     openLogsFor.value = null;
   },
 );
+
+watch(
+  () => props.defaultProfile,
+  (p) => {
+    if (p && !profileOptions.value.includes(p)) profileOptions.value = [...profileOptions.value, p].sort();
+  },
+  { immediate: true },
+);
+
+void (async () => {
+  try {
+    const res = await fetchDictProfiles();
+    if (Array.isArray(res.profiles) && res.profiles.length) {
+      profileOptions.value = [...res.profiles];
+    }
+  } catch {
+    // fallback keep default option only
+  }
+})();
 
 const globalsText = computed(() =>
   response.value ? JSON.stringify(response.value.global_ns, null, 2) : "// 未运行",
@@ -478,6 +514,7 @@ async function run() {
   if (!props.flowId) return;
   error.value = null;
   let override: Record<string, unknown> | null = null;
+  let runtimePatch: Record<string, unknown> | null = null;
   const raw = ctxText.value.trim();
   if (raw) {
     try {
@@ -491,12 +528,27 @@ async function run() {
       return;
     }
   }
+  const patchRaw = runtimePatchText.value.trim();
+  if (patchRaw) {
+    try {
+      const parsed: unknown = JSON.parse(patchRaw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("runtime_patch 必须是一个 JSON 对象");
+      }
+      runtimePatch = parsed as Record<string, unknown>;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e);
+      return;
+    }
+  }
   pending.value = true;
   try {
     response.value = await runFlow(props.flowId, {
       initial_context: override,
       merge: merge.value,
       timeout_sec: timeoutSec.value,
+      profile: profileText.value.trim() || null,
+      runtime_patch: runtimePatch,
     });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -699,6 +751,16 @@ async function run() {
   line-height: 1.45;
 }
 
+.one-line {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px 10px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  outline: none;
+}
+
 .area {
   padding: 10px;
   border: 1px solid var(--border);
@@ -721,6 +783,15 @@ async function run() {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.dict-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .err {

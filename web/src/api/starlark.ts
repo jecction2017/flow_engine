@@ -94,13 +94,18 @@ export type DebugNodeResponse =
   | { ok: true; result: Record<string, unknown> }
   | { ok: false; error: string; traceback?: string };
 
-export async function debugNode(script: string, initialContext: Record<string, unknown> = {}): Promise<DebugNodeResponse> {
+export async function debugNode(
+  script: string,
+  initialContext: Record<string, unknown> = {},
+  profile?: string,
+): Promise<DebugNodeResponse> {
   const r = await fetch("/api/debug/node", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({
       script,
       initial_context: initialContext,
+      profile: profile ?? null,
     }),
   });
   return r.json() as Promise<DebugNodeResponse>;

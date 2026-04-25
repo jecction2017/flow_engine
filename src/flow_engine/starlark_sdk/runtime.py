@@ -306,6 +306,10 @@ def _guard_builtin(name: str, fn: Any) -> Any:
 def _attach_sdk_python(mod: sl.Module) -> None:
     # Use dynamic registry snapshot so all @register_builtin functions,
     # including runtime-provided log builtins, are attached uniformly.
+    # Importing module here guarantees decorators have populated registry
+    # even when runtime is used outside HTTP API bootstrap.
+    from flow_engine.starlark_sdk import python_builtin_impl as _python_builtin_impl  # noqa: F401
+
     py_builtins = builtin_map()
     for name, fn in py_builtins.items():
         # `log*` are intentionally NOT wrapped by `_guard_builtin`: they're

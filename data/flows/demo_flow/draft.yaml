@@ -1,5 +1,6 @@
 display_name: demo_flow
 version: 1.0.0
+default_profile: prod
 strategies:
   default_sync:
     name: default_sync
@@ -45,7 +46,8 @@ nodes:
     name: 睡眠
     strategy_ref: default_sync
     wait_before: false
-    script: "system_sleep(2)\n{\n  \"ok\": True\n}\n"
+    script: "system_sleep(2)\nlog_info(dict_get(\"app.log.level\"))\n{\n  \"ok\":\
+      \ True\n}\n"
     boundary:
       inputs: {}
       outputs: {}

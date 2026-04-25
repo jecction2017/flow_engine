@@ -16,6 +16,9 @@
     <div class="lbl row">
       <span class="lbl-row">调试上下文 (JSON)</span>
       <span class="actions">
+        <select v-model="profileText" class="mini sel-mini mono" title="调试使用的字典 profile">
+          <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+        </select>
         <button type="button" class="mini" @click="resetFromInitialContext">重置</button>
         <button type="button" class="mini" @click="clearCtx">清空</button>
       </span>
@@ -58,11 +61,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
 import type { TaskNode } from "@/types/flow";
 import InfoTip from "./InfoTip.vue";
+import { fetchDictProfiles } from "@/api/dict";
 
 const props = defineProps<{
   path: number[];
@@ -74,6 +78,8 @@ const responseText = ref("// 等待调试输出");
 const pending = ref(false);
 const hint = ref("");
 const logs = ref<LogEntry[]>([]);
+const profileOptions = ref<string[]>(["default"]);
+const profileText = ref("default");
 
 const task = computed(() => {
   // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
@@ -123,6 +129,16 @@ watch(ctxText, (v) => {
   store.setDebugContextText(props.path, v);
 });
 
+watch(
+  () => store.doc.default_profile,
+  (v) => {
+    const p = (v ?? "default").trim() || "default";
+    if (!profileOptions.value.includes(p)) profileOptions.value = [...profileOptions.value, p].sort();
+    profileText.value = p;
+  },
+  { immediate: true },
+);
+
 function resetFromInitialContext() {
   ctxText.value = defaultCtxText();
 }
@@ -145,6 +161,7 @@ async function run() {
   const body = {
     script: task.value.script,
     initial_context: parsedCtx.value.ok ? parsedCtx.value.value : {},
+    profile: profileText.value,
   };
 
   try {
@@ -192,6 +209,16 @@ async function run() {
     pending.value = false;
   }
 }
+
+onMounted(async () => {
+  try {
+    const res = await fetchDictProfiles();
+    if (Array.isArray(res.profiles) && res.profiles.length) profileOptions.value = [...res.profiles];
+    if (!profileOptions.value.includes(profileText.value)) profileOptions.value.push(profileText.value);
+  } catch {
+    // keep defaults
+  }
+});
 </script>
 
 <style scoped>
@@ -289,6 +316,10 @@ async function run() {
 .mini:hover {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.sel-mini {
+  max-width: 150px;
 }
 
 .ctx-hint {

@@ -233,6 +233,7 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     IPC boundary so the orchestrator can attach them to the owning node."""
     from flow_engine.starlark_sdk import runtime as sdk_runtime
     from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
+    from flow_engine.stores.data_dict import dictionary_scope
 
     script = payload["script"]
     flat = payload["flat_inputs"]
@@ -244,9 +245,10 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
         mod.add_callable(name, fn)
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
-    with sdk_runtime.log_scope("task") as coll:
-        val = starlark_to_python(sl.eval(mod, ast, glb))
-        logs = coll.as_dicts()
+    with dictionary_scope(payload.get("dictionary") or {}):
+        with sdk_runtime.log_scope("task") as coll:
+            val = starlark_to_python(sl.eval(mod, ast, glb))
+            logs = coll.as_dicts()
     if val is None:
         val = {}
     if not isinstance(val, dict):

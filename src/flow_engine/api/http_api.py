@@ -27,7 +27,7 @@ from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
 from flow_engine.stores import data_dict
-from flow_engine.stores.dict_store import DataDictError
+from flow_engine.stores.dict_store import DEFAULT_PROFILE_ID, DataDictError
 from flow_engine.stores.version_store import FlowVersionRegistry, validate_flow_id
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,7 @@ class CreateFlowBody(BaseModel):
 class DebugNodeBody(BaseModel):
     script: str
     initial_context: dict[str, Any] = Field(default_factory=dict)
+    profile: str | None = None
 
 
 class PutUserScriptBody(BaseModel):
@@ -62,6 +63,14 @@ class PutDictRawBody(BaseModel):
 
 class PutDictSubtreeBody(BaseModel):
     yaml: str = Field(..., description="YAML fragment for this subtree or root")
+
+
+class PutDictModuleBody(BaseModel):
+    yaml: str = Field(..., description="YAML mapping for this dictionary module")
+
+
+class CreateDictProfileBody(BaseModel):
+    profile: str
 
 
 class PutLookupBody(BaseModel):
@@ -78,6 +87,8 @@ class RunFlowBody(BaseModel):
     initial_context: dict[str, Any] | None = None
     merge: bool = True
     timeout_sec: float = Field(default=30.0, ge=0.1, le=600.0)
+    profile: str | None = None
+    runtime_patch: dict[str, Any] | None = None
 
 
 class CommitVersionBody(BaseModel):
@@ -183,6 +194,7 @@ def create_app() -> FastAPI:
         minimal = FlowDefinition(
             display_name=body.display_name,
             version="1.0.0",
+            default_profile=DEFAULT_PROFILE_ID,
             strategies={"default_sync": ExecutionStrategy(name="default_sync", mode=StrategyMode.SYNC)},
             nodes=[],
         )
@@ -322,7 +334,13 @@ def create_app() -> FastAPI:
             merged.update(body.initial_context)
             flow.initial_context = merged
 
-        rt = FlowRuntime(flow)
+        profile_id = body.profile or flow.default_profile or DEFAULT_PROFILE_ID
+        try:
+            resolved = data_dict.resolve(profile_id, body.runtime_patch)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        rt = FlowRuntime(flow, dictionary=resolved["resolved_dictionary"])
         started = time.monotonic()
         timed_out = False
         try:
@@ -346,6 +364,9 @@ def create_app() -> FastAPI:
                 "node_runs": partial_runs,
                 "flow_logs": list(rt._flow_logs),
                 "global_ns": {},
+                "resolved_profile": resolved["resolved_profile"],
+                "resolved_modules": resolved["resolved_modules"],
+                "resolved_hash": resolved["resolved_hash"],
             }
 
         ns = dict(res.context.global_ns)
@@ -360,55 +381,98 @@ def create_app() -> FastAPI:
             "node_runs": [r.to_dict() for r in res.node_runs],
             "flow_logs": list(res.flow_logs),
             "global_ns": ns,
+            "resolved_profile": resolved["resolved_profile"],
+            "resolved_modules": resolved["resolved_modules"],
+            "resolved_hash": resolved["resolved_hash"],
         }
 
     # -----------------------------------------------------------------------
     # Data dictionary
     # -----------------------------------------------------------------------
 
+    def _dict_layer(layer: str) -> str:
+        if layer not in {"base", "profile"}:
+            raise HTTPException(status_code=400, detail="layer must be 'base' or 'profile'")
+        return layer
+
     @app.get("/api/dict")
-    def get_data_dictionary() -> dict[str, Any]:
+    def get_data_dictionary_summary() -> dict[str, Any]:
         st = data_dict.store()
-        return {"dict_dir": str(st.directory), "tree": st.read_tree(), "yaml": st.read_raw()}
+        return {
+            "dict_dir": str(st.directory),
+            "profiles": st.list_profiles(),
+            "base_modules": [m.__dict__ for m in st.list_modules("base")],
+        }
 
-    @app.put("/api/dict")
-    def put_data_dictionary_raw(body: PutDictRawBody) -> dict[str, Any]:
+    @app.get("/api/dict/resolve")
+    def resolve_data_dictionary(profile: str = Query(default=DEFAULT_PROFILE_ID)) -> dict[str, Any]:
         try:
-            data_dict.store().write_raw(body.content)
+            return data_dict.resolve(profile)
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"ok": True}
 
-    @app.get("/api/dict/subtree")
-    def get_dict_subtree(path: str = "") -> dict[str, Any]:
+    @app.get("/api/dict/profiles")
+    def list_dict_profiles() -> dict[str, Any]:
+        st = data_dict.store()
+        return {"profiles": st.list_profiles()}
+
+    @app.post("/api/dict/profiles")
+    def create_dict_profile(body: CreateDictProfileBody) -> dict[str, Any]:
         try:
-            y = data_dict.subtree_as_yaml(path)
+            data_dict.store().create_profile(body.profile)
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"path": path, "yaml": y}
+        return {"ok": True, "profile": body.profile}
 
-    @app.put("/api/dict/subtree")
-    def put_dict_subtree(path: str = "", body: PutDictSubtreeBody = Body(...)) -> dict[str, Any]:
+    @app.get("/api/dict/modules")
+    def list_dict_modules(layer: str = "base", profile: str | None = None) -> dict[str, Any]:
         try:
-            data_dict.apply_subtree_yaml(path, body.yaml)
+            lay = _dict_layer(layer)
+            modules = data_dict.store().list_modules(lay, profile=profile)
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"YAML error: {e}") from e
-        return {"ok": True}
+        return {"layer": layer, "profile": profile, "modules": [m.__dict__ for m in modules]}
 
-    @app.delete("/api/dict/subtree")
-    def delete_dict_subtree(path: str = "") -> dict[str, Any]:
+    @app.get("/api/dict/module")
+    def get_dict_module(module_id: str, layer: str = "base", profile: str | None = None) -> dict[str, Any]:
         try:
-            data_dict.delete_path(path)
+            lay = _dict_layer(layer)
+            yaml_text = data_dict.store().read_module_raw(lay, module_id, profile=profile)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"layer": layer, "profile": profile, "module_id": module_id, "yaml": yaml_text}
+
+    @app.put("/api/dict/module")
+    def put_dict_module(
+        module_id: str,
+        layer: str = "base",
+        profile: str | None = None,
+        body: PutDictModuleBody = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            lay = _dict_layer(layer)
+            data_dict.store().write_module(lay, module_id, body.yaml, profile=profile)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "layer": layer, "profile": profile, "module_id": module_id}
+
+    @app.delete("/api/dict/module")
+    def delete_dict_module(module_id: str, layer: str = "base", profile: str | None = None) -> dict[str, Any]:
+        try:
+            lay = _dict_layer(layer)
+            data_dict.store().delete_module(lay, module_id, profile=profile)
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True}
 
     @app.get("/api/dict/lookup")
-    def dict_lookup(path: str) -> dict[str, Any]:
-        v = data_dict.lookup(path, None)
-        return {"path": path, "value": v}
+    def dict_lookup(path: str, profile: str = Query(default=DEFAULT_PROFILE_ID)) -> dict[str, Any]:
+        try:
+            with data_dict.dictionary_scope(data_dict.tree_copy(profile)):
+                v = data_dict.lookup(path, None)
+        except DataDictError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"path": path, "profile": profile, "value": v}
 
     # -----------------------------------------------------------------------
     # Lookup tables
@@ -540,7 +604,10 @@ def create_app() -> FastAPI:
     @app.post("/api/debug/node")
     def debug_node(body: DebugNodeBody) -> JSONResponse:
         try:
-            result, logs = debug_task_script(body.script, body.initial_context or {})
+            profile = body.profile or DEFAULT_PROFILE_ID
+            resolved = data_dict.resolve(profile)
+            with data_dict.dictionary_scope(resolved["resolved_dictionary"]):
+                result, logs = debug_task_script(body.script, body.initial_context or {})
             return JSONResponse(content={"ok": True, "result": result, "logs": logs})
         except Exception as e:  # noqa: BLE001
             return JSONResponse(

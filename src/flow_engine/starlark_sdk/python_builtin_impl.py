@@ -78,7 +78,7 @@ def http_simple_get(url: str) -> dict[str, Any]:
         id="python://dict/get",
         starlark_name="dict_get",
         category="dictionary",
-        summary="按点路径读取数据字典（dictionary.yaml），缺省返回 default，等同 dict.get 语义",
+        summary="按点路径读取当前已解析数据字典，缺省返回 default，等同 dict.get 语义",
         signature=(
             BuiltinArgSpec(name="path", type="str"),
             BuiltinArgSpec(name="default", type="any", required=False),
@@ -88,7 +88,7 @@ def http_simple_get(url: str) -> dict[str, Any]:
     )
 )
 def dict_get(path: str, default: Any = None) -> Any:
-    """按点路径读取数据字典（``dictionary.yaml``），语义类似 ``dict.get``。"""
+    """按点路径读取当前运行的已解析数据字典，语义类似 ``dict.get``。"""
     return data_dict_lookup(path, default)
 
 

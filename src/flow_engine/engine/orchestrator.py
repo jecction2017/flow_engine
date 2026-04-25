@@ -7,6 +7,7 @@ import copy
 import logging
 import time
 from concurrent.futures import Future as ConcurrentFuture
+from contextvars import copy_context
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -50,7 +51,7 @@ from flow_engine.engine.starlark_glue import (
     run_task_script,
 )
 from flow_engine.engine.tracker import TaskTracker
-from flow_engine.stores.data_dict import tree_copy
+from flow_engine.stores.data_dict import dictionary_scope, tree_copy
 
 logger = logging.getLogger(__name__)
 
@@ -167,13 +168,13 @@ class FlowRunResult:
 class FlowRuntime:
     """Runs a compiled `FlowDefinition`."""
 
-    def __init__(self, flow: FlowDefinition) -> None:
+    def __init__(self, flow: FlowDefinition, *, dictionary: dict[str, Any] | None = None) -> None:
         self.flow = flow
         self.ctx = ContextStack()
         if flow.initial_context:
             self.ctx.global_ns.update(flow.initial_context)
-        if "dictionary" not in self.ctx.global_ns:
-            self.ctx.global_ns["dictionary"] = tree_copy()
+        self.dictionary = copy.deepcopy(dictionary) if dictionary is not None else tree_copy(flow.default_profile)
+        self.ctx.global_ns["dictionary"] = copy.deepcopy(self.dictionary)
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}
         self._node_runs: dict[str, NodeRunInfo] = {}
@@ -289,11 +290,24 @@ class FlowRuntime:
         self._cancel_dereg = asyncio_main_cancel(self._loop)
         self._t0 = time.monotonic()
         self.flow_state = FlowState.RUNNING
-        if self.flow.hooks and self.flow.hooks.on_start:
-            self._append_flow_logs(
-                run_hook_script(self.flow.hooks.on_start, self.ctx, source="on_start")
-            )
         try:
+            with dictionary_scope(self.dictionary):
+                return await self._run_scoped()
+        finally:
+            self.executors.shutdown()
+            if self._cancel_dereg is not None:
+                try:
+                    self._cancel_dereg()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Cancel deregister failed", exc_info=True)
+                self._cancel_dereg = None
+
+    async def _run_scoped(self) -> FlowRunResult:
+        try:
+            if self.flow.hooks and self.flow.hooks.on_start:
+                self._append_flow_logs(
+                    run_hook_script(self.flow.hooks.on_start, self.ctx, source="on_start")
+                )
             await self._run_members(self.flow.nodes, self.ctx, self._root_tracker)
             await self._root_tracker.wait_all()
             self.flow_state = FlowState.COMPLETED
@@ -347,15 +361,6 @@ class FlowRuntime:
                     )
                 )
             return self._result(str(e))
-        finally:
-            self.executors.shutdown()
-            if self._cancel_dereg is not None:
-                try:
-                    self._cancel_dereg()
-                except Exception:  # noqa: BLE001
-                    logger.debug("Cancel deregister failed", exc_info=True)
-                self._cancel_dereg = None
-
     async def _run_members(
         self,
         members: list[FlowMember],
@@ -482,11 +487,14 @@ class FlowRuntime:
             if mode == StrategyMode.THREAD:
                 loop = asyncio.get_running_loop()
                 pool = self.executors.thread_pool(node.strategy_ref)
+                ctxvars = copy_context()
 
                 def sync() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                     return run_task_script(node.script, ctx, node.boundary.inputs)
 
-                fut: ConcurrentFuture[tuple[dict[str, Any], list[dict[str, Any]]]] = pool.submit(sync)
+                fut: ConcurrentFuture[tuple[dict[str, Any], list[dict[str, Any]]]] = pool.submit(
+                    ctxvars.run, sync
+                )
                 result, task_logs = await self._with_timeout(
                     asyncio.wrap_future(fut, loop=loop), timeout
                 )
@@ -499,6 +507,7 @@ class FlowRuntime:
                     "script": node.script,
                     "inputs": node.boundary.inputs,
                     "flat_inputs": _serialize_inputs(ctx, node.boundary.inputs),
+                    "dictionary": self.dictionary,
                 }
                 fut2 = pool.submit(process_starlark_task, payload)
                 raw = await self._with_timeout(asyncio.wrap_future(fut2, loop=loop), timeout)
