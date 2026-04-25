@@ -1,7 +1,7 @@
 /** Lookup tables API (`lookup/{namespace}.json`). */
 
 export type LookupTable = {
-  fields: string[];
+  schema?: Record<string, unknown>;
   rows: Array<Record<string, unknown>>;
 };
 

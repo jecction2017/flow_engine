@@ -12,6 +12,7 @@ dependencies = [
   "pydantic>=2.5",
   "PyYAML>=6",
   "starlark-pyo3>=2024.0",
+  "jsonschema>=4.20.0",
 ]
 
 [project.optional-dependencies]

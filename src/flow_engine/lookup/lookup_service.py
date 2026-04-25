@@ -56,10 +56,14 @@ def append_rows(namespace: str, new_rows: list[dict[str, Any]], *, profile: str 
         if not isinstance(row, dict):
             raise LookupStoreError(f"append row {i} must be an object")
         merged_rows.append({str(k): v for k, v in row.items()})
-    fields = cur.get("fields") or []
-    if not fields and merged_rows:
-        fields = list(merged_rows[0].keys())
-    out = {"fields": fields, "rows": merged_rows}
+    
+    schema = cur.get("schema")
+    if not schema and merged_rows:
+        schema = {
+            "type": "object",
+            "properties": {str(k): {"type": "string"} for k in merged_rows[0].keys()}
+        }
+    out = {"schema": schema or {"type": "object", "properties": {}}, "rows": merged_rows}
     norm = normalize_table(out)
     get_lookup_store().write_table(namespace, norm, profile=profile)
     return get_lookup_store().read_table(namespace, profile=profile)
@@ -76,7 +80,7 @@ def merge_imported_rows(
     if mode_l not in ("replace", "append"):
         raise LookupStoreError("mode must be 'replace' or 'append'")
     if mode_l == "replace":
-        norm = normalize_table({"fields": [], "rows": imported})
+        norm = normalize_table({"schema": {"type": "object", "properties": {}}, "rows": imported})
         get_lookup_store().write_table(namespace, norm, profile=profile)
         return get_lookup_store().read_table(namespace, profile=profile)
     return append_rows(namespace, imported, profile=profile)

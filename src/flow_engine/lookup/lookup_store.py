@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+import jsonschema
 
 from flow_engine._repo_root import repo_root
 from flow_engine.engine.exceptions import FlowEngineError
@@ -47,30 +48,62 @@ def _normalize_cell(v: Any) -> Any:
 
 
 def normalize_table(raw: dict[str, Any]) -> dict[str, Any]:
-    """Ensure ``fields`` (optional) and ``rows`` (list of flat dicts)."""
+    """Ensure ``schema`` (optional) and ``rows`` (list of flat dicts)."""
     if not isinstance(raw, dict):
         raise LookupStoreError("lookup table must be a JSON object")
-    fields = raw.get("fields")
+    
     rows = raw.get("rows")
     if rows is None:
         raise LookupStoreError("missing 'rows'")
     if not isinstance(rows, list):
         raise LookupStoreError("'rows' must be a list")
+    
     out_rows: list[dict[str, Any]] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             raise LookupStoreError(f"row {i} must be an object")
         out_rows.append({str(k): _normalize_cell(v) for k, v in row.items()})
-    out_fields: list[str]
-    if fields is not None:
-        if not isinstance(fields, list) or not all(isinstance(x, str) for x in fields):
-            raise LookupStoreError("'fields' must be a list of strings")
-        out_fields = list(fields)
-    else:
-        out_fields = []
-    if out_rows and not out_fields:
-        out_fields = list(out_rows[0].keys())
-    return {"fields": out_fields, "rows": out_rows}
+    
+    out_schema = raw.get("schema")
+    if out_schema is None:
+        # Migrate legacy fields to schema
+        fields = raw.get("fields")
+        props = {}
+        if isinstance(fields, list):
+            for f in fields:
+                if isinstance(f, str):
+                    props[f] = {"type": "string"}
+                elif isinstance(f, dict) and "name" in f:
+                    props[str(f["name"])] = {
+                        "type": str(f.get("type", "string")),
+                        "description": str(f.get("description", ""))
+                    }
+        elif out_rows:
+            props = {str(k): {"type": "string"} for k in out_rows[0].keys()}
+            
+        out_schema = {
+            "type": "object",
+            "properties": props
+        }
+    
+    if not isinstance(out_schema, dict):
+        raise LookupStoreError("'schema' must be a JSON object")
+        
+    # Validate rows against schema if schema is valid
+    try:
+        jsonschema.Draft7Validator.check_schema(out_schema)
+        validator = jsonschema.Draft7Validator(out_schema)
+        for i, row in enumerate(out_rows):
+            errors = list(validator.iter_errors(row))
+            if errors:
+                # Just report the first error for simplicity
+                err = errors[0]
+                path = ".".join(str(p) for p in err.path) if err.path else "root"
+                raise LookupStoreError(f"Row {i} validation failed at '{path}': {err.message}")
+    except jsonschema.exceptions.SchemaError as e:
+        raise LookupStoreError(f"Invalid JSON Schema: {e.message}")
+
+    return {"schema": out_schema, "rows": out_rows}
 
 
 _store_cache: tuple[str, "LookupStore"] | None = None
