@@ -7,6 +7,9 @@
       <button type="button" class="nav-btn" :class="{ active: view === 'starlark' }" @click="view = 'starlark'">
         能力与脚本
       </button>
+      <button type="button" class="nav-btn" :class="{ active: view === 'profiles' }" @click="view = 'profiles'">
+        环境配置
+      </button>
       <button type="button" class="nav-btn" :class="{ active: view === 'dict' }" @click="view = 'dict'">
         数据字典
       </button>
@@ -20,6 +23,7 @@
     <main class="main-fill">
       <FlowStudioView v-if="view === 'flow'" />
       <CapabilityCenterView v-else-if="view === 'starlark'" />
+      <ProfileConfigView v-else-if="view === 'profiles'" />
       <DictConfigView v-else-if="view === 'dict'" />
       <LookupConfigView v-else-if="view === 'lookup'" />
       <ScriptGuideView v-else />
@@ -31,11 +35,12 @@
 import { ref } from "vue";
 import FlowStudioView from "./views/FlowStudioView.vue";
 import CapabilityCenterView from "./views/CapabilityCenterView.vue";
+import ProfileConfigView from "./views/ProfileConfigView.vue";
 import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
 import ScriptGuideView from "./views/ScriptGuideView.vue";
 
-const view = ref<"flow" | "starlark" | "dict" | "lookup" | "guide">("flow");
+const view = ref<"flow" | "starlark" | "profiles" | "dict" | "lookup" | "guide">("flow");
 </script>
 
 <style scoped>

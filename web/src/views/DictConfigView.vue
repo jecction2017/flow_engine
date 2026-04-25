@@ -18,10 +18,6 @@
             <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
           </select>
         </label>
-        <input v-model="newProfile" class="inp-mini mono" placeholder="new_profile" />
-        <button type="button" class="btn ghost" :disabled="loading || !newProfile.trim()" @click="addProfile">
-          新建 profile
-        </button>
         <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
       </div>
     </header>
@@ -105,7 +101,6 @@
 import { computed, ref } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import {
-  createDictProfile,
   deleteDictModule,
   fetchDictModule,
   fetchDictModules,
@@ -120,7 +115,6 @@ import {
 const dictDir = ref("");
 const profiles = ref<string[]>(["default"]);
 const selectedProfile = ref("default");
-const newProfile = ref("");
 const baseModules = ref<DictModuleInfo[]>([]);
 const profileModules = ref<DictModuleInfo[]>([]);
 const resolved = ref<DictResolveResponse | null>(null);
@@ -194,20 +188,6 @@ function startNew(layer: DictLayer) {
   editorLayer.value = layer;
   editorModuleId.value = "";
   editorYaml.value = "{}\n";
-}
-
-async function addProfile() {
-  const p = newProfile.value.trim();
-  if (!p) return;
-  error.value = "";
-  try {
-    await createDictProfile(p);
-    selectedProfile.value = p;
-    newProfile.value = "";
-    await reload();
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  }
 }
 
 async function saveModule() {

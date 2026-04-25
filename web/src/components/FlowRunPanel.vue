@@ -31,7 +31,7 @@
       <section class="col">
         <div class="lbl">Profile 覆盖（可留空）</div>
         <select v-model="profileText" class="one-line mono">
-          <option value="">使用流程默认（{{ props.defaultProfile || "default" }}）</option>
+          <option value="">使用全局默认（{{ defaultProfile || "default" }}）</option>
           <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
         </select>
         <div class="lbl">initial_context 覆盖（JSON，可留空）</div>
@@ -226,7 +226,7 @@
 import { computed, reactive, ref, watch } from "vue";
 import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
-import { fetchDictProfiles } from "@/api/dict";
+import { fetchProfileConfig } from "@/api/profiles";
 
 const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
@@ -247,13 +247,13 @@ const props = defineProps<{
   flowId: string | null;
   visible: boolean;
   initialContext: Record<string, unknown> | null | undefined;
-  defaultProfile?: string | null;
 }>();
 defineEmits<{ (e: "close"): void }>();
 
 const ctxText = ref("");
 const profileText = ref("");
 const profileOptions = ref<string[]>(["default"]);
+const defaultProfile = ref("default");
 const runtimePatchText = ref("");
 const merge = ref(true);
 const timeoutSec = ref(30);
@@ -284,20 +284,11 @@ watch(
   },
 );
 
-watch(
-  () => props.defaultProfile,
-  (p) => {
-    if (p && !profileOptions.value.includes(p)) profileOptions.value = [...profileOptions.value, p].sort();
-  },
-  { immediate: true },
-);
-
 void (async () => {
   try {
-    const res = await fetchDictProfiles();
-    if (Array.isArray(res.profiles) && res.profiles.length) {
-      profileOptions.value = [...res.profiles];
-    }
+    const res = await fetchProfileConfig();
+    defaultProfile.value = res.default_profile || "default";
+    profileOptions.value = Array.isArray(res.profiles) && res.profiles.length ? [...res.profiles] : ["default"];
   } catch {
     // fallback keep default option only
   }

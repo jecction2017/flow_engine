@@ -66,7 +66,7 @@ import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
 import type { TaskNode } from "@/types/flow";
 import InfoTip from "./InfoTip.vue";
-import { fetchDictProfiles } from "@/api/dict";
+import { fetchProfileConfig } from "@/api/profiles";
 
 const props = defineProps<{
   path: number[];
@@ -80,6 +80,7 @@ const hint = ref("");
 const logs = ref<LogEntry[]>([]);
 const profileOptions = ref<string[]>(["default"]);
 const profileText = ref("default");
+const defaultProfile = ref("default");
 
 const task = computed(() => {
   // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
@@ -128,16 +129,6 @@ watch(
 watch(ctxText, (v) => {
   store.setDebugContextText(props.path, v);
 });
-
-watch(
-  () => store.doc.default_profile,
-  (v) => {
-    const p = (v ?? "default").trim() || "default";
-    if (!profileOptions.value.includes(p)) profileOptions.value = [...profileOptions.value, p].sort();
-    profileText.value = p;
-  },
-  { immediate: true },
-);
 
 function resetFromInitialContext() {
   ctxText.value = defaultCtxText();
@@ -212,8 +203,10 @@ async function run() {
 
 onMounted(async () => {
   try {
-    const res = await fetchDictProfiles();
+    const res = await fetchProfileConfig();
+    defaultProfile.value = res.default_profile || "default";
     if (Array.isArray(res.profiles) && res.profiles.length) profileOptions.value = [...res.profiles];
+    profileText.value = defaultProfile.value;
     if (!profileOptions.value.includes(profileText.value)) profileOptions.value.push(profileText.value);
   } catch {
     // keep defaults

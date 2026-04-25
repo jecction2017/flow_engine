@@ -97,7 +97,7 @@ def dict_get(path: str, default: Any = None) -> Any:
         id="python://lookup/query",
         starlark_name="lookup_query",
         category="lookup",
-        summary="查询 lookup 表（lookup/{namespace}.json）；filter 为等值 AND；空 filter 返回全部（有上限）",
+        summary="查询 lookup 表（profiles/{profile}/{namespace}.json）；filter 为等值 AND；空 filter 返回全部（有上限）",
         signature=(
             BuiltinArgSpec(name="namespace", type="str"),
             BuiltinArgSpec(name="filter", type="dict", required=False),
@@ -107,7 +107,7 @@ def dict_get(path: str, default: Any = None) -> Any:
     )
 )
 def lookup_query(namespace: str, filter: dict[str, Any] | None = None) -> list[dict[str, Any]]:  # noqa: A002
-    """查询 lookup 表（``lookup/{namespace}.json``）。``filter`` 为等值 AND 条件；空则返回全部（有上限）。"""
+    """查询 lookup 表（``lookup/profiles/{profile}/{namespace}.json``）。"""
     return run_lookup_query(namespace, filter)
 
 

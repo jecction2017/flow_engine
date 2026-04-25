@@ -15,12 +15,16 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Spin up a fresh FastAPI app backed by an isolated flows directory."""
     monkeypatch.setenv("FLOW_ENGINE_FLOWS_DIR", str(tmp_path / "flows"))
     monkeypatch.setenv("FLOW_ENGINE_DICT_DIR", str(tmp_path / "dict"))
+    monkeypatch.setenv("FLOW_ENGINE_LOOKUP_DIR", str(tmp_path / "lookup"))
+    monkeypatch.setenv("FLOW_ENGINE_PROFILE_DIR", str(tmp_path / "profiles_cfg"))
 
     import flow_engine.api.http_api as api_mod
     import flow_engine.stores.data_dict as dict_mod
+    import flow_engine.stores.profile_store as profile_mod
     import flow_engine.stores.version_store as vs_mod
 
     dict_mod.invalidate_store_cache()
+    profile_mod.invalidate_profile_store_cache()
     importlib.reload(vs_mod)
     importlib.reload(api_mod)
 
@@ -32,7 +36,6 @@ def _sample_flow_payload(display_name: str = "demo") -> dict[str, Any]:
     return {
         "display_name": display_name,
         "version": "1.0.0",
-        "default_profile": "default",
         "strategies": {"default_sync": {"name": "default_sync", "mode": "sync"}},
         "nodes": [],
     }
@@ -245,7 +248,6 @@ def test_run_uses_profile_and_runtime_patch_for_dict_get(client: TestClient) -> 
     assert r.status_code == 200, r.text
 
     payload = _sample_flow_payload("dict-run")
-    payload["default_profile"] = "dev"
     payload["nodes"] = [
         {
             "type": "task",
@@ -277,3 +279,67 @@ def test_run_uses_profile_and_runtime_patch_for_dict_get(client: TestClient) -> 
     assert body["resolved_profile"] == "dev"
     assert body["global_ns"]["builtin"] == 30
     assert body["global_ns"]["snapshot"] == 30
+
+
+def test_run_uses_global_default_profile_when_request_omitted(client: TestClient) -> None:
+    _create_flow(client, "foo")
+    r = client.post("/api/profiles", json={"profile": "dev"})
+    assert r.status_code == 200, r.text
+    r = client.put("/api/profiles/config", json={"default_profile": "dev"})
+    assert r.status_code == 200, r.text
+
+    r = client.put("/api/dict/module?layer=base&module_id=app", json={"yaml": "http:\n  timeout_sec: 10\n"})
+    assert r.status_code == 200, r.text
+    r = client.put("/api/dict/module?layer=profile&profile=dev&module_id=app", json={"yaml": "http:\n  timeout_sec: 22\n"})
+    assert r.status_code == 200, r.text
+
+    payload = _sample_flow_payload("global-default")
+    payload["nodes"] = [
+        {
+            "type": "task",
+            "id": "read_dict",
+            "name": "read_dict",
+            "strategy_ref": "default_sync",
+            "script": '{"timeout": dict_get("app.http.timeout_sec")}\n',
+            "boundary": {"inputs": {}, "outputs": {"timeout": "$.global.timeout"}},
+        }
+    ]
+    r = client.put("/api/flows/foo/draft", json=payload)
+    assert r.status_code == 200, r.text
+    r = client.post("/api/flows/foo/run", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["resolved_profile"] == "dev"
+    assert body["global_ns"]["timeout"] == 22
+
+
+def test_lookup_api_and_runtime_use_selected_profile(client: TestClient) -> None:
+    _create_flow(client, "foo")
+    client.post("/api/profiles", json={"profile": "dev"})
+    client.post("/api/profiles", json={"profile": "sit"})
+    client.put("/api/lookups/apps?profile=dev", json={"fields": ["appid"], "rows": [{"appid": "dev-1"}]})
+    client.put("/api/lookups/apps?profile=sit", json={"fields": ["appid"], "rows": [{"appid": "sit-1"}]})
+
+    r = client.get("/api/lookups/apps/query?profile=dev&filter={}")
+    assert r.status_code == 200, r.text
+    assert r.json()["rows"] == [{"appid": "dev-1"}]
+    r = client.get("/api/lookups/apps/query?profile=sit&filter={}")
+    assert r.status_code == 200, r.text
+    assert r.json()["rows"] == [{"appid": "sit-1"}]
+
+    payload = _sample_flow_payload("lookup-profile")
+    payload["nodes"] = [
+        {
+            "type": "task",
+            "id": "read_lookup",
+            "name": "read_lookup",
+            "strategy_ref": "default_sync",
+            "script": '{"rows": lookup_query("apps", {})}\n',
+            "boundary": {"inputs": {}, "outputs": {"rows": "$.global.rows"}},
+        }
+    ]
+    r = client.put("/api/flows/foo/draft", json=payload)
+    assert r.status_code == 200, r.text
+    r = client.post("/api/flows/foo/run", json={"profile": "sit"})
+    assert r.status_code == 200, r.text
+    assert r.json()["global_ns"]["rows"] == [{"appid": "sit-1"}]

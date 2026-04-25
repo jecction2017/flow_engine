@@ -7,25 +7,32 @@ export type LookupTable = {
 
 export type LookupListResponse = {
   lookup_dir: string;
+  profile?: string;
   namespaces: string[];
 };
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
-export async function fetchLookupList(): Promise<LookupListResponse> {
-  const r = await fetch("/api/lookups");
+export async function fetchLookupList(profile?: string): Promise<LookupListResponse> {
+  const q = new URLSearchParams();
+  if (profile) q.set("profile", profile);
+  const r = await fetch(`/api/lookups?${q.toString()}`);
   if (!r.ok) throw new Error(`lookups: ${r.status}`);
   return r.json() as Promise<LookupListResponse>;
 }
 
-export async function fetchLookupTable(namespace: string): Promise<LookupTable> {
-  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}`);
+export async function fetchLookupTable(namespace: string, profile?: string): Promise<LookupTable> {
+  const q = new URLSearchParams();
+  if (profile) q.set("profile", profile);
+  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}?${q.toString()}`);
   if (!r.ok) throw new Error(`lookup ${namespace}: ${r.status}`);
   return r.json() as Promise<LookupTable>;
 }
 
-export async function saveLookupTable(namespace: string, table: LookupTable): Promise<void> {
-  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}`, {
+export async function saveLookupTable(namespace: string, table: LookupTable, profile?: string): Promise<void> {
+  const q = new URLSearchParams();
+  if (profile) q.set("profile", profile);
+  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}?${q.toString()}`, {
     method: "PUT",
     headers: jsonHeaders,
     body: JSON.stringify(table),
@@ -36,8 +43,10 @@ export async function saveLookupTable(namespace: string, table: LookupTable): Pr
   }
 }
 
-export async function deleteLookupTable(namespace: string): Promise<void> {
-  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}`, { method: "DELETE" });
+export async function deleteLookupTable(namespace: string, profile?: string): Promise<void> {
+  const q = new URLSearchParams();
+  if (profile) q.set("profile", profile);
+  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}?${q.toString()}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`delete ${namespace}: ${r.status}`);
 }
 
@@ -46,11 +55,13 @@ export async function importLookupFile(
   file: File,
   mode: "replace" | "append",
   format: "auto" | "json" | "csv" | "xlsx",
+  profile?: string,
 ): Promise<{ imported: number; mode: string }> {
   const fd = new FormData();
   fd.set("file", file);
   fd.set("mode", mode);
   fd.set("format", format);
+  if (profile) fd.set("profile", profile);
   const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}/import`, {
     method: "POST",
     body: fd,

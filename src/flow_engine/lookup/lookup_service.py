@@ -39,18 +39,18 @@ def lookup_query(namespace: str, filter: dict[str, Any] | None = None) -> list[d
     return copy.deepcopy(out)
 
 
-def put_table(namespace: str, body: dict[str, Any]) -> dict[str, Any]:
+def put_table(namespace: str, body: dict[str, Any], *, profile: str | None = None) -> dict[str, Any]:
     validate_lookup_namespace(namespace)
     norm = normalize_table(body)
-    get_lookup_store().write_table(namespace, norm)
+    get_lookup_store().write_table(namespace, norm, profile=profile)
     return norm
 
 
-def append_rows(namespace: str, new_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def append_rows(namespace: str, new_rows: list[dict[str, Any]], *, profile: str | None = None) -> dict[str, Any]:
     validate_lookup_namespace(namespace)
     if not isinstance(new_rows, list):
         raise LookupStoreError("rows must be a list")
-    cur = get_lookup_store().read_table(namespace)
+    cur = get_lookup_store().read_table(namespace, profile=profile)
     merged_rows = list(cur.get("rows", []))
     for i, row in enumerate(new_rows):
         if not isinstance(row, dict):
@@ -61,8 +61,8 @@ def append_rows(namespace: str, new_rows: list[dict[str, Any]]) -> dict[str, Any
         fields = list(merged_rows[0].keys())
     out = {"fields": fields, "rows": merged_rows}
     norm = normalize_table(out)
-    get_lookup_store().write_table(namespace, norm)
-    return get_lookup_store().read_table(namespace)
+    get_lookup_store().write_table(namespace, norm, profile=profile)
+    return get_lookup_store().read_table(namespace, profile=profile)
 
 
 def merge_imported_rows(
@@ -70,12 +70,13 @@ def merge_imported_rows(
     imported: list[dict[str, Any]],
     *,
     mode: str,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     mode_l = (mode or "replace").strip().lower()
     if mode_l not in ("replace", "append"):
         raise LookupStoreError("mode must be 'replace' or 'append'")
     if mode_l == "replace":
         norm = normalize_table({"fields": [], "rows": imported})
-        get_lookup_store().write_table(namespace, norm)
-        return get_lookup_store().read_table(namespace)
-    return append_rows(namespace, imported)
+        get_lookup_store().write_table(namespace, norm, profile=profile)
+        return get_lookup_store().read_table(namespace, profile=profile)
+    return append_rows(namespace, imported, profile=profile)

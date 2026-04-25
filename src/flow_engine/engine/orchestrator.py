@@ -173,7 +173,7 @@ class FlowRuntime:
         self.ctx = ContextStack()
         if flow.initial_context:
             self.ctx.global_ns.update(flow.initial_context)
-        self.dictionary = copy.deepcopy(dictionary) if dictionary is not None else tree_copy(flow.default_profile)
+        self.dictionary = copy.deepcopy(dictionary) if dictionary is not None else tree_copy()
         self.ctx.global_ns["dictionary"] = copy.deepcopy(self.dictionary)
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}

@@ -12,6 +12,12 @@
         </div>
       </div>
       <div class="actions">
+        <label class="lbl inline">
+          <span>Profile</span>
+          <select v-model="selectedProfile" class="sel sm" @change="reload">
+            <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+          </select>
+        </label>
         <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
         <button type="button" class="btn primary" :disabled="saving || loading || !nsValid" @click="save">
           {{ saving ? "保存中…" : "保存 JSON" }}
@@ -33,15 +39,27 @@
 
     <div class="body">
       <aside class="left">
-        <label class="lbl">命名空间</label>
-        <div class="row2">
-          <select v-model="selectedNs" class="sel" @change="onPickNs">
-            <option value="">新建 / 选择…</option>
-            <option v-for="n in namespaces" :key="n" :value="n">{{ n }}</option>
-          </select>
+        <div class="section-title">
+          <span>命名空间</span>
+          <button type="button" class="link" :disabled="loading" @click="reload">刷新</button>
         </div>
+        <button
+          v-for="n in namespaces"
+          :key="n"
+          type="button"
+          class="module-btn"
+          :class="{ active: activeNs === n }"
+          @click="pickNamespace(n)"
+        >
+          <span class="mono">{{ n }}</span>
+        </button>
+        <p v-if="!namespaces.length" class="empty">当前 profile 暂无命名空间</p>
+
+        <label class="lbl">新建 / 编辑命名空间</label>
         <input v-model="namespaceInput" class="inp mono" placeholder="例如 apps、cwe_list" spellcheck="false" />
-        <button type="button" class="btn ghost sm" :disabled="loading" @click="loadInputNs">加载输入的名称</button>
+        <button type="button" class="btn ghost sm" :disabled="loading" @click="pickNamespace(namespaceInput.trim())">
+          加载输入名称
+        </button>
 
         <div class="imp">
           <div class="lbl">导入文件（JSON / CSV / xlsx）</div>
@@ -85,14 +103,17 @@ import {
   saveLookupTable,
   type LookupTable,
 } from "@/api/lookups";
+import { fetchProfileConfig } from "@/api/profiles";
 
 const NS_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
 const lookupDir = ref("");
 const namespaces = ref<string[]>([]);
-const selectedNs = ref("");
 const namespaceInput = ref("");
+const activeNs = ref("");
 const editorJson = ref('{\n  "fields": [],\n  "rows": []\n}\n');
+const profileOptions = ref<string[]>(["default"]);
+const selectedProfile = ref("default");
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
@@ -100,21 +121,27 @@ const importMode = ref<"replace" | "append">("replace");
 const importFormat = ref<"auto" | "json" | "csv" | "xlsx">("auto");
 const importHint = ref("");
 
-const activeNs = computed(() => selectedNs.value || namespaceInput.value.trim());
-
 const nsValid = computed(() => NS_RE.test(activeNs.value));
 
 async function reload() {
   error.value = "";
   loading.value = true;
   try {
-    const li = await fetchLookupList();
+    const li = await fetchLookupList(selectedProfile.value);
     lookupDir.value = li.lookup_dir;
     namespaces.value = li.namespaces;
-    const ns = activeNs.value;
+    const ns = activeNs.value || namespaceInput.value.trim();
     if (ns && NS_RE.test(ns)) {
-      const t = await fetchLookupTable(ns);
+      const t = await fetchLookupTable(ns, selectedProfile.value);
       editorJson.value = JSON.stringify(t, null, 2) + "\n";
+      activeNs.value = ns;
+      namespaceInput.value = ns;
+    } else if (namespaces.value.length > 0 && !activeNs.value) {
+      const first = namespaces.value[0]!;
+      const t = await fetchLookupTable(first, selectedProfile.value);
+      editorJson.value = JSON.stringify(t, null, 2) + "\n";
+      activeNs.value = first;
+      namespaceInput.value = first;
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -123,13 +150,10 @@ async function reload() {
   }
 }
 
-function onPickNs() {
-  namespaceInput.value = selectedNs.value;
-  void reload();
-}
-
-function loadInputNs() {
-  selectedNs.value = "";
+function pickNamespace(ns: string) {
+  if (!ns) return;
+  activeNs.value = ns;
+  namespaceInput.value = ns;
   void reload();
 }
 
@@ -163,7 +187,7 @@ async function save() {
   saving.value = true;
   error.value = "";
   try {
-    await saveLookupTable(activeNs.value, table);
+    await saveLookupTable(activeNs.value, table, selectedProfile.value);
     importHint.value = "已保存";
     await reload();
   } catch (e) {
@@ -180,8 +204,8 @@ async function removeNs() {
   loading.value = true;
   error.value = "";
   try {
-    await deleteLookupTable(ns);
-    selectedNs.value = "";
+    await deleteLookupTable(ns, selectedProfile.value);
+    activeNs.value = "";
     namespaceInput.value = "";
     editorJson.value = '{\n  "fields": [],\n  "rows": []\n}\n';
     await reload();
@@ -205,7 +229,7 @@ async function onFile(ev: Event) {
   loading.value = true;
   error.value = "";
   try {
-    const res = await importLookupFile(activeNs.value, file, importMode.value, importFormat.value);
+    const res = await importLookupFile(activeNs.value, file, importMode.value, importFormat.value, selectedProfile.value);
     importHint.value = `已导入 ${res.imported} 行（${res.mode}）`;
     await reload();
   } catch (e) {
@@ -215,7 +239,16 @@ async function onFile(ev: Event) {
   }
 }
 
-void reload();
+void (async () => {
+  try {
+    const cfg = await fetchProfileConfig();
+    profileOptions.value = cfg.profiles.length ? cfg.profiles : ["default"];
+    selectedProfile.value = cfg.default_profile || profileOptions.value[0] || "default";
+  } catch {
+    // fallback default
+  }
+  await reload();
+})();
 </script>
 
 <style scoped>
@@ -274,6 +307,12 @@ void reload();
 .actions {
   display: flex;
   flex-wrap: wrap;
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
   gap: 8px;
   align-items: center;
 }
@@ -370,6 +409,53 @@ void reload();
 .row2 {
   display: flex;
   gap: 6px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.module-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.module-btn:hover {
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
+}
+
+.module-btn.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+}
+
+.empty {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .sel {

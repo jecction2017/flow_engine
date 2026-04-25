@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # 节点 id 的强约束：字母开头，仅允许字母/数字/下划线。
 # 作为流程内的逻辑主键使用；name 仅用于可视化展示，不承担任何业务语义。
 NODE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
-PROFILE_ID_PATTERN = r"^[a-z][a-z0-9_-]{0,63}$"
 
 
 class FlowState(str, Enum):
@@ -205,7 +204,6 @@ class FlowDefinition(BaseModel):
     # 不参与任何业务逻辑；流程的唯一逻辑主键是目录名 / API 路径上的 `flow_id`。
     display_name: str | None = None
     version: str = "1.0.0"
-    default_profile: str | None = Field(default="default", pattern=PROFILE_ID_PATTERN)
     strategies: dict[str, ExecutionStrategy]
     nodes: list[FlowMember]
     hooks: FlowHooks | None = None

@@ -257,7 +257,7 @@
         <details class="dbg-details" open>
           <summary class="dbg-sum">调试（上下文 JSON + 输出）</summary>
           <div class="row dbg">
-            <label class="lbl">字典 Profile</label>
+            <label class="lbl">运行 Profile</label>
             <select v-model="debugProfile" class="sel">
               <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
             </select>
@@ -289,7 +289,7 @@ import {
   type RegistryInternalModule,
   type RegistryPythonFn,
 } from "@/api/starlark";
-import { fetchDictProfiles } from "@/api/dict";
+import { fetchProfileConfig } from "@/api/profiles";
 import {
   filterPythonModuleGroups,
   formatPythonExampleCall,
@@ -524,10 +524,11 @@ async function runDebug() {
 onMounted(() => {
   void refreshAll().then(async () => {
     try {
-      const pf = await fetchDictProfiles();
+      const pf = await fetchProfileConfig();
       if (Array.isArray(pf.profiles) && pf.profiles.length) {
         profileOptions.value = [...pf.profiles];
       }
+      debugProfile.value = pf.default_profile || "default";
     } catch {
       // keep fallback
     }

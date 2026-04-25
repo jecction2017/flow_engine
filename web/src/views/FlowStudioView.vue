@@ -101,7 +101,6 @@
       :flow-id="store.activeFlowId"
       :visible="runVisible"
       :initial-context="store.doc.initial_context"
-      :default-profile="store.doc.default_profile ?? 'default'"
       @close="runVisible = false"
     />
     <p v-if="store.apiError" class="api-err">API: {{ store.apiError }}（请先执行 <code>flow-api</code> 或 <code>python -m flow_engine.http_api</code>）</p>

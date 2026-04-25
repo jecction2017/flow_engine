@@ -27,7 +27,12 @@ from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
 from flow_engine.stores import data_dict
-from flow_engine.stores.dict_store import DEFAULT_PROFILE_ID, DataDictError
+from flow_engine.stores.dict_store import DataDictError
+from flow_engine.stores.profile_store import (
+    ProfileConfigError,
+    profile_scope,
+    store as profile_store,
+)
 from flow_engine.stores.version_store import FlowVersionRegistry, validate_flow_id
 
 # ---------------------------------------------------------------------------
@@ -71,6 +76,10 @@ class PutDictModuleBody(BaseModel):
 
 class CreateDictProfileBody(BaseModel):
     profile: str
+
+
+class SetDefaultProfileBody(BaseModel):
+    default_profile: str
 
 
 class PutLookupBody(BaseModel):
@@ -194,7 +203,6 @@ def create_app() -> FastAPI:
         minimal = FlowDefinition(
             display_name=body.display_name,
             version="1.0.0",
-            default_profile=DEFAULT_PROFILE_ID,
             strategies={"default_sync": ExecutionStrategy(name="default_sync", mode=StrategyMode.SYNC)},
             nodes=[],
         )
@@ -334,7 +342,10 @@ def create_app() -> FastAPI:
             merged.update(body.initial_context)
             flow.initial_context = merged
 
-        profile_id = body.profile or flow.default_profile or DEFAULT_PROFILE_ID
+        try:
+            profile_id = profile_store().resolve_profile(body.profile)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         try:
             resolved = data_dict.resolve(profile_id, body.runtime_patch)
         except DataDictError as e:
@@ -344,7 +355,8 @@ def create_app() -> FastAPI:
         started = time.monotonic()
         timed_out = False
         try:
-            res = await asyncio.wait_for(rt.run(), timeout=body.timeout_sec)
+            with profile_scope(profile_id):
+                res = await asyncio.wait_for(rt.run(), timeout=body.timeout_sec)
         except asyncio.TimeoutError:
             timed_out = True
             res = None
@@ -400,29 +412,54 @@ def create_app() -> FastAPI:
         st = data_dict.store()
         return {
             "dict_dir": str(st.directory),
-            "profiles": st.list_profiles(),
+            "profiles": profile_store().list_profiles(),
             "base_modules": [m.__dict__ for m in st.list_modules("base")],
         }
 
     @app.get("/api/dict/resolve")
-    def resolve_data_dictionary(profile: str = Query(default=DEFAULT_PROFILE_ID)) -> dict[str, Any]:
+    def resolve_data_dictionary(profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
-            return data_dict.resolve(profile)
-        except DataDictError as e:
+            pid = profile_store().resolve_profile(profile)
+            return data_dict.resolve(pid)
+        except (DataDictError, ProfileConfigError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/api/dict/profiles")
     def list_dict_profiles() -> dict[str, Any]:
-        st = data_dict.store()
-        return {"profiles": st.list_profiles()}
+        return {"profiles": profile_store().list_profiles()}
 
     @app.post("/api/dict/profiles")
     def create_dict_profile(body: CreateDictProfileBody) -> dict[str, Any]:
         try:
-            data_dict.store().create_profile(body.profile)
-        except DataDictError as e:
+            pid = profile_store().create_profile(body.profile)
+        except (ProfileConfigError, DataDictError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"ok": True, "profile": body.profile}
+        return {"ok": True, "profile": pid}
+
+    @app.get("/api/profiles")
+    def list_profiles() -> dict[str, Any]:
+        return {"profiles": profile_store().list_profiles()}
+
+    @app.post("/api/profiles")
+    def create_profile(body: CreateDictProfileBody) -> dict[str, Any]:
+        try:
+            pid = profile_store().create_profile(body.profile)
+        except (ProfileConfigError, DataDictError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "profile": pid}
+
+    @app.get("/api/profiles/config")
+    def get_profile_config() -> dict[str, Any]:
+        st = profile_store()
+        return {"default_profile": st.get_default_profile(), "profiles": st.list_profiles()}
+
+    @app.put("/api/profiles/config")
+    def set_profile_config(body: SetDefaultProfileBody) -> dict[str, Any]:
+        try:
+            pid = profile_store().set_default_profile(body.default_profile)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "default_profile": pid}
 
     @app.get("/api/dict/modules")
     def list_dict_modules(layer: str = "base", profile: str | None = None) -> dict[str, Any]:
@@ -466,49 +503,63 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/dict/lookup")
-    def dict_lookup(path: str, profile: str = Query(default=DEFAULT_PROFILE_ID)) -> dict[str, Any]:
+    def dict_lookup(path: str, profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
-            with data_dict.dictionary_scope(data_dict.tree_copy(profile)):
+            pid = profile_store().resolve_profile(profile)
+            with profile_scope(pid), data_dict.dictionary_scope(data_dict.tree_copy(pid)):
                 v = data_dict.lookup(path, None)
-        except DataDictError as e:
+        except (DataDictError, ProfileConfigError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"path": path, "profile": profile, "value": v}
+        return {"path": path, "profile": pid, "value": v}
 
     # -----------------------------------------------------------------------
     # Lookup tables
     # -----------------------------------------------------------------------
 
     @app.get("/api/lookups")
-    def list_lookups() -> dict[str, Any]:
+    def list_lookups(profile: str | None = Query(default=None)) -> dict[str, Any]:
         st = get_lookup_store()
-        return {"lookup_dir": str(st.directory), "namespaces": st.list_namespaces()}
+        try:
+            pid = profile_store().resolve_profile(profile)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"lookup_dir": str(st.directory), "profile": pid, "namespaces": st.list_namespaces(profile=pid)}
 
     @app.get("/api/lookups/{namespace}")
-    def get_lookup_table(namespace: str) -> dict[str, Any]:
+    def get_lookup_table(namespace: str, profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
             validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
         except LookupStoreError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         st = get_lookup_store()
-        if not st.exists(namespace):
+        if not st.exists(namespace, profile=pid):
             return {"fields": [], "rows": []}
-        return st.read_table(namespace)
+        return st.read_table(namespace, profile=pid)
 
     @app.put("/api/lookups/{namespace}")
-    def put_lookup_table(namespace: str, body: PutLookupBody) -> dict[str, Any]:
+    def put_lookup_table(namespace: str, body: PutLookupBody, profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
             validate_lookup_namespace(namespace)
-            return put_table(namespace, body.model_dump(exclude_none=True))
+            pid = profile_store().resolve_profile(profile)
+            return put_table(namespace, body.model_dump(exclude_none=True), profile=pid)
         except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.delete("/api/lookups/{namespace}")
-    def delete_lookup_table(namespace: str) -> dict[str, Any]:
+    def delete_lookup_table(namespace: str, profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
             validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
         except LookupStoreError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        get_lookup_store().delete_namespace(namespace)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        get_lookup_store().delete_namespace(namespace, profile=pid)
         return {"ok": True}
 
     @app.post("/api/lookups/{namespace}/import")
@@ -517,14 +568,18 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         mode: str = Form("replace"),
         format: str = Form("auto"),  # noqa: A002
+        profile: str | None = Form(default=None),
     ) -> dict[str, Any]:
         rows: list[Any] = []
         try:
             validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
             raw = await file.read()
             rows = rows_from_bytes(raw, filename=file.filename or "", format=format)
-            merge_imported_rows(namespace, rows, mode=mode)
+            merge_imported_rows(namespace, rows, mode=mode, profile=pid)
         except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "imported": len(rows), "mode": mode}
 
@@ -532,11 +587,13 @@ def create_app() -> FastAPI:
     def query_lookup_http(
         namespace: str,
         filter_json: str = Query(default="{}", alias="filter"),
+        profile: str | None = Query(default=None),
     ) -> dict[str, Any]:
         from flow_engine.lookup.lookup_service import lookup_query as run_lookup_query
 
         try:
             validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
             filt = json.loads(filter_json or "{}")
             if not isinstance(filt, dict):
                 raise ValueError("filter must be a JSON object")
@@ -544,8 +601,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
-        rows = run_lookup_query(namespace, filt)
-        return {"namespace": namespace, "filter": filt, "rows": rows}
+        with profile_scope(pid):
+            rows = run_lookup_query(namespace, filt)
+        return {"namespace": namespace, "profile": pid, "filter": filt, "rows": rows}
 
     # -----------------------------------------------------------------------
     # Starlark
@@ -604,9 +662,9 @@ def create_app() -> FastAPI:
     @app.post("/api/debug/node")
     def debug_node(body: DebugNodeBody) -> JSONResponse:
         try:
-            profile = body.profile or DEFAULT_PROFILE_ID
+            profile = profile_store().resolve_profile(body.profile)
             resolved = data_dict.resolve(profile)
-            with data_dict.dictionary_scope(resolved["resolved_dictionary"]):
+            with profile_scope(profile), data_dict.dictionary_scope(resolved["resolved_dictionary"]):
                 result, logs = debug_task_script(body.script, body.initial_context or {})
             return JSONResponse(content={"ok": True, "result": result, "logs": logs})
         except Exception as e:  # noqa: BLE001

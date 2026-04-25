@@ -11,6 +11,7 @@ from typing import Any
 
 from flow_engine._repo_root import repo_root
 from flow_engine.engine.exceptions import FlowEngineError
+from flow_engine.stores.profile_store import DEFAULT_PROFILE_ID, active_profile, validate_profile_id
 
 
 class LookupStoreError(FlowEngineError):
@@ -81,62 +82,105 @@ def invalidate_lookup_store_cache() -> None:
 
 
 class LookupStore:
-    """One JSON file per namespace: ``{namespace}.json``."""
+    """One JSON file per namespace under ``profiles/{profile}/{namespace}.json``."""
 
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or _lookup_dir()
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_flat_files()
         self._mtime: dict[str, float] = {}
         self._mem: dict[str, dict[str, Any]] = {}
 
-    def path_for(self, ns: str) -> Path:
-        validate_lookup_namespace(ns)
-        return self.directory / f"{ns}.json"
+    def _migrate_legacy_flat_files(self) -> None:
+        legacy_files = [p for p in self.directory.glob("*.json") if p.is_file()]
+        if not legacy_files:
+            return
+        target_dir = self.profile_dir(DEFAULT_PROFILE_ID, create=True)
+        for p in legacy_files:
+            stem = p.stem
+            if not _NS.match(stem):
+                continue
+            dst = target_dir / p.name
+            if not dst.exists():
+                p.replace(dst)
+            else:
+                p.unlink()
 
-    def list_namespaces(self) -> list[str]:
+    @property
+    def profiles_dir(self) -> Path:
+        return self.directory / "profiles"
+
+    def profile_dir(self, profile_id: str, *, create: bool = False) -> Path:
+        pid = validate_profile_id(profile_id)
+        p = self.profiles_dir / pid
+        if create:
+            p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def create_profile(self, profile_id: str) -> None:
+        self.profile_dir(profile_id, create=True)
+
+    def _resolve_profile(self, profile_id: str | None) -> str:
+        return validate_profile_id(profile_id or active_profile())
+
+    def path_for(self, ns: str, *, profile: str | None = None) -> Path:
+        validate_lookup_namespace(ns)
+        pid = self._resolve_profile(profile)
+        return self.profile_dir(pid, create=True) / f"{ns}.json"
+
+    def list_namespaces(self, *, profile: str | None = None) -> list[str]:
+        pid = self._resolve_profile(profile)
+        root = self.profile_dir(pid, create=True)
         out: list[str] = []
-        for p in sorted(self.directory.glob("*.json")):
+        for p in sorted(root.glob("*.json")):
             stem = p.stem
             if _NS.match(stem):
                 out.append(stem)
         return out
 
-    def exists(self, ns: str) -> bool:
-        return self.path_for(ns).is_file()
+    def exists(self, ns: str, *, profile: str | None = None) -> bool:
+        return self.path_for(ns, profile=profile).is_file()
 
-    def read_table(self, ns: str) -> dict[str, Any]:
+    def read_table(self, ns: str, *, profile: str | None = None) -> dict[str, Any]:
         validate_lookup_namespace(ns)
-        path = self.path_for(ns)
+        pid = self._resolve_profile(profile)
+        path = self.path_for(ns, profile=pid)
+        cache_key = f"{pid}:{ns}"
         if not path.is_file():
             return {"fields": [], "rows": []}
         mtime = path.stat().st_mtime
-        if self._mtime.get(ns) == mtime and ns in self._mem:
-            return copy.deepcopy(self._mem[ns])
+        if self._mtime.get(cache_key) == mtime and cache_key in self._mem:
+            return copy.deepcopy(self._mem[cache_key])
         data = json.loads(path.read_text(encoding="utf-8"))
         norm = normalize_table(data)
-        self._mem[ns] = copy.deepcopy(norm)
-        self._mtime[ns] = mtime
+        self._mem[cache_key] = copy.deepcopy(norm)
+        self._mtime[cache_key] = mtime
         return copy.deepcopy(norm)
 
-    def write_table(self, ns: str, table: dict[str, Any]) -> None:
+    def write_table(self, ns: str, table: dict[str, Any], *, profile: str | None = None) -> None:
         norm = normalize_table(table)
-        path = self.path_for(ns)
+        pid = self._resolve_profile(profile)
+        path = self.path_for(ns, profile=pid)
+        cache_key = f"{pid}:{ns}"
         path.write_text(
             json.dumps(norm, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
             newline="\n",
         )
         mtime = path.stat().st_mtime
-        self._mem[ns] = copy.deepcopy(norm)
-        self._mtime[ns] = mtime
+        self._mem[cache_key] = copy.deepcopy(norm)
+        self._mtime[cache_key] = mtime
 
-    def delete_namespace(self, ns: str) -> None:
+    def delete_namespace(self, ns: str, *, profile: str | None = None) -> None:
         validate_lookup_namespace(ns)
-        path = self.path_for(ns)
+        pid = self._resolve_profile(profile)
+        path = self.path_for(ns, profile=pid)
+        cache_key = f"{pid}:{ns}"
         if path.is_file():
             path.unlink()
-        self._mem.pop(ns, None)
-        self._mtime.pop(ns, None)
+        self._mem.pop(cache_key, None)
+        self._mtime.pop(cache_key, None)
 
 
 def get_lookup_store() -> LookupStore:

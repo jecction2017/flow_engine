@@ -64,13 +64,13 @@ export async function fetchDictResolved(profile: string): Promise<DictResolveRes
 }
 
 export async function fetchDictProfiles(): Promise<DictProfilesResponse> {
-  const r = await fetch("/api/dict/profiles");
+  const r = await fetch("/api/profiles");
   if (!r.ok) throw new Error(`dict profiles: ${r.status}`);
   return r.json() as Promise<DictProfilesResponse>;
 }
 
 export async function createDictProfile(profile: string): Promise<void> {
-  const r = await fetch("/api/dict/profiles", {
+  const r = await fetch("/api/profiles", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ profile }),
