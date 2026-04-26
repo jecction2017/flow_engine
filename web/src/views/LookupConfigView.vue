@@ -115,9 +115,6 @@
           <div class="meta">
             <span class="lbl">当前命名空间</span>
             <span class="mono path">{{ activeNs }}</span>
-            <button type="button" class="btn primary" :disabled="saving || loading" @click="save">
-              {{ saving ? "保存中…" : "保存修改" }}
-            </button>
             <button type="button" class="btn ghost danger" :disabled="loading" @click="removeNs">
               删除
             </button>
@@ -135,12 +132,17 @@
             <p class="muted" style="font-size: 11px; margin-bottom: 8px;">
               使用标准的 JSON Schema 定义数据结构。后端在保存时会进行校验。
             </p>
+            <div class="meta">
+              <button type="button" class="btn primary" :disabled="saving || loading" @click="saveSchema">
+                {{ saving ? "保存中..." : "保存结构定义" }}
+              </button>
+            </div>
             <CodeEditor v-model="editorSchemaJson" language="json" :height="500" />
           </div>
 
           <div v-if="activeTab === 'content'" class="tab-pane">
-            <div class="table-actions">
-              <div class="search-wrap" style="flex: 1; max-width: 600px; position: relative;">
+            <div class="filter-toolbar single-row">
+              <div class="toolbar-item search-wrap">
                 <input 
                   v-model="rowSearchInput" 
                   @input="onSearchInput"
@@ -148,10 +150,14 @@
                   @focus="onSearchFocus"
                   @blur="onSearchBlur"
                   class="inp sm mono" 
-                  placeholder="Jexl 过滤 (如: appid == 'demo' && status != 0)" 
-                  style="width: 100%; padding-right: 24px;" 
+                  placeholder="输入过滤表达式，如: appid == 'demo-001' && owner in ['platform','risk']"
+                  style="width: 100%; padding-right: 86px;"
                 />
                 <span v-if="filterError" class="filter-err" :title="filterError">⚠️</span>
+                <select class="filter-preset-select" @change="onPresetChange">
+                  <option value="">预设</option>
+                  <option v-for="item in presetFilters" :key="item.label" :value="item.expr">{{ item.label }}</option>
+                </select>
                 <ul v-if="showAutocomplete && autocompleteItems.length > 0" class="autocomplete-list">
                   <li 
                     v-for="(item, i) in autocompleteItems" 
@@ -164,8 +170,42 @@
                   </li>
                 </ul>
               </div>
-              
-              <div class="imp-inline">
+                <div class="toolbar-item search-actions">
+                <button
+                  type="button"
+                  class="btn ghost sm tip-btn"
+                  title="支持: ==, !=, >, >=, <, <=, in [], not in [], &&, ||"
+                >
+                  ?
+                </button>
+                <button
+                  type="button"
+                  class="btn ghost sm"
+                  :disabled="loading || !rowSearchQuery"
+                  @click="clearFilter"
+                >
+                  清空过滤
+                </button>
+                </div>
+                <div class="toolbar-item ops-left">
+                <button
+                  type="button"
+                  class="btn ghost danger sm"
+                  :disabled="loading || selectedCount === 0"
+                  @click="deleteSelectedRows"
+                >
+                  批量删除（{{ selectedCount }}）
+                </button>
+                <button
+                  type="button"
+                  class="btn ghost danger sm"
+                  :disabled="loading || totalRows === 0"
+                  @click="deleteByCurrentFilter"
+                >
+                  按过滤全量删除
+                </button>
+                </div>
+                <div class="toolbar-item ops-right">
                 <span class="lbl">导入:</span>
                 <select v-model="importMode" class="sel sm">
                   <option value="replace">覆盖</option>
@@ -176,23 +216,36 @@
                   <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onFile" />
                 </label>
                 <span v-if="importHint" class="imp-hint">{{ importHint }}</span>
+                </div>
               </div>
-            </div>
 
             <div class="table-wrap" style="flex: 1; min-height: 0; overflow: auto;">
               <table class="data-table rows-table">
                 <thead>
                   <tr>
+                    <th style="width: 36px">
+                      <input
+                        type="checkbox"
+                        :checked="allPageRowsSelected"
+                        :disabled="!paginatedRows.length"
+                        @change="togglePageSelection(($event.target as HTMLInputElement).checked)"
+                      />
+                    </th>
                     <th v-for="f in dynamicFields" :key="f">{{ f }}</th>
-                    <th style="width: 60px">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(row, idx) in paginatedRows" :key="idx">
-                    <td v-for="f in dynamicFields" :key="f">
-                      <input :value="getCellValue(row, f)" @input="setCellValue(row, f, $event)" class="inp sm" />
+                    <td>
+                      <input
+                        type="checkbox"
+                        :checked="isRowSelected(row)"
+                        @change="toggleRowSelection(row, ($event.target as HTMLInputElement).checked)"
+                      />
                     </td>
-                    <td><button class="btn ghost sm danger" @click="removeRow(idx)">删除</button></td>
+                    <td v-for="f in dynamicFields" :key="f">
+                      <span class="cell-text" :title="getCellValue(row, f)">{{ getCellValue(row, f) }}</span>
+                    </td>
                   </tr>
                   <tr v-if="!paginatedRows.length">
                     <td :colspan="dynamicFields.length + 1" class="empty text-center">暂无数据</td>
@@ -203,10 +256,12 @@
             
             <div class="pagination">
               <button class="btn sm ghost" @click="page--" :disabled="page <= 1">上一页</button>
-              <span class="lbl">第 {{ page }} / {{ totalPages || 1 }} 页 (共 {{ filteredRows.length }} 行)</span>
+              <span class="lbl">第 {{ page }} / {{ totalPages || 1 }} 页 (共 {{ totalRows }} 行)</span>
               <button class="btn sm ghost" @click="page++" :disabled="page >= totalPages">下一页</button>
-              <button class="btn sm ghost" @click="addRow" style="margin-left: auto">＋ 添加一行</button>
             </div>
+            <p class="muted" style="font-size: 11px;">
+              数据内容为只读，支持当前页批量删除、按过滤全量删除。
+            </p>
           </div>
         </template>
         
@@ -221,18 +276,21 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
-import jexl from "jexl";
 import {
+  deleteLookupRows,
+  deleteLookupRowsByFilter,
   deleteLookupTable,
   fetchLookupList,
-  fetchLookupTable,
   importLookupFile,
+  queryLookupTable,
+  saveLookupSchema,
   saveLookupTable,
   type LookupTable,
 } from "@/api/lookups";
 import { fetchProfileConfig } from "@/api/profiles";
 
 const NS_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const FILTER_FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const lookupDir = ref("");
 const namespaces = ref<string[]>([]);
@@ -267,11 +325,15 @@ const rowSearchQuery = ref("");
 const filterError = ref("");
 const page = ref(1);
 const pageSize = 50;
+const totalRows = ref(0);
+const selectedRowKeys = ref<Set<string>>(new Set());
 
 const showAutocomplete = ref(false);
 const autocompleteIndex = ref(0);
 const autocompleteItems = ref<{type: string, value: string}[]>([]);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let activeQueryAbort: AbortController | null = null;
+let activeQueryId = 0;
 
 function onSearchInput(ev: Event) {
   const target = ev.target as HTMLInputElement;
@@ -304,7 +366,7 @@ function updateAutocomplete(val: string, cursor: number) {
         items.push({ type: "field", value: f });
       }
     }
-    const keywords = ["in", "true", "false", "null"];
+    const keywords = ["in", "not in", "&&", "||"];
     for (const k of keywords) {
       if (k.startsWith(word) && k !== match[1]) {
         items.push({ type: "keyword", value: k });
@@ -315,11 +377,16 @@ function updateAutocomplete(val: string, cursor: number) {
       for (const f of dynamicFields.value) {
         items.push({ type: "field", value: f });
       }
-      items.push({ type: "op", value: "==" });
-      items.push({ type: "op", value: "!=" });
-      items.push({ type: "op", value: ">=" });
-      items.push({ type: "op", value: "<=" });
+      items.push({ type: "tmpl", value: "== ''" });
+      items.push({ type: "tmpl", value: "!= ''" });
+      items.push({ type: "tmpl", value: ">= 0" });
+      items.push({ type: "tmpl", value: "<= 0" });
+      items.push({ type: "tmpl", value: "> 0" });
+      items.push({ type: "tmpl", value: "< 0" });
+      items.push({ type: "tmpl", value: "in ['']" });
+      items.push({ type: "tmpl", value: "not in ['']" });
       items.push({ type: "keyword", value: "in" });
+      items.push({ type: "keyword", value: "not in" });
       items.push({ type: "op", value: "&&" });
       items.push({ type: "op", value: "||" });
     }
@@ -404,50 +471,43 @@ const dynamicFields = computed(() => {
   if (schema.value?.properties && typeof schema.value.properties === 'object') {
     Object.keys(schema.value.properties).forEach(k => fields.add(k));
   }
-  // Extract from rows
+  // Extract from current page rows
   for (const r of rows.value) {
     Object.keys(r).forEach(k => fields.add(k));
   }
   return Array.from(fields);
 });
 
-const filteredRows = computed(() => {
-  const q = rowSearchQuery.value.trim();
-  if (!q) {
-    filterError.value = "";
-    return rows.value;
+const totalPages = computed(() => Math.max(1, Math.ceil(totalRows.value / pageSize)));
+const paginatedRows = computed(() => rows.value);
+const selectedCount = computed(() => selectedRowKeys.value.size);
+const presetFilters = computed(() => {
+  const out: Array<{ label: string; expr: string }> = [];
+  const fields = new Set(dynamicFields.value);
+  if (fields.has("status")) {
+    out.push({ label: "状态=1", expr: "status == 1" });
+    out.push({ label: "状态=0", expr: "status == 0" });
   }
-  
-  try {
-    const expr = jexl.compile(q);
-    const result = rows.value.filter((r) => {
-      try {
-        return expr.evalSync(r);
-      } catch {
-        return false; // If evaluation fails for a row, exclude it
-      }
-    });
-    filterError.value = "";
-    return result;
-  } catch (e) {
-    filterError.value = e instanceof Error ? e.message : String(e);
-    // If expression is invalid, fallback to simple text search
-    const lowerQ = q.toLowerCase();
-    return rows.value.filter((r) => {
-      return Object.values(r).some((v) => String(v).toLowerCase().includes(lowerQ));
-    });
+  if (fields.has("owner")) {
+    out.push({ label: "owner=platform", expr: "owner == 'platform'" });
   }
-});
-
-const totalPages = computed(() => Math.ceil(filteredRows.value.length / pageSize));
-
-const paginatedRows = computed(() => {
-  const start = (page.value - 1) * pageSize;
-  return filteredRows.value.slice(start, start + pageSize);
+  if (fields.has("appid")) {
+    out.push({ label: "示例 appid", expr: "appid == 'demo-001'" });
+  }
+  return out;
 });
 
 watch(rowSearchQuery, () => {
   page.value = 1;
+  void refreshPage();
+});
+
+watch(page, () => {
+  void refreshPage();
+});
+
+watch([activeNs, rowSearchQuery, page], () => {
+  selectedRowKeys.value = new Set();
 });
 
 async function reload() {
@@ -473,10 +533,108 @@ async function reload() {
 }
 
 async function loadTable(ns: string) {
-  const t = await fetchLookupTable(ns, selectedProfile.value);
-  schema.value = t.schema || { type: "object", properties: {} };
-  rows.value = t.rows || [];
-  editorSchemaJson.value = JSON.stringify(schema.value, null, 2) + "\n";
+  await refreshPage();
+}
+
+function validateFilterExpr(raw: string): string | null {
+  const groups = raw.split("||").map((x) => x.trim()).filter(Boolean);
+  if (!groups.length) return null;
+  for (const group of groups) {
+    const clauses = group.split("&&").map((x) => x.trim()).filter(Boolean);
+    for (const c of clauses) {
+      if (c.includes(" not in ")) {
+        const [field, rhs] = c.split(" not in ", 2);
+        if (!FILTER_FIELD_RE.test(field.trim())) return `字段名不合法: ${field.trim()}`;
+        const listText = (rhs || "").trim();
+        if (!listText.startsWith("[") || !listText.endsWith("]")) {
+          return `'not in' 右侧必须是列表，如 ['a','b']`;
+        }
+        continue;
+      }
+      if (c.includes(" in ")) {
+        const [field, rhs] = c.split(" in ", 2);
+        if (!FILTER_FIELD_RE.test(field.trim())) return `字段名不合法: ${field.trim()}`;
+        const listText = (rhs || "").trim();
+        if (!listText.startsWith("[") || !listText.endsWith("]")) {
+          return `'in' 右侧必须是列表，如 ['a','b']`;
+        }
+        continue;
+      }
+      let handled = false;
+      for (const token of ["==", "!=", ">=", "<=", ">", "<"]) {
+        if (c.includes(token)) {
+          const [field, rhs] = c.split(token, 2);
+          if (!FILTER_FIELD_RE.test(field.trim())) return `字段名不合法: ${field.trim()}`;
+          if (!rhs || !rhs.trim()) return `'${token}' 右侧不能为空`;
+          handled = true;
+          break;
+        }
+      }
+      if (!handled) {
+        return `不支持的子句: ${c}`;
+      }
+    }
+  }
+  return null;
+}
+
+function parsedFilterFromInput(): string | null {
+  const raw = rowSearchQuery.value.trim();
+  if (!raw) {
+    filterError.value = "";
+    return "";
+  }
+  const err = validateFilterExpr(raw);
+  if (err) {
+    filterError.value = err;
+    return null;
+  }
+  filterError.value = "";
+  return raw;
+}
+
+async function refreshPage() {
+  if (!activeNs.value) return;
+  const filter = parsedFilterFromInput();
+  if (filter === null) {
+    rows.value = [];
+    totalRows.value = 0;
+    return;
+  }
+  if (activeQueryAbort) {
+    activeQueryAbort.abort();
+  }
+  const requestId = ++activeQueryId;
+  activeQueryAbort = new AbortController();
+  const offset = (page.value - 1) * pageSize;
+  try {
+    const res = await queryLookupTable(activeNs.value, {
+      profile: selectedProfile.value,
+      filter,
+      offset,
+      limit: pageSize,
+      signal: activeQueryAbort.signal,
+    });
+    if (requestId !== activeQueryId) {
+      return;
+    }
+    schema.value = (res.schema || { type: "object", properties: {} }) as Record<string, unknown>;
+    rows.value = res.rows || [];
+    totalRows.value = res.total || 0;
+    editorSchemaJson.value = JSON.stringify(schema.value, null, 2) + "\n";
+    if (page.value > totalPages.value) {
+      page.value = totalPages.value;
+    }
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      return;
+    }
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (requestId === activeQueryId) {
+      activeQueryAbort = null;
+    }
+  }
 }
 
 async function pickNamespace(ns: string) {
@@ -579,23 +737,6 @@ async function createNamespace() {
   }
 }
 
-function addRow() {
-  const newRow: Record<string, unknown> = {};
-  for (const f of dynamicFields.value) {
-    newRow[f] = "";
-  }
-  rows.value.unshift(newRow);
-  page.value = 1;
-}
-
-function removeRow(idx: number) {
-  const rowToRemove = paginatedRows.value[idx];
-  const realIdx = rows.value.indexOf(rowToRemove);
-  if (realIdx !== -1) {
-    rows.value.splice(realIdx, 1);
-  }
-}
-
 function getCellValue(row: Record<string, unknown>, fieldName: string): string {
   const val = row[fieldName];
   if (val === null || val === undefined) return "";
@@ -603,103 +744,119 @@ function getCellValue(row: Record<string, unknown>, fieldName: string): string {
   return String(val);
 }
 
-function schemaTypeOf(fieldName: string): string | null {
-  const root = schema.value as Record<string, unknown>;
-  const props = root.properties;
-  if (!props || typeof props !== "object") return null;
-  const def = (props as Record<string, unknown>)[fieldName];
-  if (!def || typeof def !== "object") return null;
-  const t = (def as Record<string, unknown>).type;
-  return typeof t === "string" ? t : null;
+function rowKey(row: Record<string, unknown>): string {
+  return JSON.stringify(row);
 }
 
-function setCellValue(row: Record<string, unknown>, fieldName: string, ev: Event) {
-  const val = (ev.target as HTMLInputElement).value;
-  const t = schemaTypeOf(fieldName);
+function isRowSelected(row: Record<string, unknown>): boolean {
+  return selectedRowKeys.value.has(rowKey(row));
+}
 
-  if (val === "" || val === "null") {
-    row[fieldName] = null;
-    return;
-  }
-
-  if (t === "string") {
-    row[fieldName] = val;
-    return;
-  }
-  if (t === "integer") {
-    const n = Number(val);
-    row[fieldName] = Number.isInteger(n) ? n : val;
-    return;
-  }
-  if (t === "number") {
-    const n = Number(val);
-    row[fieldName] = Number.isNaN(n) ? val : n;
-    return;
-  }
-  if (t === "boolean") {
-    if (val === "true" || val === "1") {
-      row[fieldName] = true;
-      return;
-    }
-    if (val === "false" || val === "0") {
-      row[fieldName] = false;
-      return;
-    }
-    row[fieldName] = val;
-    return;
-  }
-  if (t === "object" || t === "array") {
-    try {
-      row[fieldName] = JSON.parse(val);
-    } catch {
-      row[fieldName] = val;
-    }
-    return;
-  }
-
-  // Fallback: keep previous best-effort behavior for fields not in schema.
-  if (val === "true") {
-    row[fieldName] = true;
-  } else if (val === "false") {
-    row[fieldName] = false;
-  } else if (!isNaN(Number(val)) && val.trim() !== "") {
-    row[fieldName] = Number(val);
-  } else if (val.startsWith("{") || val.startsWith("[")) {
-    try {
-      row[fieldName] = JSON.parse(val);
-    } catch {
-      row[fieldName] = val;
-    }
+function toggleRowSelection(row: Record<string, unknown>, checked: boolean): void {
+  const key = rowKey(row);
+  const next = new Set(selectedRowKeys.value);
+  if (checked) {
+    next.add(key);
   } else {
-    row[fieldName] = val;
+    next.delete(key);
+  }
+  selectedRowKeys.value = next;
+}
+
+function togglePageSelection(checked: boolean): void {
+  const next = new Set(selectedRowKeys.value);
+  for (const row of paginatedRows.value) {
+    const key = rowKey(row);
+    if (checked) {
+      next.add(key);
+    } else {
+      next.delete(key);
+    }
+  }
+  selectedRowKeys.value = next;
+}
+
+const allPageRowsSelected = computed(
+  () => paginatedRows.value.length > 0 && paginatedRows.value.every((row) => isRowSelected(row)),
+);
+
+async function deleteRows(rowsToDelete: Array<Record<string, unknown>>): Promise<void> {
+  if (!activeNs.value || rowsToDelete.length === 0) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    await deleteLookupRows(activeNs.value, rowsToDelete, selectedProfile.value);
+    selectedRowKeys.value = new Set();
+    await refreshPage();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loading.value = false;
   }
 }
 
-async function save() {
-  if (!activeNs.value || !NS_RE.test(activeNs.value)) {
-    error.value = "命名空间格式无效";
-    return;
+async function deleteSelectedRows(): Promise<void> {
+  const chosen = paginatedRows.value.filter((row) => isRowSelected(row));
+  if (!chosen.length) return;
+  if (!confirm(`确认批量删除当前页选中的 ${chosen.length} 条数据吗？`)) return;
+  await deleteRows(chosen);
+}
+
+async function deleteByCurrentFilter(): Promise<void> {
+  if (!activeNs.value) return;
+  const filter = parsedFilterFromInput();
+  if (filter === null) return;
+  const hasFilter = filter.trim().length > 0;
+  const prompt = hasFilter
+    ? `确认删除所有匹配当前过滤条件的数据吗？预计影响 ${totalRows.value} 条。`
+    : `当前过滤为空，将删除此命名空间的全部 ${totalRows.value} 条数据，确认继续吗？`;
+  if (!confirm(prompt)) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    await deleteLookupRowsByFilter(activeNs.value, filter, selectedProfile.value);
+    selectedRowKeys.value = new Set();
+    page.value = 1;
+    await refreshPage();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loading.value = false;
   }
-  
-  let parsedSchema: Record<string, unknown> = {};
+}
+
+function applyPreset(expr: string): void {
+  rowSearchInput.value = expr;
+  rowSearchQuery.value = expr;
+}
+
+function onPresetChange(ev: Event): void {
+  const val = (ev.target as HTMLSelectElement).value;
+  if (!val) return;
+  applyPreset(val);
+  (ev.target as HTMLSelectElement).value = "";
+}
+
+function clearFilter(): void {
+  rowSearchInput.value = "";
+  rowSearchQuery.value = "";
+}
+
+async function saveSchema(): Promise<void> {
+  if (!activeNs.value) return;
+  let parsedSchema: Record<string, unknown>;
   try {
     parsedSchema = JSON.parse(editorSchemaJson.value);
-  } catch {
-    error.value = "JSON Schema 解析失败";
+  } catch (e) {
+    error.value = `JSON Schema 解析失败: ${e instanceof Error ? e.message : String(e)}`;
     return;
   }
-  
-  const table: LookupTable = {
-    schema: parsedSchema,
-    rows: rows.value,
-  };
-  
   saving.value = true;
   error.value = "";
   try {
-    await saveLookupTable(activeNs.value, table, selectedProfile.value);
-    importHint.value = "已保存";
-    await reload();
+    await saveLookupSchema(activeNs.value, parsedSchema, selectedProfile.value);
+    importHint.value = "结构定义已保存";
+    await refreshPage();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -749,7 +906,7 @@ async function onFile(ev: Event) {
 }
 
 function downloadJson() {
-  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ schema: schema.value, rows: rows.value }, null, 2));
+  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ schema: schema.value, rows: paginatedRows.value, page: page.value, total: totalRows.value }, null, 2));
   const downloadAnchorNode = document.createElement('a');
   downloadAnchorNode.setAttribute("href", dataStr);
   downloadAnchorNode.setAttribute("download", `${activeNs.value}.json`);
@@ -1070,27 +1227,86 @@ void (async () => {
   min-height: 0;
 }
 
-.table-actions {
+.filter-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-toolbar.single-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  overflow: visible;
+  white-space: nowrap;
+  padding-bottom: 2px;
+}
+
+.toolbar-item {
+  flex: 0 0 auto;
+}
+
+.search-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ops-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .search-wrap {
   flex: 1;
-  max-width: 600px;
+  min-width: 320px;
   position: relative;
   display: flex;
   align-items: center;
 }
 
+.filter-toolbar.single-row .search-wrap {
+  flex: 0 0 520px;
+  min-width: 520px;
+}
+
+.search-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ops-left,
+.ops-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .filter-err {
   position: absolute;
-  right: 8px;
+  right: 64px;
   font-size: 12px;
   cursor: help;
+}
+
+.filter-preset-select {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 52px;
+  height: 20px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0 6px;
 }
 
 .autocomplete-list {
@@ -1157,6 +1373,27 @@ void (async () => {
   color: var(--success);
 }
 
+.filter-inline-hint {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tip-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.filter-inline-hint code {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #fff8;
+}
+
 .table-wrap {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1200,6 +1437,14 @@ void (async () => {
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cell-text {
+  display: inline-block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pagination {

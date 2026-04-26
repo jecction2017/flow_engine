@@ -361,3 +361,220 @@ def test_lookup_put_accepts_json_schema_types(client: TestClient) -> None:
     }
     r = client.put("/api/lookups/apps?profile=default", json=payload)
     assert r.status_code == 200, r.text
+
+
+def test_lookup_query_supports_server_side_pagination(client: TestClient) -> None:
+    rows = [{"appid": f"app-{i:03d}", "status": 1} for i in range(120)]
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "appid": {"type": "string"},
+                "status": {"type": "integer"},
+            },
+            "required": ["appid", "status"],
+            "additionalProperties": False,
+        },
+        "rows": rows,
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/lookups/apps/query?profile=default&filter={\"status\":1}&offset=20&limit=30")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 120
+    assert body["offset"] == 20
+    assert body["limit"] == 30
+    assert body["has_more"] is True
+    assert len(body["rows"]) == 30
+    assert body["rows"][0]["appid"] == "app-020"
+
+
+def test_lookup_rows_delete_supports_single_and_batch(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {"appid": {"type": "string"}, "status": {"type": "integer"}},
+            "required": ["appid", "status"],
+            "additionalProperties": False,
+        },
+        "rows": [
+            {"appid": "a-1", "status": 1},
+            {"appid": "a-2", "status": 1},
+            {"appid": "a-3", "status": 0},
+        ],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/lookups/apps/rows/delete?profile=default",
+        json={"rows": [{"appid": "a-2", "status": 1}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 1
+
+    r = client.post(
+        "/api/lookups/apps/rows/delete?profile=default",
+        json={"rows": [{"appid": "a-1", "status": 1}, {"appid": "a-3", "status": 0}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 2
+    assert r.json()["remaining"] == 0
+
+
+def test_lookup_rows_delete_by_filter(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {"appid": {"type": "string"}, "status": {"type": "integer"}},
+            "required": ["appid", "status"],
+            "additionalProperties": False,
+        },
+        "rows": [
+            {"appid": "a-1", "status": 1},
+            {"appid": "a-2", "status": 1},
+            {"appid": "a-3", "status": 0},
+        ],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/lookups/apps/rows/delete_by_filter?profile=default",
+        json={"filter": {"status": 1}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 2
+    assert r.json()["remaining"] == 1
+
+
+def test_lookup_query_supports_expression_filter(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "appid": {"type": "string"},
+                "owner": {"type": "string"},
+                "status": {"type": "integer"},
+            },
+            "required": ["appid", "owner", "status"],
+            "additionalProperties": False,
+        },
+        "rows": [
+            {"appid": "a-1", "owner": "platform", "status": 1},
+            {"appid": "a-2", "owner": "risk", "status": 1},
+            {"appid": "a-3", "owner": "ops", "status": 0},
+        ],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    expr = "status == 1 && owner in ['platform','risk']"
+    r = client.get("/api/lookups/apps/query", params={"profile": "default", "filter": expr})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 2
+    assert {x["appid"] for x in body["rows"]} == {"a-1", "a-2"}
+
+
+def test_lookup_delete_by_filter_supports_expression(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "appid": {"type": "string"},
+                "owner": {"type": "string"},
+                "status": {"type": "integer"},
+            },
+            "required": ["appid", "owner", "status"],
+            "additionalProperties": False,
+        },
+        "rows": [
+            {"appid": "a-1", "owner": "platform", "status": 1},
+            {"appid": "a-2", "owner": "risk", "status": 1},
+            {"appid": "a-3", "owner": "ops", "status": 0},
+        ],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/lookups/apps/rows/delete_by_filter?profile=default",
+        json={"filter": "owner in ['platform','risk'] && status == 1"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 2
+    assert r.json()["remaining"] == 1
+
+
+def test_lookup_query_expression_invalid_clause_returns_400(client: TestClient) -> None:
+    payload = {"schema": {"type": "object", "properties": {"appid": {"type": "string"}}}, "rows": [{"appid": "x"}]}
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/lookups/apps/query", params={"profile": "default", "filter": "appid != 'x'"})
+    assert r.status_code == 400
+    assert "unsupported filter clause" in r.text
+
+
+def test_lookup_delete_by_filter_expression_invalid_field_returns_400(client: TestClient) -> None:
+    payload = {"schema": {"type": "object", "properties": {"appid": {"type": "string"}}}, "rows": [{"appid": "x"}]}
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/lookups/apps/rows/delete_by_filter?profile=default",
+        json={"filter": "app-id == 'x'"},
+    )
+    assert r.status_code == 400
+    assert "invalid filter field" in r.text
+
+
+def test_lookup_query_supports_extended_expression_ops(client: TestClient) -> None:
+    payload = {
+        "schema": {
+            "type": "object",
+            "properties": {"appid": {"type": "string"}, "score": {"type": "integer"}},
+            "required": ["appid", "score"],
+            "additionalProperties": False,
+        },
+        "rows": [
+            {"appid": "a-1", "score": 10},
+            {"appid": "a-2", "score": 20},
+            {"appid": "a-3", "score": 30},
+        ],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    expr = "score >= 20 && appid != 'a-3' || appid in ['a-1']"
+    r = client.get("/api/lookups/apps/query", params={"profile": "default", "filter": expr})
+    assert r.status_code == 200, r.text
+    rows = r.json()["rows"]
+    assert {x["appid"] for x in rows} == {"a-1", "a-2"}
+
+
+def test_lookup_save_schema_keeps_existing_rows(client: TestClient) -> None:
+    payload = {
+        "schema": {"type": "object", "properties": {"appid": {"type": "string"}}},
+        "rows": [{"appid": "a-1"}, {"appid": "a-2"}],
+    }
+    r = client.put("/api/lookups/apps?profile=default", json=payload)
+    assert r.status_code == 200, r.text
+
+    new_schema = {
+        "type": "object",
+        "properties": {"appid": {"type": "string"}, "status": {"type": "integer"}},
+        "required": ["appid"],
+        "additionalProperties": True,
+    }
+    r = client.put("/api/lookups/apps/schema?profile=default", json={"schema": new_schema})
+    assert r.status_code == 200, r.text
+    assert r.json()["rows_count"] == 2
+
+    r = client.get("/api/lookups/apps?profile=default")
+    assert r.status_code == 200, r.text
+    assert len(r.json()["rows"]) == 2
+    assert "status" in r.json()["schema"]["properties"]

@@ -19,7 +19,13 @@ from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeSta
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.lookup.lookup_import import rows_from_bytes
-from flow_engine.lookup.lookup_service import merge_imported_rows, put_table
+from flow_engine.lookup.lookup_service import (
+    delete_rows,
+    delete_rows_by_filter,
+    merge_imported_rows,
+    put_table,
+    update_table_schema,
+)
 from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
 from flow_engine.starlark_sdk.paths import user_scripts_root
 from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
@@ -86,6 +92,18 @@ class PutLookupBody(BaseModel):
     schema: dict[str, Any] | None = None
     fields: list[str] | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DeleteLookupRowsBody(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DeleteLookupRowsByFilterBody(BaseModel):
+    filter: dict[str, Any] | str = Field(default_factory=dict)
+
+
+class PutLookupSchemaBody(BaseModel):
+    schema: dict[str, Any]
 
 
 class StarlarkWarmupBody(BaseModel):
@@ -551,6 +569,21 @@ def create_app() -> FastAPI:
         except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.put("/api/lookups/{namespace}/schema")
+    def put_lookup_schema(
+        namespace: str,
+        body: PutLookupSchemaBody,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
+            return update_table_schema(namespace, body.schema, profile=pid)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.delete("/api/lookups/{namespace}")
     def delete_lookup_table(namespace: str, profile: str | None = Query(default=None)) -> dict[str, Any]:
         try:
@@ -562,6 +595,38 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         get_lookup_store().delete_namespace(namespace, profile=pid)
         return {"ok": True}
+
+    @app.post("/api/lookups/{namespace}/rows/delete")
+    def delete_lookup_rows(
+        namespace: str,
+        body: DeleteLookupRowsBody,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
+            result = delete_rows(namespace, body.rows, profile=pid)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, **result}
+
+    @app.post("/api/lookups/{namespace}/rows/delete_by_filter")
+    def delete_lookup_rows_by_filter(
+        namespace: str,
+        body: DeleteLookupRowsByFilterBody,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
+            result = delete_rows_by_filter(namespace, body.filter, profile=pid)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, **result}
 
     @app.post("/api/lookups/{namespace}/import")
     async def import_lookup_table(
@@ -587,24 +652,33 @@ def create_app() -> FastAPI:
     @app.get("/api/lookups/{namespace}/query")
     def query_lookup_http(
         namespace: str,
-        filter_json: str = Query(default="{}", alias="filter"),
+        filter_raw: str = Query(default="", alias="filter"),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=10_000),
         profile: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        from flow_engine.lookup.lookup_service import lookup_query as run_lookup_query
+        from flow_engine.lookup.lookup_service import lookup_query_page as run_lookup_query_page
 
         try:
             validate_lookup_namespace(namespace)
             pid = profile_store().resolve_profile(profile)
-            filt = json.loads(filter_json or "{}")
-            if not isinstance(filt, dict):
-                raise ValueError("filter must be a JSON object")
+            filt: dict[str, Any] | str = {}
+            raw = (filter_raw or "").strip()
+            if raw:
+                if raw.startswith("{"):
+                    parsed = json.loads(raw)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("filter JSON must be an object")
+                    filt = parsed
+                else:
+                    filt = raw
         except LookupStoreError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
         with profile_scope(pid):
-            rows = run_lookup_query(namespace, filt)
-        return {"namespace": namespace, "profile": pid, "filter": filt, "rows": rows}
+            page = run_lookup_query_page(namespace, filt, offset=offset, limit=limit)
+        return {"namespace": namespace, "profile": pid, "filter": filt, **page}
 
     # -----------------------------------------------------------------------
     # Starlark
