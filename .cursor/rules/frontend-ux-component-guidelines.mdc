@@ -1,0 +1,19 @@
+---
+description: Frontend UX and component consistency standard for web UI generation
+globs: web/src/**/*
+alwaysApply: false
+---
+
+# Frontend UX and Component Guidelines
+
+Use this rule whenever generating or modifying frontend code in `web/src/**/*`.
+
+- Follow `docs/frontend-ux-component-standard.md` as the primary UX/component standard.
+- Reuse existing shared patterns/components first; avoid introducing parallel visual styles.
+- Inline help must use `InfoTip`; do not create custom `?` hint buttons.
+- Destructive actions must use unified in-page confirm modal patterns; avoid browser `confirm()`.
+- Keep button/input style tokens consistent (`btn`, `ghost`, `primary`, `danger`, `inp`, `sel`).
+- Prefer explicit trigger interactions for expensive actions (for example Enter-to-search).
+- Ensure responsive behavior remains usable after UI changes.
+
+If a change must diverge, state the reason and scope explicitly in the response.

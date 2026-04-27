@@ -23,6 +23,16 @@
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
+    <div v-if="confirmOpen" class="confirm-mask" @click.self="closeConfirmDialog">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" :aria-label="confirmTitle">
+        <div class="confirm-title">{{ confirmTitle }}</div>
+        <p class="confirm-text">{{ confirmText }}</p>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="closeConfirmDialog">取消</button>
+          <button type="button" class="btn ghost danger" @click="confirmDialogAction">确认删除</button>
+        </div>
+      </div>
+    </div>
 
     <div class="hint-bar">
       Starlark：
@@ -118,9 +128,21 @@
             <button type="button" class="btn ghost danger" :disabled="loading" @click="removeNs">
               删除
             </button>
-            <button type="button" class="btn ghost" style="margin-left: auto;" @click="downloadJson">
-              导出 JSON
-            </button>
+            <div class="meta-actions">
+              <button type="button" class="btn ghost" @click="downloadJson">
+                导出 JSON
+              </button>
+              <span class="lbl">导入:</span>
+              <select v-model="importMode" class="sel sm">
+                <option value="replace">覆盖</option>
+                <option value="append">追加</option>
+              </select>
+              <label class="file-lbl btn ghost sm">
+                选择文件
+                <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onFile" />
+              </label>
+              <span v-if="importHint" class="imp-hint">{{ importHint }}</span>
+            </div>
           </div>
 
           <div class="tabs">
@@ -142,52 +164,49 @@
 
           <div v-if="activeTab === 'content'" class="tab-pane">
             <div class="filter-toolbar single-row">
-              <div class="toolbar-item search-wrap">
-                <input 
-                  v-model="rowSearchInput" 
-                  @input="onSearchInput"
-                  @keydown="onSearchKeyDown"
-                  @focus="onSearchFocus"
-                  @blur="onSearchBlur"
-                  class="inp sm mono" 
-                  placeholder="输入过滤表达式，如: appid == 'demo-001' && owner in ['platform','risk']"
-                  style="width: 100%; padding-right: 86px;"
-                />
-                <span v-if="filterError" class="filter-err" :title="filterError">⚠️</span>
-                <select class="filter-preset-select" @change="onPresetChange">
-                  <option value="">预设</option>
-                  <option v-for="item in presetFilters" :key="item.label" :value="item.expr">{{ item.label }}</option>
-                </select>
-                <ul v-if="showAutocomplete && autocompleteItems.length > 0" class="autocomplete-list">
-                  <li 
-                    v-for="(item, i) in autocompleteItems" 
-                    :key="i"
-                    :class="{ active: i === autocompleteIndex }"
-                    @mousedown.prevent="selectAutocomplete(item)"
-                  >
-                    <span class="ac-type">{{ item.type }}</span>
-                    <span class="ac-val">{{ item.value }}</span>
-                  </li>
-                </ul>
-              </div>
-                <div class="toolbar-item search-actions">
-                <button
-                  type="button"
-                  class="btn ghost sm tip-btn"
-                  title="支持: ==, !=, >, >=, <, <=, in [], not in [], &&, ||"
-                >
-                  ?
-                </button>
+              <div class="toolbar-item toolbar-main-left">
+                <div class="search-wrap">
+                  <input 
+                    v-model="rowSearchInput" 
+                    @input="onSearchInput"
+                    @keydown="onSearchKeyDown"
+                    @focus="onSearchFocus"
+                    @blur="onSearchBlur"
+                    class="inp sm mono"
+                    :class="{ 'search-submitted': searchSubmittedPulse }"
+                    placeholder="输入过滤表达式，如: appid == 'demo-001' && owner in ['platform','risk']"
+                    style="width: 100%; padding-right: 86px;"
+                  />
+                  <span v-if="filterError" class="filter-err" :title="filterError">⚠️</span>
+                  <select class="filter-preset-select" @change="onPresetChange">
+                    <option value="">预设</option>
+                    <option v-for="item in presetFilters" :key="item.label" :value="item.expr">{{ item.label }}</option>
+                  </select>
+                  <ul v-if="showAutocomplete && autocompleteItems.length > 0" class="autocomplete-list">
+                    <li 
+                      v-for="(item, i) in autocompleteItems" 
+                      :key="i"
+                      :class="{ active: i === autocompleteIndex }"
+                      @mousedown.prevent="selectAutocomplete(item)"
+                    >
+                      <span class="ac-type">{{ item.type }}</span>
+                      <span class="ac-val">{{ item.value }}</span>
+                    </li>
+                  </ul>
+                </div>
+                <div class="search-actions">
+                <InfoTip text="支持: ==, !=, >, >=, <, <=, in [], not in [], &&, ||" />
                 <button
                   type="button"
                   class="btn ghost sm"
-                  :disabled="loading || !rowSearchQuery"
+                  :disabled="loading || (!rowSearchInput.trim() && !rowSearchQuery.trim())"
                   @click="clearFilter"
                 >
                   清空过滤
                 </button>
                 </div>
-                <div class="toolbar-item ops-left">
+              </div>
+              <div class="toolbar-item toolbar-main-right">
                 <button
                   type="button"
                   class="btn ghost danger sm"
@@ -204,19 +223,7 @@
                 >
                   按过滤全量删除
                 </button>
-                </div>
-                <div class="toolbar-item ops-right">
-                <span class="lbl">导入:</span>
-                <select v-model="importMode" class="sel sm">
-                  <option value="replace">覆盖</option>
-                  <option value="append">追加</option>
-                </select>
-                <label class="file-lbl btn ghost sm">
-                  选择文件
-                  <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onFile" />
-                </label>
-                <span v-if="importHint" class="imp-hint">{{ importHint }}</span>
-                </div>
+              </div>
               </div>
 
             <div class="table-wrap" style="flex: 1; min-height: 0; overflow: auto;">
@@ -276,6 +283,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
+import InfoTip from "@/components/InfoTip.vue";
 import {
   deleteLookupRows,
   deleteLookupRowsByFilter,
@@ -331,7 +339,16 @@ const selectedRowKeys = ref<Set<string>>(new Set());
 const showAutocomplete = ref(false);
 const autocompleteIndex = ref(0);
 const autocompleteItems = ref<{type: string, value: string}[]>([]);
+const searchSubmittedPulse = ref(false);
+const confirmOpen = ref(false);
+const confirmTitle = ref("确认操作");
+const confirmText = ref("");
+const pendingConfirmAction = ref<null | "deleteSelectedRows" | "deleteByFilter" | "removeNamespace">(null);
+const pendingRowsToDelete = ref<Array<Record<string, unknown>>>([]);
+const pendingDeleteFilter = ref("");
+const pendingRemoveNs = ref("");
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let submitPulseTimer: ReturnType<typeof setTimeout> | null = null;
 let activeQueryAbort: AbortController | null = null;
 let activeQueryId = 0;
 
@@ -339,12 +356,6 @@ function onSearchInput(ev: Event) {
   const target = ev.target as HTMLInputElement;
   const val = target.value;
   const cursor = target.selectionStart || 0;
-  
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    rowSearchQuery.value = val;
-  }, 400);
-
   updateAutocomplete(val, cursor);
 }
 
@@ -398,9 +409,20 @@ function updateAutocomplete(val: string, cursor: number) {
 }
 
 function onSearchKeyDown(ev: KeyboardEvent) {
+  if (ev.key === "Enter") {
+    const raw = rowSearchInput.value;
+    // Empty/whitespace means "search all", even if autocomplete suggestions are shown.
+    if (!raw.trim()) {
+      ev.preventDefault();
+      showAutocomplete.value = false;
+      submitSearch();
+      return;
+    }
+  }
+
   if (ev.key === "Enter" && (!showAutocomplete.value || autocompleteItems.value.length === 0)) {
-    if (searchTimer) clearTimeout(searchTimer);
-    rowSearchQuery.value = rowSearchInput.value;
+    ev.preventDefault();
+    submitSearch();
     return;
   }
 
@@ -437,18 +459,13 @@ function selectAutocomplete(item: {type: string, value: string}) {
   
   const insertText = item.value + " ";
   rowSearchInput.value = newBefore + insertText + textAfter;
+  showAutocomplete.value = false;
   
   setTimeout(() => {
     target.focus();
     const newPos = newBefore.length + insertText.length;
     target.setSelectionRange(newPos, newPos);
-    updateAutocomplete(rowSearchInput.value, newPos);
   }, 0);
-  
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    rowSearchQuery.value = rowSearchInput.value;
-  }, 400);
 }
 
 function onSearchBlur() {
@@ -537,6 +554,15 @@ async function loadTable(ns: string) {
 }
 
 function validateFilterExpr(raw: string): string | null {
+  const isPrimitiveLiteral = (rhs: string): boolean => {
+    const t = rhs.trim();
+    if (!t) return false;
+    if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith('"') && t.endsWith('"'))) return true;
+    if (/^-?\d+(\.\d+)?$/.test(t)) return true;
+    if (t === "true" || t === "false" || t === "null") return true;
+    return false;
+  };
+
   const groups = raw.split("||").map((x) => x.trim()).filter(Boolean);
   if (!groups.length) return null;
   for (const group of groups) {
@@ -549,6 +575,12 @@ function validateFilterExpr(raw: string): string | null {
         if (!listText.startsWith("[") || !listText.endsWith("]")) {
           return `'not in' 右侧必须是列表，如 ['a','b']`;
         }
+        try {
+          const parsed = JSON.parse(listText.replace(/'/g, '"'));
+          if (!Array.isArray(parsed)) return `'not in' 右侧必须是列表，如 ['a','b']`;
+        } catch {
+          return `'not in' 列表格式不合法；字符串请使用引号，如 ['a','b']`;
+        }
         continue;
       }
       if (c.includes(" in ")) {
@@ -558,14 +590,30 @@ function validateFilterExpr(raw: string): string | null {
         if (!listText.startsWith("[") || !listText.endsWith("]")) {
           return `'in' 右侧必须是列表，如 ['a','b']`;
         }
+        try {
+          const parsed = JSON.parse(listText.replace(/'/g, '"'));
+          if (!Array.isArray(parsed)) return `'in' 右侧必须是列表，如 ['a','b']`;
+        } catch {
+          return `'in' 列表格式不合法；字符串请使用引号，如 ['a','b']`;
+        }
         continue;
       }
       let handled = false;
       for (const token of ["==", "!=", ">=", "<=", ">", "<"]) {
         if (c.includes(token)) {
           const [field, rhs] = c.split(token, 2);
-          if (!FILTER_FIELD_RE.test(field.trim())) return `字段名不合法: ${field.trim()}`;
-          if (!rhs || !rhs.trim()) return `'${token}' 右侧不能为空`;
+          const fieldName = field.trim();
+          const rhsText = (rhs || "").trim();
+          if (!FILTER_FIELD_RE.test(fieldName)) return `字段名不合法: ${fieldName}`;
+          if (!rhsText) return `'${token}' 右侧不能为空`;
+          // Prevent backend parse/runtime errors from bare identifiers like: appid == appid
+          // If users mean literal string, require quotes: appid == 'appid'
+          if (FILTER_FIELD_RE.test(rhsText) && !isPrimitiveLiteral(rhsText)) {
+            return `右侧值 "${rhsText}" 需要加引号；如匹配字符串请写为 '${rhsText}'`;
+          }
+          if (!isPrimitiveLiteral(rhsText) && !FILTER_FIELD_RE.test(rhsText)) {
+            return `右侧值格式不支持: ${rhsText}`;
+          }
           handled = true;
           break;
         }
@@ -795,11 +843,52 @@ async function deleteRows(rowsToDelete: Array<Record<string, unknown>>): Promise
   }
 }
 
+function openConfirmDialog(
+  action: "deleteSelectedRows" | "deleteByFilter" | "removeNamespace",
+  title: string,
+  text: string,
+): void {
+  pendingConfirmAction.value = action;
+  confirmTitle.value = title;
+  confirmText.value = text;
+  confirmOpen.value = true;
+}
+
+function closeConfirmDialog(): void {
+  confirmOpen.value = false;
+}
+
+async function confirmDialogAction(): Promise<void> {
+  const action = pendingConfirmAction.value;
+  confirmOpen.value = false;
+  pendingConfirmAction.value = null;
+  if (!action) return;
+
+  if (action === "deleteSelectedRows") {
+    const chosen = pendingRowsToDelete.value;
+    pendingRowsToDelete.value = [];
+    if (!chosen.length) return;
+    await deleteRows(chosen);
+    return;
+  }
+
+  if (action === "deleteByFilter") {
+    await executeDeleteByFilter(pendingDeleteFilter.value);
+    pendingDeleteFilter.value = "";
+    return;
+  }
+
+  if (action === "removeNamespace") {
+    await executeRemoveNs(pendingRemoveNs.value);
+    pendingRemoveNs.value = "";
+  }
+}
+
 async function deleteSelectedRows(): Promise<void> {
   const chosen = paginatedRows.value.filter((row) => isRowSelected(row));
   if (!chosen.length) return;
-  if (!confirm(`确认批量删除当前页选中的 ${chosen.length} 条数据吗？`)) return;
-  await deleteRows(chosen);
+  pendingRowsToDelete.value = chosen;
+  openConfirmDialog("deleteSelectedRows", "确认批量删除", `确认删除当前页选中的 ${chosen.length} 条数据吗？`);
 }
 
 async function deleteByCurrentFilter(): Promise<void> {
@@ -807,10 +896,15 @@ async function deleteByCurrentFilter(): Promise<void> {
   const filter = parsedFilterFromInput();
   if (filter === null) return;
   const hasFilter = filter.trim().length > 0;
-  const prompt = hasFilter
+  const text = hasFilter
     ? `确认删除所有匹配当前过滤条件的数据吗？预计影响 ${totalRows.value} 条。`
     : `当前过滤为空，将删除此命名空间的全部 ${totalRows.value} 条数据，确认继续吗？`;
-  if (!confirm(prompt)) return;
+  pendingDeleteFilter.value = filter;
+  openConfirmDialog("deleteByFilter", "确认删除数据", text);
+}
+
+async function executeDeleteByFilter(filter: string): Promise<void> {
+  if (!activeNs.value) return;
   loading.value = true;
   error.value = "";
   try {
@@ -827,7 +921,7 @@ async function deleteByCurrentFilter(): Promise<void> {
 
 function applyPreset(expr: string): void {
   rowSearchInput.value = expr;
-  rowSearchQuery.value = expr;
+  submitSearch();
 }
 
 function onPresetChange(ev: Event): void {
@@ -839,7 +933,29 @@ function onPresetChange(ev: Event): void {
 
 function clearFilter(): void {
   rowSearchInput.value = "";
-  rowSearchQuery.value = "";
+  submitSearch();
+}
+
+function submitSearch(): void {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  const nextQuery = rowSearchInput.value;
+  const changed = rowSearchQuery.value !== nextQuery;
+  rowSearchQuery.value = nextQuery;
+  if (!changed) {
+    page.value = 1;
+    void refreshPage();
+  }
+  if (submitPulseTimer) {
+    clearTimeout(submitPulseTimer);
+  }
+  searchSubmittedPulse.value = true;
+  submitPulseTimer = setTimeout(() => {
+    searchSubmittedPulse.value = false;
+    submitPulseTimer = null;
+  }, 200);
 }
 
 async function saveSchema(): Promise<void> {
@@ -867,7 +983,12 @@ async function saveSchema(): Promise<void> {
 async function removeNs() {
   const ns = activeNs.value;
   if (!ns || !NS_RE.test(ns)) return;
-  if (!confirm(`删除 lookup 命名空间「${ns}」？`)) return;
+  pendingRemoveNs.value = ns;
+  openConfirmDialog("removeNamespace", "确认删除命名空间", `删除 lookup 命名空间「${ns}」？`);
+}
+
+async function executeRemoveNs(ns: string) {
+  if (!ns || !NS_RE.test(ns)) return;
   loading.value = true;
   error.value = "";
   try {
@@ -1034,6 +1155,44 @@ void (async () => {
   border-bottom: 1px solid color-mix(in srgb, #f87171 30%, transparent);
 }
 
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.confirm-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .hint-bar {
   margin: 0;
   padding: 8px 16px;
@@ -1179,6 +1338,14 @@ void (async () => {
   flex-wrap: wrap;
 }
 
+.meta-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .lbl {
   font-size: 11px;
   color: var(--muted);
@@ -1236,9 +1403,10 @@ void (async () => {
 .filter-toolbar.single-row {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
   overflow: visible;
-  white-space: nowrap;
   padding-bottom: 2px;
 }
 
@@ -1261,30 +1429,33 @@ void (async () => {
 }
 
 .search-wrap {
-  flex: 1;
-  min-width: 320px;
+  flex: 1 1 auto;
+  min-width: 240px;
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.filter-toolbar.single-row .search-wrap {
-  flex: 0 0 520px;
-  min-width: 520px;
+.toolbar-main-left {
+  flex: 1 1 auto;
+  min-width: 360px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-main-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .search-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.ops-left,
-.ops-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
 }
 
 .filter-err {
@@ -1377,14 +1548,6 @@ void (async () => {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
-}
-
-.tip-btn {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 999px;
-  font-weight: 700;
 }
 
 .filter-inline-hint code {
@@ -1486,6 +1649,12 @@ void (async () => {
   border-color: var(--accent);
 }
 
+.inp.search-submitted {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 80%, transparent);
+  transition: box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
 .new-options {
   display: flex;
   flex-direction: column;
@@ -1521,6 +1690,19 @@ void (async () => {
     border-right: none;
     border-bottom: 1px solid var(--border);
     max-height: 42vh;
+  }
+  .toolbar-main-left {
+    min-width: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .toolbar-main-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .meta-actions {
+    width: 100%;
+    margin-left: 0;
   }
 }
 </style>
