@@ -13,7 +13,6 @@ from flow_engine.starlark_sdk.builtin_registry import (
     builtin_map,
     register_builtin,
 )
-from flow_engine.starlark_sdk.paths import user_scripts_root
 
 
 @register_builtin(
@@ -122,13 +121,10 @@ def lookup_query(namespace: str, filter: dict[str, Any] | None = None) -> list[d
     )
 )
 def user_script_list() -> list[str]:
-    """列出 user:// 下已有 .star 相对路径（default/ 为约定租户）。"""
-    root = user_scripts_root()
-    out: list[str] = []
-    for p in sorted(root.rglob("*.star")):
-        rel = p.relative_to(root).as_posix()
-        out.append(rel)
-    return out
+    """列出 MySQL fe_user_script 中所有未删除脚本的 'tenant/rel_path' 路径。"""
+    from flow_engine.starlark_sdk.user_script_store import get_user_script_store
+
+    return get_user_script_store().list_rel_paths()
 
 
 

@@ -1,18 +1,20 @@
-"""Global runtime profile configuration (dev/sit/prod, etc.)."""
+"""MySQL-backed global runtime profile configuration (dev/sit/prod, etc.).
+
+Uses table: fe_env_profile
+"""
 
 from __future__ import annotations
 
-import copy
-import os
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
-from typing import Any, Iterator
+from datetime import datetime, timezone
+from typing import Iterator
 
-import yaml
+from sqlalchemy import select
 
-from flow_engine._repo_root import repo_root
+from flow_engine.db.models import FeEnvProfile
+from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 
 DEFAULT_PROFILE_ID = "default"
@@ -20,7 +22,7 @@ PROFILE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 class ProfileConfigError(FlowEngineError):
-    """Invalid profile id or broken profile config file."""
+    """Invalid profile id or broken profile config."""
 
 
 def validate_profile_id(profile_id: str) -> str:
@@ -32,85 +34,95 @@ def validate_profile_id(profile_id: str) -> str:
     return pid
 
 
-def _profile_dir() -> Path:
-    raw = os.environ.get("FLOW_ENGINE_PROFILE_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (repo_root() / "data" / "profiles").resolve()
-
-
 class GlobalProfileStore:
-    """Persists global profile list + default profile in YAML."""
+    """MySQL-backed global profile store; each row in fe_env_profile is one environment."""
 
-    def __init__(self, directory: Path | None = None) -> None:
-        self.directory = directory or _profile_dir()
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.config_path = self.directory / "config.yaml"
-        self._ensure_default_config()
+    def __init__(self) -> None:
+        self._ensure_default_profile()
 
-    def _ensure_default_config(self) -> None:
-        if not self.config_path.is_file():
-            self._write_config({"default_profile": DEFAULT_PROFILE_ID, "profiles": [DEFAULT_PROFILE_ID]})
-        self._sync_backing_dirs()
-
-    def _read_config(self) -> dict[str, Any]:
-        raw = self.config_path.read_text(encoding="utf-8")
-        loaded = yaml.safe_load(raw) if raw.strip() else {}
-        if loaded is None:
-            loaded = {}
-        if not isinstance(loaded, dict):
-            raise ProfileConfigError("profile config root must be a mapping")
-
-        default_profile = validate_profile_id(str(loaded.get("default_profile") or DEFAULT_PROFILE_ID))
-        profiles_raw = loaded.get("profiles")
-        if profiles_raw is None:
-            profiles = [default_profile]
-        elif isinstance(profiles_raw, list):
-            profiles = [validate_profile_id(str(x)) for x in profiles_raw]
-        else:
-            raise ProfileConfigError("profiles must be a list")
-
-        uniq_profiles = sorted(set(profiles + [default_profile]))
-        return {"default_profile": default_profile, "profiles": uniq_profiles}
-
-    def _write_config(self, data: dict[str, Any]) -> None:
-        text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
-        self.config_path.write_text(text, encoding="utf-8", newline="\n")
-
-    def _sync_backing_dirs(self) -> None:
-        cfg = self._read_config()
-        from flow_engine.lookup.lookup_store import get_lookup_store
-        from flow_engine.stores import data_dict
-
-        dict_store = data_dict.store()
-        lookup_store = get_lookup_store()
-        for profile in cfg["profiles"]:
-            dict_store.create_profile(profile)
-            lookup_store.create_profile(profile)
+    def _ensure_default_profile(self) -> None:
+        """Guarantee the 'default' profile row exists (idempotent)."""
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.profile_code == DEFAULT_PROFILE_ID)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            row = s.execute(stmt).scalar_one_or_none()
+            if row is None:
+                s.add(
+                    FeEnvProfile(
+                        profile_code=DEFAULT_PROFILE_ID,
+                        display_name="Default",
+                        is_default=1,
+                    )
+                )
 
     def list_profiles(self) -> list[str]:
-        return copy.deepcopy(self._read_config()["profiles"])
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile.profile_code)
+                .where(FeEnvProfile.deleted_at.is_(None))
+                .order_by(FeEnvProfile.profile_code)
+            )
+            return list(s.execute(stmt).scalars().all())
 
     def get_default_profile(self) -> str:
-        return self._read_config()["default_profile"]
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile.profile_code)
+                .where(FeEnvProfile.is_default == 1)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            result = s.execute(stmt).scalar_one_or_none()
+            return result or DEFAULT_PROFILE_ID
 
     def create_profile(self, profile_id: str) -> str:
         pid = validate_profile_id(profile_id)
-        cfg = self._read_config()
-        if pid not in cfg["profiles"]:
-            cfg["profiles"] = sorted(cfg["profiles"] + [pid])
-            self._write_config(cfg)
-        self._sync_backing_dirs()
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            existing = s.execute(stmt).scalar_one_or_none()
+            if existing is None:
+                s.add(
+                    FeEnvProfile(
+                        profile_code=pid,
+                        display_name=pid,
+                        is_default=0,
+                    )
+                )
         return pid
 
     def set_default_profile(self, profile_id: str) -> str:
         pid = validate_profile_id(profile_id)
-        cfg = self._read_config()
-        if pid not in cfg["profiles"]:
-            cfg["profiles"] = sorted(cfg["profiles"] + [pid])
-        cfg["default_profile"] = pid
-        self._write_config(cfg)
-        self._sync_backing_dirs()
+        with db_session() as s:
+            # Ensure target profile exists
+            target_stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            target = s.execute(target_stmt).scalar_one_or_none()
+            if target is None:
+                target = FeEnvProfile(
+                    profile_code=pid,
+                    display_name=pid,
+                    is_default=0,
+                )
+                s.add(target)
+                s.flush()
+            # Clear existing default(s)
+            all_stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.is_default == 1)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            for row in s.execute(all_stmt).scalars().all():
+                row.is_default = 0
+            target.is_default = 1
         return pid
 
     def resolve_profile(self, explicit_profile: str | None = None) -> str:
@@ -121,8 +133,28 @@ class GlobalProfileStore:
             return pid
         return self.get_default_profile()
 
+    # DataDictStore / LookupStore 兼容接口（MySQL 后端无需创建目录）
+    def delete_profile(self, profile_id: str) -> None:
+        pid = validate_profile_id(profile_id)
+        if pid == DEFAULT_PROFILE_ID:
+            raise ProfileConfigError("Cannot delete the default profile")
+        now = datetime.now(timezone.utc)
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            row = s.execute(stmt).scalar_one_or_none()
+            if row:
+                row.deleted_at = now
 
-_store_cache: tuple[str, GlobalProfileStore] | None = None
+
+# ---------------------------------------------------------------------------
+# Module-level singletons / context helpers
+# ---------------------------------------------------------------------------
+
+_store_cache: GlobalProfileStore | None = None
 _active_profile: ContextVar[str | None] = ContextVar("flow_engine_active_profile", default=None)
 
 
@@ -133,10 +165,9 @@ def invalidate_profile_store_cache() -> None:
 
 def store() -> GlobalProfileStore:
     global _store_cache
-    key = str(_profile_dir())
-    if _store_cache is None or _store_cache[0] != key:
-        _store_cache = (key, GlobalProfileStore())
-    return _store_cache[1]
+    if _store_cache is None:
+        _store_cache = GlobalProfileStore()
+    return _store_cache
 
 
 def active_profile() -> str:

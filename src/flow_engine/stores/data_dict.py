@@ -13,14 +13,13 @@ from flow_engine.stores.dict_store import (
     DEFAULT_PROFILE_ID,
     DataDictError,
     DataDictStore,
-    _dict_dir,
     get_at_path,
     parse_path,
     set_at_path,
     validate_profile_id,
 )
 
-_store_cache: tuple[str, DataDictStore] | None = None
+_store_cache: DataDictStore | None = None
 _active_dictionary: ContextVar[dict[str, Any] | None] = ContextVar(
     "flow_engine_active_dictionary", default=None
 )
@@ -33,10 +32,9 @@ def invalidate_store_cache() -> None:
 
 def store() -> DataDictStore:
     global _store_cache
-    key = str(_dict_dir())
-    if _store_cache is None or _store_cache[0] != key:
-        _store_cache = (key, DataDictStore())
-    return _store_cache[1]
+    if _store_cache is None:
+        _store_cache = DataDictStore()
+    return _store_cache
 
 
 def deep_merge(base: Any, override: Any) -> Any:
@@ -77,7 +75,7 @@ def _read_layer_modules(profile_id: str) -> tuple[dict[str, dict[str, Any]], lis
             "from_profile": False,
         }
 
-    # Profile directory existence is part of the contract: no implicit fallback.
+    # Profile existence is part of the contract: no implicit fallback.
     st.ensure_profile(profile_id)
     for mod in st.list_modules("profile", profile=profile_id):
         tree = st.read_module("profile", mod.module_id, profile=profile_id)

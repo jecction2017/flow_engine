@@ -48,6 +48,33 @@ def _cmd_url(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate_data(args: argparse.Namespace) -> int:
+    _load_dotenv()
+    try:
+        from flow_engine.db.migrate_data import migrate_all_data
+    except ImportError as e:
+        print("Missing mysql extras. Install: pip install -e \".[mysql]\"", file=sys.stderr)
+        print(e, file=sys.stderr)
+        return 1
+
+    stats = migrate_all_data(args.data_dir)
+    ordered_keys = [
+        "profiles",
+        "dict_modules",
+        "flows",
+        "flow_versions",
+        "flow_drafts",
+        "lookup_tables",
+        "lookup_rows",
+        "user_scripts",
+    ]
+    print("Data migration completed.")
+    for k in ordered_keys:
+        if k in stats:
+            print(f"  - {k}: {stats[k]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="flow-db", description="Local MySQL schema (SQLAlchemy create_all)")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -58,6 +85,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_url = sub.add_parser("url", help="Print resolved DB URL with password masked")
     p_url.set_defaults(func=_cmd_url)
+
+    p_migrate = sub.add_parser("migrate-data", help="Migrate local data directory contents to MySQL")
+    p_migrate.add_argument(
+        "--data-dir",
+        default="data",
+        help="Path to legacy data directory (default: ./data)",
+    )
+    p_migrate.set_defaults(func=_cmd_migrate_data)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -1,18 +1,51 @@
-"""Starlark FileLoader with FrozenModule cache (internal:// / user://)."""
+"""Starlark module loader with FrozenModule cache.
+
+Supported schemes:
+  internal://lib/helpers.star  → 从包内 starlib/internal/ 读取（文件系统）
+  user://<tenant>/<path>.star  → 从 MySQL fe_user_script 表读取
+"""
 
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from typing import Any
 
 import starlark as sl
 
-from flow_engine.starlark_sdk.uri_resolve import resolve_module_uri
+from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file
 
 
 def _globals_for_loaded_module() -> sl.Globals:
     return sl.Globals.extended_by([sl.LibraryExtension.Json])
+
+
+def _load_module_content(module_id: str) -> tuple[str, str]:
+    """Return (source_code, display_filename) for any supported module URI.
+
+    internal:// → 从包内文件系统读取
+    user://     → 从 MySQL fe_user_script 读取
+    """
+    if module_id.startswith("internal://"):
+        rel = module_id.removeprefix("internal://").lstrip("/")
+        path = resolve_internal_script_file(rel)
+        if not path.is_file():
+            raise FileNotFoundError(str(path))
+        return path.read_text(encoding="utf-8"), str(path)
+
+    if module_id.startswith("user://"):
+        rest = module_id.removeprefix("user://").lstrip("/")
+        if "/" not in rest:
+            raise ValueError("user:// expects user://<tenant>/<path>.star")
+        tenant, rel = rest.split("/", 1)
+        if not rel.endswith(".star"):
+            raise ValueError("user module must end with .star")
+        # 延迟导入，避免循环
+        from flow_engine.starlark_sdk.user_script_store import get_user_script_store
+
+        content = get_user_script_store().get_script(tenant, rel)
+        return content, module_id
+
+    raise ValueError(f"unsupported module URI: {module_id!r}")
 
 
 class ModuleLoaderCache:
@@ -31,11 +64,10 @@ class ModuleLoaderCache:
                 self._hits += 1
                 return self._cache[module_id]
             self._misses += 1
-        path: Path = resolve_module_uri(module_id)
-        if not path.is_file():
-            raise FileNotFoundError(str(path))
+
+        content, display_path = _load_module_content(module_id)
         inner = sl.Module()
-        ast = sl.parse(str(path), path.read_text(encoding="utf-8"), dialect=dialect_with_load())
+        ast = sl.parse(display_path, content, dialect=dialect_with_load())
         glb = _globals_for_loaded_module()
         sl.eval(inner, ast, glb, file_loader=self._loader)
         frozen = inner.freeze()

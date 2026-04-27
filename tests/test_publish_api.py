@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,24 +9,20 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """Spin up a fresh FastAPI app backed by an isolated flows directory."""
-    monkeypatch.setenv("FLOW_ENGINE_FLOWS_DIR", str(tmp_path / "flows"))
-    monkeypatch.setenv("FLOW_ENGINE_DICT_DIR", str(tmp_path / "dict"))
-    monkeypatch.setenv("FLOW_ENGINE_LOOKUP_DIR", str(tmp_path / "lookup"))
-    monkeypatch.setenv("FLOW_ENGINE_PROFILE_DIR", str(tmp_path / "profiles_cfg"))
-
-    import flow_engine.api.http_api as api_mod
+def client() -> TestClient:
+    """Spin up a fresh FastAPI app backed by the test SQLite DB (provided by conftest)."""
     import flow_engine.stores.data_dict as dict_mod
     import flow_engine.stores.profile_store as profile_mod
-    import flow_engine.stores.version_store as vs_mod
+    import flow_engine.lookup.lookup_store as lookup_mod
 
+    # Ensure store singletons are reset (conftest already cleared caches,
+    # but re-creating the app forces a fresh registry)
     dict_mod.invalidate_store_cache()
     profile_mod.invalidate_profile_store_cache()
-    importlib.reload(vs_mod)
-    importlib.reload(api_mod)
+    lookup_mod.invalidate_lookup_store_cache()
 
-    app = api_mod.create_app()
+    from flow_engine.api.http_api import create_app
+    app = create_app()
     return TestClient(app)
 
 
@@ -271,7 +265,7 @@ def test_run_uses_profile_and_runtime_patch_for_dict_get(client: TestClient) -> 
     assert r.status_code == 200, r.text
     r = client.post(
         "/api/flows/foo/run",
-        json={"runtime_patch": {"app": {"http": {"timeout_sec": 30}}}},
+        json={"profile": "dev", "runtime_patch": {"app": {"http": {"timeout_sec": 30}}}},
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -514,7 +508,7 @@ def test_lookup_query_expression_invalid_clause_returns_400(client: TestClient) 
     r = client.put("/api/lookups/apps?profile=default", json=payload)
     assert r.status_code == 200, r.text
 
-    r = client.get("/api/lookups/apps/query", params={"profile": "default", "filter": "appid != 'x'"})
+    r = client.get("/api/lookups/apps/query", params={"profile": "default", "filter": "appid ~= 'x'"})
     assert r.status_code == 400
     assert "unsupported filter clause" in r.text
 

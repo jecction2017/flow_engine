@@ -1,16 +1,24 @@
-"""Filesystem-backed lookup tables (tabular reference data per namespace)."""
+"""MySQL-backed lookup tables (tabular reference data per profile + namespace).
+
+Uses tables:
+  fe_lookup_ns  — namespace metadata + JSON Schema definition
+  fe_lookup_row — individual data rows (soft-deleted on replace/delete)
+
+⚠  put_table (replace) 会积累软删历史行；建议定期清理 deleted_at IS NOT NULL 的行。
+"""
 
 from __future__ import annotations
 
 import copy
-import json
-import os
 import re
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
-import jsonschema
 
-from flow_engine._repo_root import repo_root
+import jsonschema
+from sqlalchemy import select
+
+from flow_engine.db.models import FeLookupNs, FeLookupRow
+from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.stores.profile_store import DEFAULT_PROFILE_ID, active_profile, validate_profile_id
 
@@ -20,13 +28,6 @@ class LookupStoreError(FlowEngineError):
 
 
 _NS = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
-
-
-def _lookup_dir() -> Path:
-    raw = os.environ.get("FLOW_ENGINE_LOOKUP_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (repo_root() / "data" / "lookup").resolve()
 
 
 def validate_lookup_namespace(ns: str) -> str:
@@ -51,24 +52,23 @@ def normalize_table(raw: dict[str, Any]) -> dict[str, Any]:
     """Ensure ``schema`` (optional) and ``rows`` (list of flat dicts)."""
     if not isinstance(raw, dict):
         raise LookupStoreError("lookup table must be a JSON object")
-    
+
     rows = raw.get("rows")
     if rows is None:
         raise LookupStoreError("missing 'rows'")
     if not isinstance(rows, list):
         raise LookupStoreError("'rows' must be a list")
-    
+
     out_rows: list[dict[str, Any]] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             raise LookupStoreError(f"row {i} must be an object")
         out_rows.append({str(k): _normalize_cell(v) for k, v in row.items()})
-    
+
     out_schema = raw.get("schema")
     if out_schema is None:
-        # Migrate legacy fields to schema
         fields = raw.get("fields")
-        props = {}
+        props: dict[str, Any] = {}
         if isinstance(fields, list):
             for f in fields:
                 if isinstance(f, str):
@@ -76,27 +76,21 @@ def normalize_table(raw: dict[str, Any]) -> dict[str, Any]:
                 elif isinstance(f, dict) and "name" in f:
                     props[str(f["name"])] = {
                         "type": str(f.get("type", "string")),
-                        "description": str(f.get("description", ""))
+                        "description": str(f.get("description", "")),
                     }
         elif out_rows:
             props = {str(k): {"type": "string"} for k in out_rows[0].keys()}
-            
-        out_schema = {
-            "type": "object",
-            "properties": props
-        }
-    
+        out_schema = {"type": "object", "properties": props}
+
     if not isinstance(out_schema, dict):
         raise LookupStoreError("'schema' must be a JSON object")
-        
-    # Validate rows against schema if schema is valid
+
     try:
         jsonschema.Draft7Validator.check_schema(out_schema)
         validator = jsonschema.Draft7Validator(out_schema)
         for i, row in enumerate(out_rows):
             errors = list(validator.iter_errors(row))
             if errors:
-                # Just report the first error for simplicity
                 err = errors[0]
                 path = ".".join(str(p) for p in err.path) if err.path else "root"
                 raise LookupStoreError(f"Row {i} validation failed at '{path}': {err.message}")
@@ -106,7 +100,7 @@ def normalize_table(raw: dict[str, Any]) -> dict[str, Any]:
     return {"schema": out_schema, "rows": out_rows}
 
 
-_store_cache: tuple[str, "LookupStore"] | None = None
+_store_cache: "LookupStore | None" = None
 
 
 def invalidate_lookup_store_cache() -> None:
@@ -115,110 +109,138 @@ def invalidate_lookup_store_cache() -> None:
 
 
 class LookupStore:
-    """One JSON file per namespace under ``profiles/{profile}/{namespace}.json``."""
+    """MySQL-backed lookup store; each namespace is a row in fe_lookup_ns,
+    each data row is a row in fe_lookup_row."""
 
-    def __init__(self, directory: Path | None = None) -> None:
-        self.directory = directory or _lookup_dir()
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.profiles_dir.mkdir(parents=True, exist_ok=True)
-        self._migrate_legacy_flat_files()
-        self._mtime: dict[str, float] = {}
-        self._mem: dict[str, dict[str, Any]] = {}
-
-    def _migrate_legacy_flat_files(self) -> None:
-        legacy_files = [p for p in self.directory.glob("*.json") if p.is_file()]
-        if not legacy_files:
-            return
-        target_dir = self.profile_dir(DEFAULT_PROFILE_ID, create=True)
-        for p in legacy_files:
-            stem = p.stem
-            if not _NS.match(stem):
-                continue
-            dst = target_dir / p.name
-            if not dst.exists():
-                p.replace(dst)
-            else:
-                p.unlink()
-
-    @property
-    def profiles_dir(self) -> Path:
-        return self.directory / "profiles"
-
-    def profile_dir(self, profile_id: str, *, create: bool = False) -> Path:
-        pid = validate_profile_id(profile_id)
-        p = self.profiles_dir / pid
-        if create:
-            p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    def create_profile(self, profile_id: str) -> None:
-        self.profile_dir(profile_id, create=True)
+    # directory 属性保持 API 兼容
+    directory: str = "mysql://lookup"
 
     def _resolve_profile(self, profile_id: str | None) -> str:
         return validate_profile_id(profile_id or active_profile())
 
-    def path_for(self, ns: str, *, profile: str | None = None) -> Path:
-        validate_lookup_namespace(ns)
-        pid = self._resolve_profile(profile)
-        return self.profile_dir(pid, create=True) / f"{ns}.json"
+    def create_profile(self, profile_id: str) -> None:
+        """No-op in MySQL backend; profiles are managed via GlobalProfileStore."""
 
     def list_namespaces(self, *, profile: str | None = None) -> list[str]:
         pid = self._resolve_profile(profile)
-        root = self.profile_dir(pid, create=True)
-        out: list[str] = []
-        for p in sorted(root.glob("*.json")):
-            stem = p.stem
-            if _NS.match(stem):
-                out.append(stem)
-        return out
+        with db_session() as s:
+            stmt = (
+                select(FeLookupNs.ns_code)
+                .where(FeLookupNs.profile_code == pid)
+                .where(FeLookupNs.deleted_at.is_(None))
+                .order_by(FeLookupNs.ns_code)
+            )
+            return list(s.execute(stmt).scalars().all())
 
     def exists(self, ns: str, *, profile: str | None = None) -> bool:
-        return self.path_for(ns, profile=profile).is_file()
+        validate_lookup_namespace(ns)
+        pid = self._resolve_profile(profile)
+        with db_session() as s:
+            stmt = (
+                select(FeLookupNs.id)
+                .where(FeLookupNs.profile_code == pid)
+                .where(FeLookupNs.ns_code == ns)
+                .where(FeLookupNs.deleted_at.is_(None))
+            )
+            return s.execute(stmt).scalar_one_or_none() is not None
 
     def read_table(self, ns: str, *, profile: str | None = None) -> dict[str, Any]:
         validate_lookup_namespace(ns)
         pid = self._resolve_profile(profile)
-        path = self.path_for(ns, profile=pid)
-        cache_key = f"{pid}:{ns}"
-        if not path.is_file():
-            return {"fields": [], "rows": []}
-        mtime = path.stat().st_mtime
-        if self._mtime.get(cache_key) == mtime and cache_key in self._mem:
-            return copy.deepcopy(self._mem[cache_key])
-        data = json.loads(path.read_text(encoding="utf-8"))
-        norm = normalize_table(data)
-        self._mem[cache_key] = copy.deepcopy(norm)
-        self._mtime[cache_key] = mtime
-        return copy.deepcopy(norm)
+        with db_session() as s:
+            ns_stmt = (
+                select(FeLookupNs)
+                .where(FeLookupNs.profile_code == pid)
+                .where(FeLookupNs.ns_code == ns)
+                .where(FeLookupNs.deleted_at.is_(None))
+            )
+            ns_row = s.execute(ns_stmt).scalar_one_or_none()
+            if ns_row is None:
+                return {"schema": {"type": "object", "properties": {}}, "rows": []}
+            row_stmt = (
+                select(FeLookupRow.row_data)
+                .where(FeLookupRow.profile_code == pid)
+                .where(FeLookupRow.ns_code == ns)
+                .where(FeLookupRow.deleted_at.is_(None))
+                .order_by(FeLookupRow.id)
+            )
+            rows = list(s.execute(row_stmt).scalars().all())
+            return {
+                "schema": copy.deepcopy(ns_row.schema_json),
+                "rows": copy.deepcopy(rows),
+            }
 
     def write_table(self, ns: str, table: dict[str, Any], *, profile: str | None = None) -> None:
+        """Replace all rows; soft-delete existing rows then bulk-insert new ones."""
         norm = normalize_table(table)
         pid = self._resolve_profile(profile)
-        path = self.path_for(ns, profile=pid)
-        cache_key = f"{pid}:{ns}"
-        path.write_text(
-            json.dumps(norm, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        mtime = path.stat().st_mtime
-        self._mem[cache_key] = copy.deepcopy(norm)
-        self._mtime[cache_key] = mtime
+        now = datetime.now(timezone.utc)
+        with db_session() as s:
+            # Upsert namespace row
+            ns_stmt = (
+                select(FeLookupNs)
+                .where(FeLookupNs.profile_code == pid)
+                .where(FeLookupNs.ns_code == ns)
+                .where(FeLookupNs.deleted_at.is_(None))
+            )
+            ns_row = s.execute(ns_stmt).scalar_one_or_none()
+            if ns_row is None:
+                ns_row = FeLookupNs(
+                    profile_code=pid,
+                    ns_code=ns,
+                    schema_json=norm["schema"],
+                )
+                s.add(ns_row)
+            else:
+                ns_row.schema_json = norm["schema"]
+
+            # Soft-delete existing rows
+            old_stmt = (
+                select(FeLookupRow)
+                .where(FeLookupRow.profile_code == pid)
+                .where(FeLookupRow.ns_code == ns)
+                .where(FeLookupRow.deleted_at.is_(None))
+            )
+            for old_row in s.execute(old_stmt).scalars().all():
+                old_row.deleted_at = now
+
+            # Bulk-insert new rows
+            for row_data in norm["rows"]:
+                s.add(
+                    FeLookupRow(
+                        profile_code=pid,
+                        ns_code=ns,
+                        row_data=row_data,
+                    )
+                )
 
     def delete_namespace(self, ns: str, *, profile: str | None = None) -> None:
         validate_lookup_namespace(ns)
         pid = self._resolve_profile(profile)
-        path = self.path_for(ns, profile=pid)
-        cache_key = f"{pid}:{ns}"
-        if path.is_file():
-            path.unlink()
-        self._mem.pop(cache_key, None)
-        self._mtime.pop(cache_key, None)
+        now = datetime.now(timezone.utc)
+        with db_session() as s:
+            ns_stmt = (
+                select(FeLookupNs)
+                .where(FeLookupNs.profile_code == pid)
+                .where(FeLookupNs.ns_code == ns)
+                .where(FeLookupNs.deleted_at.is_(None))
+            )
+            ns_row = s.execute(ns_stmt).scalar_one_or_none()
+            if ns_row:
+                ns_row.deleted_at = now
+
+            row_stmt = (
+                select(FeLookupRow)
+                .where(FeLookupRow.profile_code == pid)
+                .where(FeLookupRow.ns_code == ns)
+                .where(FeLookupRow.deleted_at.is_(None))
+            )
+            for row in s.execute(row_stmt).scalars().all():
+                row.deleted_at = now
 
 
 def get_lookup_store() -> LookupStore:
     global _store_cache
-    key = str(_lookup_dir())
-    if _store_cache is None or _store_cache[0] != key:
-        _store_cache = (key, LookupStore())
-    return _store_cache[1]
+    if _store_cache is None:
+        _store_cache = LookupStore()
+    return _store_cache

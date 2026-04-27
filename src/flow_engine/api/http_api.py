@@ -27,11 +27,11 @@ from flow_engine.lookup.lookup_service import (
     update_table_schema,
 )
 from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
-from flow_engine.starlark_sdk.paths import user_scripts_root
 from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
 from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
-from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file, resolve_user_script_file
+from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file
+from flow_engine.starlark_sdk.user_script_store import get_user_script_store
 from flow_engine.stores import data_dict
 from flow_engine.stores.dict_store import DataDictError
 from flow_engine.stores.profile_store import (
@@ -40,6 +40,18 @@ from flow_engine.stores.profile_store import (
     store as profile_store,
 )
 from flow_engine.stores.version_store import FlowVersionRegistry, validate_flow_id
+
+
+def _load_dotenv() -> None:
+    """Best-effort .env loading for local development."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
+
+
+_load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Global registry (replaces old FlowYamlStore singleton)
@@ -190,7 +202,7 @@ def create_app() -> FastAPI:
         flows = registry.list_flows()
         return {
             "flows": flows,
-            "flows_dir": str(registry.directory),
+            "flows_dir": registry.directory,
         }
 
     @app.get("/api/flows/{flow_id}")
@@ -430,7 +442,7 @@ def create_app() -> FastAPI:
     def get_data_dictionary_summary() -> dict[str, Any]:
         st = data_dict.store()
         return {
-            "dict_dir": str(st.directory),
+            "dict_dir": st.directory,
             "profiles": profile_store().list_profiles(),
             "base_modules": [m.__dict__ for m in st.list_modules("base")],
         }
@@ -542,7 +554,7 @@ def create_app() -> FastAPI:
             pid = profile_store().resolve_profile(profile)
         except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"lookup_dir": str(st.directory), "profile": pid, "namespaces": st.list_namespaces(profile=pid)}
+        return {"lookup_dir": st.directory, "profile": pid, "namespaces": st.list_namespaces(profile=pid)}
 
     @app.get("/api/lookups/{namespace}")
     def get_lookup_table(namespace: str, profile: str | None = Query(default=None)) -> dict[str, Any]:
@@ -672,12 +684,12 @@ def create_app() -> FastAPI:
                     filt = parsed
                 else:
                     filt = raw
+            with profile_scope(pid):
+                page = run_lookup_query_page(namespace, filt, offset=offset, limit=limit)
         except LookupStoreError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
-        with profile_scope(pid):
-            page = run_lookup_query_page(namespace, filt, offset=offset, limit=limit)
         return {"namespace": namespace, "profile": pid, "filter": filt, **page}
 
     # -----------------------------------------------------------------------
@@ -698,7 +710,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/starlark/user/scripts")
     def starlark_user_scripts() -> dict[str, Any]:
-        return {"scripts": user_script_list(), "root": str(user_scripts_root())}
+        return {"scripts": user_script_list(), "root": "mysql://user-scripts"}
 
     @app.get("/api/starlark/internal/{path:path}")
     def get_internal_script(path: str) -> dict[str, Any]:
@@ -713,21 +725,19 @@ def create_app() -> FastAPI:
     @app.get("/api/starlark/user/{tenant}/{path:path}")
     def get_user_script(tenant: str, path: str) -> dict[str, Any]:
         try:
-            p = resolve_user_script_file(tenant, path)
+            content = get_user_script_store().get_script(tenant, path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        if not p.is_file():
-            raise HTTPException(status_code=404, detail="Script not found")
-        return {"path": f"{tenant}/{path}", "content": p.read_text(encoding="utf-8")}
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Script not found") from None
+        return {"path": f"{tenant}/{path}", "content": content}
 
     @app.put("/api/starlark/user/{tenant}/{path:path}")
     def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:
         try:
-            p = resolve_user_script_file(tenant, path)
+            get_user_script_store().put_script(tenant, path, body.content)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body.content, encoding="utf-8", newline="\n")
         return {"ok": True, "path": f"{tenant}/{path}"}
 
     # -----------------------------------------------------------------------

@@ -1,12 +1,10 @@
-"""Tests for versioned flow storage: VersionStore, FlowVersionRegistry, and legacy migration."""
+"""Tests for MySQL-backed versioned flow storage: VersionStore, FlowVersionRegistry."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from flow_engine.stores.version_store import FlowVersionRegistry, VersionStore, validate_flow_id
 
@@ -14,6 +12,7 @@ from flow_engine.stores.version_store import FlowVersionRegistry, VersionStore, 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _sample_flow(display_name: str = "demo", version: str = "1.0.0") -> dict[str, Any]:
     return {
@@ -50,15 +49,14 @@ def test_validate_flow_id_rejects_invalid(bad: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_version_store_save_read_delete_draft(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_save_read_delete_draft() -> None:
+    vs = VersionStore("demo")
     assert not vs.has_draft()
     data = _sample_flow()
     vs.save_draft(data)
     assert vs.has_draft()
     assert vs.read_draft() == data
 
-    # Draft flag persisted in meta.json
     meta = vs.read_meta()
     assert meta.has_draft is True
     assert meta.flow_id == "demo"
@@ -68,8 +66,8 @@ def test_version_store_save_read_delete_draft(tmp_path: Path) -> None:
     assert vs.read_meta().has_draft is False
 
 
-def test_version_store_read_draft_missing(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "empty")
+def test_version_store_read_draft_missing() -> None:
+    vs = VersionStore("empty")
     with pytest.raises(FileNotFoundError):
         vs.read_draft()
 
@@ -79,8 +77,8 @@ def test_version_store_read_draft_missing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_version_store_commit_auto_increments(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_commit_auto_increments() -> None:
+    vs = VersionStore("demo")
     v1 = vs.commit_version(_sample_flow("v1-flow"))
     v2 = vs.commit_version(_sample_flow("v2-flow"))
     v3 = vs.commit_version(_sample_flow("v3-flow"))
@@ -91,14 +89,13 @@ def test_version_store_commit_auto_increments(tmp_path: Path) -> None:
     assert [v.version for v in meta.versions] == [1, 2, 3]
     assert [v.display_name for v in meta.versions] == ["v1-flow", "v2-flow", "v3-flow"]
 
-    # Each version's data is independently retrievable
     assert vs.read_version(1)["display_name"] == "v1-flow"
     assert vs.read_version(2)["display_name"] == "v2-flow"
     assert vs.read_version(3)["display_name"] == "v3-flow"
 
 
-def test_version_store_commit_from_draft(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_commit_from_draft() -> None:
+    vs = VersionStore("demo")
     draft = _sample_flow("draft-flow")
     vs.save_draft(draft)
     v1 = vs.commit_version()  # pulls from draft
@@ -106,32 +103,33 @@ def test_version_store_commit_from_draft(tmp_path: Path) -> None:
     assert vs.read_version(1) == draft
 
 
-def test_version_store_commit_without_draft_fails(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_commit_without_draft_fails() -> None:
+    vs = VersionStore("demo")
     with pytest.raises(FileNotFoundError):
         vs.commit_version()
 
 
-def test_version_store_read_missing_version(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_read_missing_version() -> None:
+    vs = VersionStore("demo")
     with pytest.raises(FileNotFoundError):
         vs.read_version(99)
 
 
-def test_version_store_commit_description_stored(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_commit_description_stored() -> None:
+    vs = VersionStore("demo")
     vs.commit_version(_sample_flow(), description="initial release")
     meta = vs.read_meta()
     assert meta.versions[0].description == "initial release"
 
 
-def test_version_store_delete_removes_tree(tmp_path: Path) -> None:
-    vs = VersionStore(tmp_path, "demo")
+def test_version_store_delete_soft_removes_flow() -> None:
+    vs = VersionStore("demo")
     vs.save_draft(_sample_flow())
     vs.commit_version()
-    assert (tmp_path / "demo").is_dir()
+    registry = FlowVersionRegistry()
+    assert registry.exists("demo")
     vs.delete()
-    assert not (tmp_path / "demo").exists()
+    assert not registry.exists("demo")
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +138,8 @@ def test_version_store_delete_removes_tree(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def registry(tmp_path: Path) -> FlowVersionRegistry:
-    return FlowVersionRegistry(directory=tmp_path)
+def registry() -> FlowVersionRegistry:
+    return FlowVersionRegistry()
 
 
 def test_registry_create_and_list(registry: FlowVersionRegistry) -> None:
@@ -167,56 +165,8 @@ def test_registry_delete(registry: FlowVersionRegistry) -> None:
     assert registry.exists("foo") is False
 
 
-def test_registry_legacy_migration(tmp_path: Path) -> None:
-    # Drop an old flat YAML file
-    legacy = tmp_path / "legacy_flow.yaml"
-    legacy.write_text(
-        yaml.safe_dump(_sample_flow("legacy-flow"), allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    registry = FlowVersionRegistry(directory=tmp_path)
-
-    # Legacy file is kept for backward compatibility
-    assert legacy.is_file()
-
-    # New directory was created with a migrated v1 + draft
-    assert (tmp_path / "legacy_flow").is_dir()
-    vs = registry.version_store("legacy_flow")
-    assert vs.latest_version_num() == 1
-    assert vs.has_draft()
-    v1 = vs.read_version(1)
-    # _migrate_name_field auto-promotes the legacy top-level `name` key to `display_name`.
-    assert v1["display_name"] == "legacy-flow"
-    assert "name" not in v1
-
-    meta = vs.read_meta()
-    assert "legacy" in (meta.versions[0].description or "").lower()
-
-
-def test_registry_migration_is_idempotent(tmp_path: Path) -> None:
-    legacy = tmp_path / "flow_x.yaml"
-    legacy.write_text(
-        yaml.safe_dump(_sample_flow("flow-x"), allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    r1 = FlowVersionRegistry(directory=tmp_path)
-    assert r1.version_store("flow_x").latest_version_num() == 1
-
-    # Second init should NOT re-migrate (directory already exists)
-    r2 = FlowVersionRegistry(directory=tmp_path)
-    assert r2.version_store("flow_x").latest_version_num() == 1
-
-
-def test_registry_list_skips_invalid_id_dirs(tmp_path: Path) -> None:
-    # Non-flow directory
-    (tmp_path / ".tmp-staging").mkdir()
-    (tmp_path / "bad.dot").mkdir()
-    (tmp_path / "good_flow").mkdir()
-    registry = FlowVersionRegistry(directory=tmp_path)
-    ids = {f["id"] for f in registry.list_flows()}
-    assert ids == {"good_flow"}
+def test_registry_list_returns_empty_for_new_db(registry: FlowVersionRegistry) -> None:
+    assert registry.list_flows() == []
 
 
 # ---------------------------------------------------------------------------

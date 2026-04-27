@@ -27,6 +27,9 @@ from sqlalchemy.dialects.mysql import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
+# Python-side timestamp 默认值（MySQL 生产使用 server_default；测试 SQLite 使用此 callable）
+_utcnow = datetime.utcnow
+
 # 所有 fe_ 业务表共用的 MySQL 表级选项
 _FE_TABLE_OPTS: dict[str, str] = {
     "mysql_engine": "InnoDB",
@@ -63,14 +66,16 @@ class _AuditCols:
     created_at: Mapped[datetime] = mapped_column(
         MySQLDateTime(fsp=3),
         nullable=False,
+        default=_utcnow,
         server_default=text("CURRENT_TIMESTAMP(3)"),
         comment="创建时间",
     )
     updated_at: Mapped[datetime] = mapped_column(
         MySQLDateTime(fsp=3),
         nullable=False,
+        default=_utcnow,
         server_default=text("CURRENT_TIMESTAMP(3)"),
-        onupdate=func.now(),
+        onupdate=_utcnow,
         comment="最后更新时间",
     )
     deleted_at: Mapped[datetime | None] = mapped_column(

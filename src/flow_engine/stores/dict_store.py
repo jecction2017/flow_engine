@@ -1,22 +1,25 @@
-"""YAML-backed modular data dictionary storage."""
+"""MySQL-backed modular data dictionary storage.
+
+Uses table: fe_dict_module
+  layer='base',    profile_code='default'  → 基础层模块
+  layer='profile', profile_code=<env>      → 环境覆盖层模块
+"""
 
 from __future__ import annotations
 
 import copy
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import yaml
 
-from flow_engine._repo_root import repo_root
 from flow_engine.engine.exceptions import FlowEngineError
 
 
 class DataDictError(FlowEngineError):
-    """Invalid dictionary file, id, or path."""
+    """Invalid dictionary module, id, or path."""
 
 
 CORE_MODULE_ID = "core"
@@ -25,20 +28,16 @@ MODULE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 PROFILE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 DictLayer = Literal["base", "profile"]
 
+# base 层使用 'default' 作为 profile_code 哨兵值（与 fe_dict_module 表设计一致）
+_BASE_PROFILE_SENTINEL = "default"
+
 
 @dataclass(frozen=True)
 class DictModule:
     module_id: str
     layer: DictLayer
-    path: str
+    path: str          # MySQL 后端：虚拟路径 "db://<layer>/<module_code>"
     profile: str | None = None
-
-
-def _dict_dir() -> Path:
-    raw = os.environ.get("FLOW_ENGINE_DICT_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (repo_root() / "data" / "dict").resolve()
 
 
 def validate_module_id(module_id: str) -> str:
@@ -59,19 +58,6 @@ def validate_profile_id(profile_id: str) -> str:
     return pid
 
 
-def module_id_to_path(module_id: str) -> Path:
-    mid = validate_module_id(module_id)
-    parts = mid.split(".")
-    return Path(*parts[:-1], f"{parts[-1]}.yaml")
-
-
-def path_to_module_id(path: Path) -> str:
-    if path.suffix.lower() not in {".yaml", ".yml"}:
-        raise DataDictError(f"Dictionary module must be a YAML file: {path}")
-    parts = list(path.with_suffix("").parts)
-    return validate_module_id(".".join(parts))
-
-
 def _parse_yaml_mapping(text: str, *, label: str) -> dict[str, Any]:
     if not text.strip():
         data: Any = {}
@@ -90,119 +76,215 @@ def _dump_yaml_mapping(data: dict[str, Any]) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
 
-class DataDictStore:
-    """Layered module store rooted at ``data/dict``.
+def _profile_code_for_layer(layer: DictLayer, profile: str | None) -> str:
+    """fe_dict_module 的 profile_code 字段：base 层用哨兵 'default'，profile 层用实际 profile。"""
+    if layer == "base":
+        return _BASE_PROFILE_SENTINEL
+    if profile is None:
+        raise DataDictError("profile is required for profile layer modules")
+    return validate_profile_id(profile)
 
-    Layout:
-      - ``base/<module_path>.yaml``
-      - ``profiles/<profile_id>/<module_path>.yaml``
+
+class DataDictStore:
+    """MySQL-backed layered module store.
+
+    Layout (conceptual):
+      base layer   → fe_dict_module WHERE layer='base'   AND profile_code='default'
+      profile layer→ fe_dict_module WHERE layer='profile' AND profile_code=<env>
     """
 
-    def __init__(self, directory: Path | None = None) -> None:
-        self.directory = directory or _dict_dir()
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.profiles_dir.mkdir(parents=True, exist_ok=True)
-        self.profile_dir(DEFAULT_PROFILE_ID, create=True)
-        core_path = self.module_path("base", CORE_MODULE_ID)
-        if not core_path.exists():
-            self.write_module("base", CORE_MODULE_ID, "{}\n")
+    # directory 属性保持 API 兼容
+    directory: str = "mysql://dict"
 
-    @property
-    def base_dir(self) -> Path:
-        return self.directory / "base"
+    def __init__(self) -> None:
+        self._ensure_core_module()
 
-    @property
-    def profiles_dir(self) -> Path:
-        return self.directory / "profiles"
+    def _ensure_core_module(self) -> None:
+        """Ensure the base/core module row exists (idempotent bootstrap)."""
+        from sqlalchemy import select
 
-    def profile_dir(self, profile_id: str, *, create: bool = False) -> Path:
-        pid = validate_profile_id(profile_id)
-        p = self.profiles_dir / pid
-        if create:
-            p.mkdir(parents=True, exist_ok=True)
-        return p
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
 
-    def ensure_profile(self, profile_id: str) -> Path:
-        p = self.profile_dir(profile_id)
-        if not p.is_dir():
-            raise DataDictError(f"Profile not found: {profile_id}")
-        return p
-
-    def create_profile(self, profile_id: str) -> None:
-        self.profile_dir(profile_id, create=True)
+        with db_session() as s:
+            stmt = (
+                select(FeDictModule)
+                .where(FeDictModule.layer == "base")
+                .where(FeDictModule.profile_code == _BASE_PROFILE_SENTINEL)
+                .where(FeDictModule.module_code == CORE_MODULE_ID)
+                .where(FeDictModule.deleted_at.is_(None))
+            )
+            if s.execute(stmt).scalar_one_or_none() is None:
+                s.add(
+                    FeDictModule(
+                        layer="base",
+                        profile_code=_BASE_PROFILE_SENTINEL,
+                        module_code=CORE_MODULE_ID,
+                        yaml_text="{}\n",
+                    )
+                )
 
     def list_profiles(self) -> list[str]:
-        if not self.profiles_dir.is_dir():
-            return []
-        return sorted(
-            validate_profile_id(p.name)
-            for p in self.profiles_dir.iterdir()
-            if p.is_dir() and PROFILE_ID_PATTERN.fullmatch(p.name)
-        )
+        from sqlalchemy import distinct, select
 
-    def module_path(self, layer: DictLayer, module_id: str, *, profile: str | None = None) -> Path:
-        rel = module_id_to_path(module_id)
-        if layer == "base":
-            return self.base_dir / rel
-        if layer == "profile":
-            if profile is None:
-                raise DataDictError("profile is required for profile modules")
-            return self.profile_dir(profile) / rel
-        raise DataDictError(f"Invalid dictionary layer: {layer!r}")
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
 
-    def _iter_module_files(self, root: Path) -> list[Path]:
-        if not root.is_dir():
-            return []
-        files = [p for p in root.rglob("*.yaml") if p.is_file()]
-        files.extend(p for p in root.rglob("*.yml") if p.is_file())
-        return sorted(files, key=lambda p: p.relative_to(root).as_posix())
+        with db_session() as s:
+            stmt = (
+                select(distinct(FeDictModule.profile_code))
+                .where(FeDictModule.layer == "profile")
+                .where(FeDictModule.deleted_at.is_(None))
+                .order_by(FeDictModule.profile_code)
+            )
+            rows = s.execute(stmt).scalars().all()
+            return list(rows)
+
+    def ensure_profile(self, profile_id: str) -> None:
+        """Raise DataDictError if the profile does not exist in fe_env_profile."""
+        from sqlalchemy import select
+
+        from flow_engine.db.models import FeEnvProfile
+        from flow_engine.db.session import db_session
+
+        pid = validate_profile_id(profile_id)
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile.id)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            if s.execute(stmt).scalar_one_or_none() is None:
+                raise DataDictError(f"Profile not found: {profile_id}")
+
+    def create_profile(self, profile_id: str) -> None:
+        """No-op in MySQL backend; profiles are managed via GlobalProfileStore / fe_env_profile."""
 
     def list_modules(self, layer: DictLayer, *, profile: str | None = None) -> list[DictModule]:
-        root = self.base_dir if layer == "base" else self.ensure_profile(profile or "")
-        out: list[DictModule] = []
-        for p in self._iter_module_files(root):
-            rel = p.relative_to(root)
-            module_id = path_to_module_id(rel)
-            out.append(
+        from sqlalchemy import select
+
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
+
+        profile_code = _profile_code_for_layer(layer, profile)
+        with db_session() as s:
+            stmt = (
+                select(FeDictModule)
+                .where(FeDictModule.layer == layer)
+                .where(FeDictModule.profile_code == profile_code)
+                .where(FeDictModule.deleted_at.is_(None))
+                .order_by(FeDictModule.module_code)
+            )
+            rows = s.execute(stmt).scalars().all()
+            return [
                 DictModule(
-                    module_id=module_id,
+                    module_id=r.module_code,
                     layer=layer,
                     profile=profile if layer == "profile" else None,
-                    path=str(p),
+                    path=f"db://{layer}/{r.module_code}",
                 )
+                for r in rows
+            ]
+
+    def read_module_raw(
+        self, layer: DictLayer, module_id: str, *, profile: str | None = None
+    ) -> str:
+        from sqlalchemy import select
+
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
+
+        mid = validate_module_id(module_id)
+        profile_code = _profile_code_for_layer(layer, profile)
+        with db_session() as s:
+            stmt = (
+                select(FeDictModule)
+                .where(FeDictModule.layer == layer)
+                .where(FeDictModule.profile_code == profile_code)
+                .where(FeDictModule.module_code == mid)
+                .where(FeDictModule.deleted_at.is_(None))
             )
-        return out
+            row = s.execute(stmt).scalar_one_or_none()
+            if row is None:
+                raise DataDictError(f"Dictionary module not found: {module_id}")
+            return row.yaml_text
 
-    def read_module_raw(self, layer: DictLayer, module_id: str, *, profile: str | None = None) -> str:
-        p = self.module_path(layer, module_id, profile=profile)
-        if not p.is_file():
-            raise DataDictError(f"Dictionary module not found: {module_id}")
-        return p.read_text(encoding="utf-8")
-
-    def read_module(self, layer: DictLayer, module_id: str, *, profile: str | None = None) -> dict[str, Any]:
+    def read_module(
+        self, layer: DictLayer, module_id: str, *, profile: str | None = None
+    ) -> dict[str, Any]:
         raw = self.read_module_raw(layer, module_id, profile=profile)
         return copy.deepcopy(_parse_yaml_mapping(raw, label=f"{layer} module {module_id}"))
 
-    def write_module(self, layer: DictLayer, module_id: str, text: str, *, profile: str | None = None) -> None:
-        data = _parse_yaml_mapping(text, label=f"{layer} module {module_id}")
-        p = self.module_path(layer, module_id, profile=profile)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_dump_yaml_mapping(data), encoding="utf-8", newline="\n")
+    def write_module(
+        self,
+        layer: DictLayer,
+        module_id: str,
+        text: str,
+        *,
+        profile: str | None = None,
+    ) -> None:
+        from sqlalchemy import select
 
-    def delete_module(self, layer: DictLayer, module_id: str, *, profile: str | None = None) -> None:
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
+
+        mid = validate_module_id(module_id)
+        _parse_yaml_mapping(text, label=f"{layer} module {module_id}")  # validate YAML
+        profile_code = _profile_code_for_layer(layer, profile)
+        with db_session() as s:
+            stmt = (
+                select(FeDictModule)
+                .where(FeDictModule.layer == layer)
+                .where(FeDictModule.profile_code == profile_code)
+                .where(FeDictModule.module_code == mid)
+                .where(FeDictModule.deleted_at.is_(None))
+            )
+            row = s.execute(stmt).scalar_one_or_none()
+            if row is None:
+                s.add(
+                    FeDictModule(
+                        layer=layer,
+                        profile_code=profile_code,
+                        module_code=mid,
+                        yaml_text=text,
+                    )
+                )
+            else:
+                row.yaml_text = text
+
+    def delete_module(
+        self,
+        layer: DictLayer,
+        module_id: str,
+        *,
+        profile: str | None = None,
+    ) -> None:
+        from sqlalchemy import select
+
+        from flow_engine.db.models import FeDictModule
+        from flow_engine.db.session import db_session
+
         mid = validate_module_id(module_id)
         if layer == "base" and mid == CORE_MODULE_ID:
             raise DataDictError("core base module cannot be deleted")
-        p = self.module_path(layer, mid, profile=profile)
-        if p.exists():
-            p.unlink()
-        # Clean empty parent directories without crossing the layer root.
-        root = self.base_dir if layer == "base" else self.profile_dir(profile or "")
-        cur = p.parent
-        while cur != root and cur.exists() and not any(cur.iterdir()):
-            cur.rmdir()
-            cur = cur.parent
+        profile_code = _profile_code_for_layer(layer, profile)
+        now = datetime.now(timezone.utc)
+        with db_session() as s:
+            stmt = (
+                select(FeDictModule)
+                .where(FeDictModule.layer == layer)
+                .where(FeDictModule.profile_code == profile_code)
+                .where(FeDictModule.module_code == mid)
+                .where(FeDictModule.deleted_at.is_(None))
+            )
+            row = s.execute(stmt).scalar_one_or_none()
+            if row:
+                row.deleted_at = now
+
+
+# ---------------------------------------------------------------------------
+# Utility functions (used by data_dict.py)
+# ---------------------------------------------------------------------------
 
 
 def parse_path(path: str) -> list[str]:
