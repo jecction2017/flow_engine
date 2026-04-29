@@ -44,12 +44,3 @@ Project-specific decisions (database, framework, domain model) live in their own
 - "Must configure N things before it works" developer experience.
 - Acting as a literal executor of the user's wording instead of a senior architect.
 
-## Required workflow before producing a plan or large change
-
-1. Confirm the abstraction (mermaid: core entities + invariants).
-2. Write the deletion list (what gets replaced; zero compatibility).
-3. Default values + load estimation.
-4. Schema / API / error boundaries / contracts at every layer.
-5. Contract-level tests + ADR.
-
-If any earlier step is missing, rewrite — do not proceed.
