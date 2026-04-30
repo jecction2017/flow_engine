@@ -29,10 +29,15 @@ api = [
   "openpyxl>=3.1",
   "python-multipart>=0.0.9",
 ]
+runner = [
+  "croniter>=2.0",
+]
 
 [project.scripts]
 flow-api = "flow_engine.http_api:main"
 flow-db = "flow_engine.db.cli:main"
+flow-worker = "flow_engine.runner.worker:main"
+flow-coordinator = "flow_engine.runner.coordinator:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

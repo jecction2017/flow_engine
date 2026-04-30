@@ -6,18 +6,29 @@ import asyncio
 import json
 import time
 import traceback
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from flow_engine.db.models import (
+    FeFlowDeployment,
+    FeWorker,
+    FeWorkerAssignment,
+)
+from flow_engine.db.session import db_session
 from flow_engine.engine.compiler import compile_flow
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
+from flow_engine.runner import persistence as runner_persistence
+from flow_engine.runner import test_runner
+from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import (
     delete_rows,
@@ -134,6 +145,42 @@ class RunFlowBody(BaseModel):
 class CommitVersionBody(BaseModel):
     description: str | None = None
     data: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Runner request schemas
+# ---------------------------------------------------------------------------
+
+
+class CreateDeploymentBody(BaseModel):
+    flow_code: str = Field(..., min_length=1, max_length=128)
+    ver_no: int = Field(..., ge=1)
+    mode: RunMode = RunMode.PRODUCTION
+    schedule_type: str = Field(..., pattern=r"^(once|cron|resident)$")
+    schedule_config: dict[str, Any] = Field(default_factory=dict)
+    worker_policy: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "type": "single_active",
+            "min_workers": 1,
+            "max_restarts": 5,
+            "restart_backoff_s": 30,
+        }
+    )
+    capability_policy: list[CapabilityRule] = Field(default_factory=list)
+    env_profile_code: str = ""
+
+
+class PatchDeploymentBody(BaseModel):
+    status: str = Field(..., pattern=r"^(stopping|pending)$")
+
+
+class CreateTestBatchBody(BaseModel):
+    flow_code: str = Field(..., min_length=1, max_length=128)
+    ver_no: int = Field(..., ge=1)
+    test_ns_code: str = Field(..., min_length=1, max_length=64)
+    profile_code: str = Field(..., min_length=1, max_length=64)
+    mock_config: dict[str, MockConfig] = Field(default_factory=dict)
+    concurrency: int = Field(default=4, ge=1, le=64)
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +809,278 @@ def create_app() -> FastAPI:
                     "logs": [],
                 },
             )
+
+    # -----------------------------------------------------------------------
+    # Deployments
+    # -----------------------------------------------------------------------
+
+    def _serialize_deployment(row: FeFlowDeployment) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "flow_code": row.flow_code,
+            "ver_no": row.ver_no,
+            "mode": row.mode,
+            "schedule_type": row.schedule_type,
+            "schedule_config": row.schedule_config,
+            "worker_policy": row.worker_policy,
+            "capability_policy": row.capability_policy,
+            "status": row.status,
+            "env_profile_code": row.env_profile_code,
+            "parent_deployment_id": row.parent_deployment_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @app.post("/api/deployments")
+    def create_deployment(body: CreateDeploymentBody) -> dict[str, Any]:
+        if body.schedule_type == "cron":
+            if not (body.schedule_config or {}).get("cron_expr"):
+                raise HTTPException(
+                    status_code=400, detail="cron schedule requires schedule_config.cron_expr"
+                )
+        with db_session() as s:
+            row = FeFlowDeployment(
+                flow_code=body.flow_code,
+                ver_no=body.ver_no,
+                mode=body.mode.value,
+                schedule_type=body.schedule_type,
+                schedule_config=body.schedule_config or {},
+                worker_policy=body.worker_policy or {},
+                capability_policy=[r.model_dump() for r in body.capability_policy],
+                status="pending",
+                env_profile_code=body.env_profile_code or "",
+            )
+            s.add(row)
+            s.flush()
+            return _serialize_deployment(row)
+
+    @app.get("/api/deployments")
+    def list_deployments(
+        flow_code: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        mode: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        with db_session() as s:
+            stmt = select(FeFlowDeployment).where(FeFlowDeployment.deleted_at.is_(None))
+            if flow_code:
+                stmt = stmt.where(FeFlowDeployment.flow_code == flow_code)
+            if status:
+                stmt = stmt.where(FeFlowDeployment.status == status)
+            if mode:
+                stmt = stmt.where(FeFlowDeployment.mode == mode)
+            stmt = stmt.order_by(FeFlowDeployment.id.desc())
+            rows = list(s.execute(stmt).scalars().all())
+            return {"deployments": [_serialize_deployment(r) for r in rows]}
+
+    @app.get("/api/deployments/{deployment_id}")
+    def get_deployment(deployment_id: int) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowDeployment, deployment_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="deployment not found")
+            assn_stmt = (
+                select(FeWorkerAssignment)
+                .where(FeWorkerAssignment.deployment_id == deployment_id)
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+            )
+            assignments = [
+                {
+                    "id": a.id,
+                    "worker_id": a.worker_id,
+                    "role": a.role,
+                    "lease_expires_at": a.lease_expires_at.isoformat()
+                    if a.lease_expires_at
+                    else None,
+                }
+                for a in s.execute(assn_stmt).scalars().all()
+            ]
+            return {**_serialize_deployment(row), "assignments": assignments}
+
+    @app.patch("/api/deployments/{deployment_id}")
+    def patch_deployment(deployment_id: int, body: PatchDeploymentBody) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowDeployment, deployment_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="deployment not found")
+            row.status = body.status
+            return {"id": row.id, "status": row.status}
+
+    @app.delete("/api/deployments/{deployment_id}")
+    def delete_deployment(deployment_id: int) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowDeployment, deployment_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="deployment not found")
+            row.deleted_at = datetime.now(timezone.utc)
+        return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Workers
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/workers")
+    def list_workers() -> dict[str, Any]:
+        with db_session() as s:
+            stmt = (
+                select(FeWorker)
+                .where(FeWorker.deleted_at.is_(None))
+                .order_by(FeWorker.last_heartbeat.desc())
+            )
+            workers = list(s.execute(stmt).scalars().all())
+            assn_stmt = select(FeWorkerAssignment).where(
+                FeWorkerAssignment.deleted_at.is_(None)
+            )
+            assignments = list(s.execute(assn_stmt).scalars().all())
+            by_worker: dict[str, list[int]] = {}
+            for a in assignments:
+                by_worker.setdefault(a.worker_id, []).append(int(a.deployment_id))
+            return {
+                "workers": [
+                    {
+                        "worker_id": w.worker_id,
+                        "host": w.host,
+                        "pid": w.pid,
+                        "status": w.status,
+                        "last_heartbeat": w.last_heartbeat.isoformat()
+                        if w.last_heartbeat
+                        else None,
+                        "capabilities": w.capabilities,
+                        "assigned_deployments": by_worker.get(w.worker_id, []),
+                    }
+                    for w in workers
+                ]
+            }
+
+    # -----------------------------------------------------------------------
+    # Test batches (lookup-namespace driven)
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/test-batches")
+    async def create_test_batch(body: CreateTestBatchBody) -> dict[str, Any]:
+        """Create a test batch and dispatch case execution in the background.
+
+        The batch row is created synchronously so the caller gets a real
+        ``batch_id`` immediately for polling; the per-row run loop continues
+        asynchronously after the response returns.
+        """
+        rows = await asyncio.to_thread(
+            test_runner._read_test_rows,  # noqa: SLF001
+            body.test_ns_code,
+            body.profile_code,
+        )
+        batch_id = await asyncio.to_thread(
+            test_runner._create_test_batch,  # noqa: SLF001
+            flow_code=body.flow_code,
+            ver_no=body.ver_no,
+            test_ns_code=body.test_ns_code,
+            profile_code=body.profile_code,
+            mock_config=body.mock_config,
+            total_runs=len(rows),
+        )
+
+        if not rows:
+            await asyncio.to_thread(
+                test_runner._finalize_test_batch,  # noqa: SLF001
+                batch_id,
+                status="completed",
+            )
+            return {"batch_id": batch_id, "status": "completed", "total_runs": 0}
+
+        async def _drive() -> None:
+            try:
+                sem = asyncio.Semaphore(max(1, body.concurrency))
+                flow_data = await asyncio.to_thread(
+                    test_runner._read_flow_version_body,  # noqa: SLF001
+                    body.flow_code,
+                    body.ver_no,
+                )
+                resolved = await asyncio.to_thread(data_dict.resolve, body.profile_code)
+
+                async def one(row: dict[str, Any]) -> None:
+                    async with sem:
+                        await test_runner._run_single_test_case(  # noqa: SLF001
+                            batch_id=batch_id,
+                            flow_code=body.flow_code,
+                            ver_no=body.ver_no,
+                            profile_code=body.profile_code,
+                            flow_data=flow_data,
+                            dictionary=resolved["resolved_dictionary"],
+                            mock_config=body.mock_config,
+                            test_input=row,
+                        )
+
+                await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
+                await asyncio.to_thread(
+                    test_runner._finalize_test_batch,  # noqa: SLF001
+                    batch_id,
+                    status="completed",
+                )
+            except Exception:  # noqa: BLE001
+                await asyncio.to_thread(
+                    test_runner._finalize_test_batch,  # noqa: SLF001
+                    batch_id,
+                    status="failed",
+                )
+
+        asyncio.create_task(_drive())
+        return {"batch_id": batch_id, "status": "running", "total_runs": len(rows)}
+
+    @app.get("/api/test-batches/{batch_id}")
+    def get_test_batch(batch_id: int) -> dict[str, Any]:
+        info = test_runner.get_test_batch(batch_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="test batch not found")
+        return info
+
+    @app.get("/api/test-batches/{batch_id}/runs")
+    def list_test_batch_runs(
+        batch_id: int,
+        status: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return runner_persistence.list_flow_runs(
+            test_batch_id=batch_id,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/test-batches/{batch_id}/runs/{run_id}")
+    def get_test_batch_run(batch_id: int, run_id: int) -> dict[str, Any]:
+        info = runner_persistence.get_flow_run_detail(run_id)
+        if info is None or info.get("test_batch_id") != batch_id:
+            raise HTTPException(status_code=404, detail="run not found in batch")
+        return info
+
+    # -----------------------------------------------------------------------
+    # Flow runs (production history)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/flow-runs")
+    def list_flow_runs(
+        deployment_id: int | None = Query(default=None),
+        flow_code: str | None = Query(default=None),
+        mode: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return runner_persistence.list_flow_runs(
+            deployment_id=deployment_id,
+            flow_code=flow_code,
+            mode=mode,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/flow-runs/{run_id}")
+    def get_flow_run(run_id: int) -> dict[str, Any]:
+        info = runner_persistence.get_flow_run_detail(run_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return info
 
     return app
 

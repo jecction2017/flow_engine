@@ -4,6 +4,12 @@
       <button type="button" class="nav-btn" :class="{ active: view === 'flow' }" @click="view = 'flow'">
         Flow Studio
       </button>
+      <button type="button" class="nav-btn" :class="{ active: view === 'ops' }" @click="view = 'ops'">
+        运行中心
+      </button>
+      <button type="button" class="nav-btn" :class="{ active: view === 'test' }" @click="view = 'test'">
+        测试中心
+      </button>
       <button type="button" class="nav-btn" :class="{ active: view === 'starlark' }" @click="view = 'starlark'">
         能力与脚本
       </button>
@@ -22,6 +28,8 @@
     </nav>
     <main class="main-fill">
       <FlowStudioView v-if="view === 'flow'" />
+      <OperationsCenterView v-else-if="view === 'ops'" />
+      <TestCenterView v-else-if="view === 'test'" />
       <CapabilityCenterView v-else-if="view === 'starlark'" />
       <ProfileConfigView v-else-if="view === 'profiles'" />
       <DictConfigView v-else-if="view === 'dict'" />
@@ -34,13 +42,15 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import FlowStudioView from "./views/FlowStudioView.vue";
+import OperationsCenterView from "./views/OperationsCenterView.vue";
+import TestCenterView from "./views/TestCenterView.vue";
 import CapabilityCenterView from "./views/CapabilityCenterView.vue";
 import ProfileConfigView from "./views/ProfileConfigView.vue";
 import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
 import ScriptGuideView from "./views/ScriptGuideView.vue";
 
-const view = ref<"flow" | "starlark" | "profiles" | "dict" | "lookup" | "guide">("flow");
+const view = ref<"flow" | "ops" | "test" | "starlark" | "profiles" | "dict" | "lookup" | "guide">("flow");
 </script>
 
 <style scoped>

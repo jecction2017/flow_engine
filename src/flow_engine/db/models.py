@@ -494,6 +494,436 @@ class FeLookupRow(_AuditCols, Base):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# fe_flow_deployment  流程部署配置（运行调度层）
+# ---------------------------------------------------------------------------
+
+
+class FeFlowDeployment(_AuditCols, Base):
+    """流程部署配置：将 (flow_code, ver_no) 与运行模式 / 调度规则 / Worker 策略 / 能力策略绑定。
+
+    schedule_type:
+        once     一次性触发（执行一次后 stopped）
+        cron     按 cron 表达式周期触发（每次产生一个 once 子部署）
+        resident 常驻流程（带重启 backoff）
+
+    schedule_config:
+        once:    {}
+        cron:    {"cron_expr": "0 8 * * *"}
+        resident:{}（无额外配置）
+
+    worker_policy:
+        type:                "multi_active" | "single_active"
+        min_workers:         至少分配的 worker 数（multi_active 控制副本数；single_active 控制候选）
+        max_restarts:        resident 崩溃最大重启次数，默认 5
+        restart_backoff_s:   重启退避基础秒数；实际 = base * 2^(attempt-1)
+
+    capability_policy: list[CapabilityRule]，可空 list；JSON 持久化。
+    """
+
+    __tablename__ = "fe_flow_deployment"
+    __table_args__ = (
+        Index("idx_fe_flow_deployment_status", "status"),
+        Index("idx_fe_flow_deployment_flow_code", "flow_code"),
+        {**_FE_TABLE_OPTS, "comment": "流程部署配置表"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="关联 fe_flow.flow_code",
+    )
+    ver_no: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        comment="部署使用的版本号（fe_flow_version.ver_no）",
+    )
+    mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'production'"),
+        comment="RunMode：debug / shadow / production",
+    )
+    schedule_type: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'once'"),
+        comment="调度类型：once / cron / resident",
+    )
+    schedule_config: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        comment="调度配置 JSON；once={} / cron={cron_expr} / resident={}",
+    )
+    worker_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        comment="Worker 分配策略 JSON",
+    )
+    capability_policy: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=False,
+        comment="Deployment 级 CapabilityRule 列表 JSON；可为空 []",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'pending'"),
+        comment="状态：pending / running / stopping / stopped / failed",
+    )
+    env_profile_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="运行 profile（数据字典 / lookup namespace 解析使用）",
+    )
+    parent_deployment_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="cron 触发时填父 deployment.id；其他场景 NULL",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_worker  Worker 进程注册表
+# ---------------------------------------------------------------------------
+
+
+class FeWorker(_AuditCols, Base):
+    """Worker 进程注册表。
+
+    last_heartbeat 由 Worker 进程每 10s 更新；Coordinator 视 30s 未更新为死亡。
+    """
+
+    __tablename__ = "fe_worker"
+    __table_args__ = (
+        UniqueConstraint("worker_id", name="uk_fe_worker_worker_id"),
+        Index("idx_fe_worker_status_heartbeat", "status", "last_heartbeat"),
+        {**_FE_TABLE_OPTS, "comment": "Worker 注册表"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    worker_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="Worker 业务唯一码（UUID）",
+    )
+    host: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        server_default=text("''"),
+        comment="Worker 主机名 / IP",
+    )
+    pid: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="进程 PID",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'active'"),
+        comment="状态：active / idle / dead",
+    )
+    last_heartbeat: Mapped[datetime] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("CURRENT_TIMESTAMP(3)"),
+        comment="最后心跳时间",
+    )
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        comment='Worker 能力 JSON，如 {"max_concurrent_flows": 8}',
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_worker_assignment  Worker 任务分配表
+# ---------------------------------------------------------------------------
+
+
+class FeWorkerAssignment(_AuditCols, Base):
+    """Coordinator 将 Deployment 分配给 Worker 的物化记录。
+
+    role:
+        leader   single_active 模式下唯一执行者，lease_expires_at 续约
+        standby  single_active 模式下候选；leader 死亡时晋升
+        replica  multi_active 模式下并发副本之一
+
+    UK (deployment_id, worker_id)：同 worker 同 deployment 仅有一条活跃记录；
+    软删后 deleted_at 不为 NULL，UK 仍生效（同名重建需先硬删软删行）。
+    """
+
+    __tablename__ = "fe_worker_assignment"
+    __table_args__ = (
+        UniqueConstraint(
+            "deployment_id",
+            "worker_id",
+            name="uk_fe_worker_assignment_dep_worker",
+        ),
+        Index("idx_fe_worker_assignment_worker_id", "worker_id"),
+        Index("idx_fe_worker_assignment_deployment_id", "deployment_id"),
+        {**_FE_TABLE_OPTS, "comment": "Worker 任务分配表"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    deployment_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        comment="关联 fe_flow_deployment.id",
+    )
+    worker_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="关联 fe_worker.worker_id",
+    )
+    role: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'replica'"),
+        comment="角色：leader / standby / replica",
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=True,
+        comment="leader 租约到期时间；非 leader 为 NULL",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_flow_run  流程运行记录表
+# ---------------------------------------------------------------------------
+
+
+class FeFlowRun(_AuditCols, Base):
+    """单次流程运行记录。
+
+    deployment_id 与 test_batch_id 互斥（生产 vs 测试）：
+        生产运行（once/cron/resident）：deployment_id 非空，test_batch_id 为空
+        测试运行：                       test_batch_id 非空，deployment_id 为空
+
+    node_runs 与 node_stats 互斥：
+        once/cron/test → node_runs（list[NodeRunInfo.to_dict()] 序列化）
+        resident       → node_stats（聚合统计 JSON），同时 iteration_count 累计
+    """
+
+    __tablename__ = "fe_flow_run"
+    __table_args__ = (
+        Index("idx_fe_flow_run_deployment_id", "deployment_id"),
+        Index("idx_fe_flow_run_test_batch_id", "test_batch_id"),
+        Index(
+            "idx_fe_flow_run_flow_code_started_at",
+            "flow_code",
+            "started_at",
+        ),
+        {**_FE_TABLE_OPTS, "comment": "流程运行记录表"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    deployment_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="生产运行关联 fe_flow_deployment.id；测试运行为 NULL",
+    )
+    test_batch_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="测试运行关联 fe_flow_test_batch.id；生产运行为 NULL",
+    )
+    worker_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="执行 worker 的 worker_id；测试可为空",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="流程业务码",
+    )
+    ver_no: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        comment="流程版本号",
+    )
+    mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'production'"),
+        comment="RunMode：debug / shadow / production",
+    )
+    trigger_context: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="触发时的初始 context；resident 流程为 NULL",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'running'"),
+        comment="状态：running / completed / failed / terminated",
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("CURRENT_TIMESTAMP(3)"),
+        comment="开始时间",
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=True,
+        comment="结束时间；运行中为 NULL",
+    )
+    iteration_count: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="resident 累计迭代次数；非 resident 为 NULL",
+    )
+    node_runs: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="非 resident：list[NodeRunInfo.to_dict()] 的 JSON",
+    )
+    node_stats: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="resident：节点级聚合统计 JSON",
+    )
+    flow_logs: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="flow-level hook 日志 JSON",
+    )
+    error: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="失败 / 终止时的错误信息",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_flow_test_batch  测试批次聚合表
+# ---------------------------------------------------------------------------
+
+
+class FeFlowTestBatch(_AuditCols, Base):
+    """以 lookup namespace 行作为测试集的批次聚合表。
+
+    每行 lookup namespace 数据 → 一次 RunMode.DEBUG 流程运行 → 一条 fe_flow_run；
+    本表持有汇总（total / completed / error）。
+    """
+
+    __tablename__ = "fe_flow_test_batch"
+    __table_args__ = (
+        Index("idx_fe_flow_test_batch_flow_code", "flow_code"),
+        {**_FE_TABLE_OPTS, "comment": "测试批次聚合表"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="流程业务码",
+    )
+    ver_no: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        comment="流程版本号",
+    )
+    test_ns_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="测试集 lookup namespace 编码",
+    )
+    profile_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="测试集所属 profile",
+    )
+    mock_config: Mapped[str] = mapped_column(
+        MEDIUMTEXT,
+        nullable=False,
+        comment="dict[node_id, MockConfig] JSON 序列化",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'pending'"),
+        comment="状态：pending / running / completed / failed",
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("CURRENT_TIMESTAMP(3)"),
+        comment="开始时间",
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=True,
+        comment="结束时间；运行中为 NULL",
+    )
+    total_runs: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="总运行数 = 测试集行数",
+    )
+    completed_runs: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="成功运行数",
+    )
+    error_runs: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="失败运行数",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_user_script  用户 Starlark 脚本
+# ---------------------------------------------------------------------------
+
+
 class FeUserScript(_AuditCols, Base):
     """用户 Starlark 脚本存储表。
 

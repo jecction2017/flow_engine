@@ -46,11 +46,24 @@ from flow_engine.engine.starlark_glue import (
     apply_outputs,
     eval_condition,
     eval_iterable_expr,
+    eval_key_expr,
     process_starlark_task,
     run_hook_script,
     run_task_script,
 )
 from flow_engine.engine.tracker import TaskTracker
+from flow_engine.runner.exceptions import MockCacheMissError
+from flow_engine.runner.mode_context import (
+    effective_policy_snapshot,
+    node_capability_scope,
+    run_mode_scope,
+)
+from flow_engine.runner.models import (
+    FaultType,
+    MockConfig,
+    MockMode,
+    RunOptions,
+)
 from flow_engine.stores.data_dict import dictionary_scope, tree_copy
 
 logger = logging.getLogger(__name__)
@@ -168,7 +181,13 @@ class FlowRunResult:
 class FlowRuntime:
     """Runs a compiled `FlowDefinition`."""
 
-    def __init__(self, flow: FlowDefinition, *, dictionary: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        flow: FlowDefinition,
+        *,
+        dictionary: dict[str, Any] | None = None,
+        run_opts: RunOptions | None = None,
+    ) -> None:
         self.flow = flow
         self.ctx = ContextStack()
         if flow.initial_context:
@@ -185,6 +204,7 @@ class FlowRuntime:
         self.executors = StrategyExecutors(flow.strategies, self._gate)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cancel_dereg: Any = None
+        self._run_opts: RunOptions = run_opts or RunOptions()
 
     def _nid(self, m: FlowMember) -> str:
         # id 是节点唯一逻辑主键；模型层已保证非空，此处无需回落 name。
@@ -291,8 +311,12 @@ class FlowRuntime:
         self._t0 = time.monotonic()
         self.flow_state = FlowState.RUNNING
         try:
-            with dictionary_scope(self.dictionary):
-                return await self._run_scoped()
+            with run_mode_scope(
+                self._run_opts.mode,
+                self._run_opts.deployment_capability_policy,
+            ):
+                with dictionary_scope(self.dictionary):
+                    return await self._run_scoped()
         finally:
             self.executors.shutdown()
             if self._cancel_dereg is not None:
@@ -420,12 +444,13 @@ class FlowRuntime:
         self._mark(nid, NodeState.STAGING, parent_id=parent_id)
 
         if isinstance(m, TaskNode):
-            if mode == StrategyMode.SYNC:
-                self._mark(nid, NodeState.RUNNING)
-                await self._execute_task_node(m, ctx, tracker, await_result=True)
-            else:
-                self._mark(nid, NodeState.DISPATCHED)
-                await self._execute_task_node(m, ctx, tracker, await_result=False)
+            with node_capability_scope(m.capability_overrides):
+                if mode == StrategyMode.SYNC:
+                    self._mark(nid, NodeState.RUNNING)
+                    await self._execute_task_node(m, ctx, tracker, await_result=True)
+                else:
+                    self._mark(nid, NodeState.DISPATCHED)
+                    await self._execute_task_node(m, ctx, tracker, await_result=False)
         elif isinstance(m, LoopNode):
             await self._execute_loop(m, ctx, tracker)
         elif isinstance(m, SubflowNode):
@@ -461,6 +486,13 @@ class FlowRuntime:
         before the exception propagated.
         """
         nid = self._nid(node)
+
+        # Mock 拦截：mock 完全替代节点执行（包括 pre_exec / post_exec），
+        # 仅 SCRIPT 模式下与原始脚本调用路径一致；其它模式跳过 hook 与 builtin。
+        mock = self._run_opts.mock_overrides.get(nid)
+        if mock is not None:
+            return await self._execute_mock(node, ctx, st, mock, attempt=attempt)
+
         pre = _node_hook(node.hooks, "pre_exec")
         if pre:
             self._append_node_logs(
@@ -503,11 +535,14 @@ class FlowRuntime:
             if mode == StrategyMode.PROCESS:
                 loop = asyncio.get_running_loop()
                 pool = self.executors.process_pool(node.strategy_ref)
+                eff = effective_policy_snapshot()
                 payload = {
                     "script": node.script,
                     "inputs": node.boundary.inputs,
                     "flat_inputs": _serialize_inputs(ctx, node.boundary.inputs),
                     "dictionary": self.dictionary,
+                    "run_mode": self._run_opts.mode.value,
+                    "effective_policy": [r.model_dump() for r in eff],
                 }
                 fut2 = pool.submit(process_starlark_task, payload)
                 raw = await self._with_timeout(asyncio.wrap_future(fut2, loop=loop), timeout)
@@ -628,6 +663,149 @@ class FlowRuntime:
             self._mark(nid, NodeState.SUCCESS)
 
         tracker.create_task(loop, bg())
+
+    # ------------------------------------------------------------------
+    # Mock 执行（pre_exec / post_exec / on_error 均不参与；mock 完全替代节点）
+    # ------------------------------------------------------------------
+
+    async def _execute_mock(
+        self,
+        node: TaskNode,
+        ctx: ContextStack,
+        st: ExecutionStrategy,
+        mock: MockConfig,
+        *,
+        attempt: int = 0,
+    ) -> dict[str, Any]:
+        nid = self._nid(node)
+        if mock.mode == MockMode.FIXED:
+            return copy.deepcopy(mock.result or {})
+
+        if mock.mode == MockMode.SCRIPT:
+            assert mock.script is not None  # validator guaranteed
+            result, logs = await asyncio.to_thread(
+                run_task_script, mock.script, ctx, node.boundary.inputs
+            )
+            self._append_node_logs(nid, logs, attempt=attempt)
+            return result
+
+        if mock.mode == MockMode.RECORD_REPLAY:
+            return await self._execute_mock_record_replay(node, ctx, mock, attempt=attempt)
+
+        if mock.mode == MockMode.FAULT:
+            return await self._inject_fault(mock, st)
+
+        raise AssertionError(f"unknown mock mode: {mock.mode}")
+
+    async def _execute_mock_record_replay(
+        self,
+        node: TaskNode,
+        ctx: ContextStack,
+        mock: MockConfig,
+        *,
+        attempt: int,
+    ) -> dict[str, Any]:
+        from flow_engine.lookup.lookup_service import append_rows as _append_rows
+        from flow_engine.lookup.lookup_store import get_lookup_store
+        from flow_engine.stores.profile_store import active_profile
+
+        nid = self._nid(node)
+        # 1. compute key
+        if mock.key_expr:
+            key = await asyncio.to_thread(
+                eval_key_expr, mock.key_expr, ctx, node.boundary.inputs
+            )
+        else:
+            key = self._default_replay_key(ctx, node.boundary.inputs)
+
+        # 2. resolve profile + read namespace
+        profile = mock.profile_code or active_profile()
+        store = get_lookup_store()
+        if store.exists(mock.lookup_ns, profile=profile):
+            table = await asyncio.to_thread(
+                store.read_table, mock.lookup_ns, profile=profile
+            )
+        else:
+            table = {"schema": {"type": "object", "properties": {}}, "rows": []}
+        for row in table.get("rows", []):
+            if isinstance(row, dict) and row.get("_key") == key:
+                return {k: copy.deepcopy(v) for k, v in row.items() if k != "_key"}
+
+        # 3. miss
+        if not mock.record_on_miss:
+            raise MockCacheMissError(
+                f"No recording for node {nid!r} key {key!r} in lookup ns {mock.lookup_ns!r}"
+            )
+
+        # 4. record: 真实执行原节点脚本，再追加到 lookup namespace
+        result, logs = await asyncio.to_thread(
+            run_task_script, node.script, ctx, node.boundary.inputs
+        )
+        self._append_node_logs(nid, logs, attempt=attempt)
+        record_row: dict[str, Any] = {"_key": key, **result}
+        try:
+            await asyncio.to_thread(
+                _append_rows, mock.lookup_ns, [record_row], profile=profile
+            )
+        except Exception:  # noqa: BLE001
+            # Recording failure must not corrupt the run; surface in flow logs
+            # instead of failing the node.
+            logger.exception("record_replay: failed to append recording")
+        return result
+
+    @staticmethod
+    def _default_replay_key(
+        ctx: ContextStack,
+        boundary_inputs: dict[str, str],
+    ) -> str:
+        """Stable hash over resolved boundary input values, sorted by var name.
+
+        Used when ``MockConfig.key_expr`` is not provided. Sorting is by the
+        Starlark variable name (the dict value) so that re-arranging the input
+        map in YAML does not invalidate previously recorded keys.
+        """
+        import hashlib
+        import json
+
+        flat = _serialize_inputs(ctx, boundary_inputs)
+        canonical = json.dumps(
+            sorted(flat.items()),
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+    async def _inject_fault(
+        self, mock: MockConfig, st: ExecutionStrategy
+    ) -> dict[str, Any]:
+        """FAULT dispatch.
+
+        ``TIMEOUT`` / ``EXCEPTION`` raise; ``DIRTY_DATA`` returns the configured
+        dict so the orchestrator applies it through the normal output path
+        (matching real-script behaviour: the node "succeeds" with bad data).
+        """
+        ftype = mock.fault_type
+        params = mock.fault_params or {}
+        if ftype == FaultType.TIMEOUT:
+            timeout_ms = int(params.get("timeout_ms", 5000))
+            # Honour the strategy timeout if any: we want the engine's
+            # `_with_timeout` to fire first when configured. Without a
+            # strategy timeout we sleep for the requested window then raise
+            # so callers see a deterministic outcome rather than hanging.
+            base = (st.timeout + 1.0) if st.timeout else (timeout_ms / 1000.0)
+            await asyncio.sleep(max(timeout_ms / 1000.0, base))
+            raise asyncio.TimeoutError("injected fault: timeout")
+        if ftype == FaultType.EXCEPTION:
+            raise RuntimeError(str(params.get("message", "injected fault")))
+        if ftype == FaultType.DIRTY_DATA:
+            data = params.get("result", {})
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"dirty_data fault `result` must be dict, got {type(data).__name__}"
+                )
+            return copy.deepcopy(data)
+        raise AssertionError(f"unknown fault_type: {ftype}")
 
     def _handle_on_error(self, node: TaskNode, exc: BaseException) -> str:
         """Decide what to do with `exc` based on `node.on_error`.

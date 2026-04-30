@@ -403,6 +403,42 @@ def debug_task_script(
     return val, logs
 
 
+def eval_key_expr(
+    expr: str,
+    ctx: ContextStack,
+    boundary_inputs: dict[str, str],
+) -> str:
+    """Evaluate ``expr`` with boundary inputs bound and coerce result to ``str``.
+
+    Used by ``record_replay`` mock to compute a cache key. Logs emitted by the
+    expression are intentionally dropped: they belong to no node phase. The
+    runtime budget is shared with regular task scripts so a runaway key
+    expression cannot evade enforcement.
+    """
+    from flow_engine.engine.starlark_glue import (
+        _attach_builtins,
+        cf_guard,
+        inject_context_paths,
+        inject_resolve,
+    )
+
+    with _budget_scope(), log_scope("key_expr"):
+        mod = sl.Module()
+        inject_context_paths(mod, ctx, boundary_inputs)
+        inject_resolve(mod, ctx)
+        _attach_builtins(mod)
+        _attach_sdk_python(mod)
+        file_loader, _ = build_file_loader()
+        glb = _globals_main()
+        ast = _parse_cached("key_expr.star", f"({expr})")
+        with cf_guard():
+            val = sl.eval(mod, ast, glb, file_loader=file_loader)
+    val = starlark_to_python(val)
+    if val is None:
+        return ""
+    return str(val)
+
+
 def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     if not expr:
         return True

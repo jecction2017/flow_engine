@@ -168,6 +168,22 @@ def run_task_script(
     return sdk_runtime.eval_task_script(script, ctx, boundary_inputs)
 
 
+def eval_key_expr(
+    expr: str,
+    ctx: ContextStack,
+    boundary_inputs: dict[str, str],
+) -> str:
+    """Evaluate ``expr`` with boundary inputs bound, coerce to ``str``.
+
+    Used by ``record_replay`` mock to compute a cache key. Boundary inputs are
+    bound by their Starlark variable name (the value side of ``boundary.inputs``)
+    so the expression looks identical to the wrapped task script.
+    """
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.eval_key_expr(expr, ctx, boundary_inputs)
+
+
 def debug_task_script(
     script: str,
     variables: dict[str, Any] | None = None,
@@ -230,13 +246,29 @@ def _attach_process_builtins(mod: sl.Module) -> None:
 def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Executed inside a worker process; reconstructs minimal context from
     serialized inputs. Captures log entries and ships them back across the
-    IPC boundary so the orchestrator can attach them to the owning node."""
+    IPC boundary so the orchestrator can attach them to the owning node.
+
+    Payload schema:
+        script:           str
+        inputs:           dict[str, str] (informational; not used here)
+        flat_inputs:      dict[str, Any] (already resolved values bound as Starlark globals)
+        dictionary:       dict[str, Any] (resolved data dictionary)
+        run_mode:         str (RunMode value), optional, default 'production'
+        effective_policy: list[dict] (CapabilityRule json), optional, default []
+    """
+    from flow_engine.runner.mode_context import run_mode_scope
+    from flow_engine.runner.models import CapabilityRule, RunMode
     from flow_engine.starlark_sdk import runtime as sdk_runtime
     from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
     from flow_engine.stores.data_dict import dictionary_scope
 
     script = payload["script"]
     flat = payload["flat_inputs"]
+    run_mode = RunMode(payload.get("run_mode", RunMode.PRODUCTION.value))
+    effective_policy = [
+        CapabilityRule.model_validate(r) for r in payload.get("effective_policy", [])
+    ]
+
     mod = sl.Module()
     for var, pyval in flat.items():
         mod[var] = pyval
@@ -245,10 +277,11 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
         mod.add_callable(name, fn)
     glb = _globals_extended()
     ast = sl.parse("task.star", script)
-    with dictionary_scope(payload.get("dictionary") or {}):
-        with sdk_runtime.log_scope("task") as coll:
-            val = starlark_to_python(sl.eval(mod, ast, glb))
-            logs = coll.as_dicts()
+    with run_mode_scope(run_mode, effective_policy):
+        with dictionary_scope(payload.get("dictionary") or {}):
+            with sdk_runtime.log_scope("task") as coll:
+                val = starlark_to_python(sl.eval(mod, ast, glb))
+                logs = coll.as_dicts()
     if val is None:
         val = {}
     if not isinstance(val, dict):

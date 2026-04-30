@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from flow_engine.runner.models import CapabilityRule
+
 # 节点 id 的强约束：字母开头，仅允许字母/数字/下划线。
 # 作为流程内的逻辑主键使用；name 仅用于可视化展示，不承担任何业务语义。
 NODE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
@@ -134,6 +136,10 @@ class TaskNode(BaseNode):
     type: Literal["task"] = "task"
     script: str
     boundary: Boundary = Field(default_factory=Boundary)
+    # Node 级 CapabilityPolicy 覆盖。优先级高于 deployment_capability_policy
+    # 与系统默认；None / 空列表 = 无覆盖。
+    # 现有 YAML 不含此字段，反序列化保持 None，向后兼容。
+    capability_overrides: list[CapabilityRule] | None = None
 
 
 class IterationCollect(BaseModel):
