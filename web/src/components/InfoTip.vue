@@ -1,5 +1,11 @@
 <template>
-  <span class="info-tip" tabindex="0" role="button" :aria-label="text">
+  <span
+    class="info-tip"
+    :class="{ 'align-end': alignEnd }"
+    tabindex="0"
+    role="button"
+    :aria-label="text"
+  >
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.4" />
       <circle cx="8" cy="4.6" r="0.95" fill="currentColor" />
@@ -13,6 +19,8 @@
 defineProps<{
   text: string;
   wide?: boolean;
+  /** 气泡右对齐到图标，避免靠右时超出滚动容器（如 flex 行内后跟按钮）。 */
+  alignEnd?: boolean;
 }>();
 </script>
 
@@ -48,8 +56,10 @@ defineProps<{
   line-height: 1.55;
   font-weight: 400;
   white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   width: max-content;
-  max-width: 240px;
+  max-width: min(240px, calc(100vw - 24px));
   text-align: left;
   z-index: 1000;
   pointer-events: none;
@@ -61,7 +71,7 @@ defineProps<{
 }
 
 .bubble.wide {
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 24px));
 }
 
 .bubble::after {
@@ -96,6 +106,24 @@ defineProps<{
 
 .info-tip:last-child:hover .bubble,
 .info-tip:last-child:focus .bubble {
+  transform: translateX(0) translateY(0);
+}
+
+/* 显式右对齐（适用于「图标后还有按钮」等场景，避免 :last-child 不生效） */
+.info-tip.align-end .bubble {
+  left: auto;
+  right: -4px;
+  transform: translateX(0) translateY(4px);
+}
+
+.info-tip.align-end .bubble::after {
+  left: auto;
+  right: 8px;
+  transform: translateX(0);
+}
+
+.info-tip.align-end:hover .bubble,
+.info-tip.align-end:focus .bubble {
   transform: translateX(0) translateY(0);
 }
 </style>

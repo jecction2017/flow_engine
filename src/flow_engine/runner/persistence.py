@@ -84,11 +84,20 @@ def complete_flow_run(
         status = "failed"
 
     flow_logs_json = json.dumps(result.flow_logs, ensure_ascii=False, default=str)
+    global_ns: dict[str, Any] | None = None
+    try:
+        # Keep behaviour consistent with /api/flows/{flow_id}/run: strip dictionary from output.
+        global_ns = dict(getattr(result.context, "global_ns", {}) or {})
+        global_ns.pop("dictionary", None)
+    except Exception:  # noqa: BLE001
+        global_ns = None
     payload: dict[str, Any] = {
         "status": status,
         "finished_at": datetime.now(timezone.utc),
         "flow_logs": flow_logs_json,
     }
+    if global_ns is not None:
+        payload["global_ns"] = json.dumps(global_ns, ensure_ascii=False, default=str)
     if result.message:
         payload["error"] = result.message
 
@@ -212,6 +221,7 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
         node_runs = _safe_json_load(row.node_runs)
         node_stats = _safe_json_load(row.node_stats)
         flow_logs = _safe_json_load(row.flow_logs)
+        global_ns = _safe_json_load(row.global_ns)
         return {
             "id": row.id,
             "deployment_id": row.deployment_id,
@@ -228,6 +238,7 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
             "node_runs": node_runs,
             "node_stats": node_stats,
             "flow_logs": flow_logs,
+            "global_ns": global_ns,
             "error": row.error,
         }
 

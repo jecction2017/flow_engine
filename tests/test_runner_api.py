@@ -163,3 +163,49 @@ def test_test_batch_endpoint_creates_batch_row(client: TestClient) -> None:
     assert info["id"] == batch_id
     assert info["total_runs"] == 2
     assert info["test_ns_code"] == "tb_cases"
+
+
+def test_test_plan_copy_and_batches_endpoints(client: TestClient) -> None:
+    ver = _commit_flow(client, "tp_flow")
+    r = client.put(
+        "/api/lookups/tp_cases?profile=default",
+        # Keep rows empty so /run doesn't spawn background tasks in TestClient.
+        json={"fields": ["x"], "rows": []},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/test-plans",
+        json={
+            "name": "plan1",
+            "flow_code": "tp_flow",
+            "version_channel": f"v{ver}",
+            "test_ns_code": "tp_cases",
+            "profile_code": "default",
+            "concurrency": 2,
+            "mock_config": {"n1": {"mode": "fixed", "result": {"out": "mock_value"}}},
+            "context_mapping": {"mode": "wrap", "wrap_key": "alarms", "wrap_as_list": True},
+        },
+    )
+    assert r.status_code == 200, r.text
+    plan_id = int(r.json()["id"])
+
+    # Copy plan
+    r = client.post(f"/api/test-plans/{plan_id}/copy", json={})
+    assert r.status_code == 200, r.text
+    copied = r.json()
+    assert copied["id"] != plan_id
+    assert copied["flow_code"] == "tp_flow"
+
+    # Run original plan twice → should create 2 batches
+    r = client.post(f"/api/test-plans/{plan_id}/run", json={})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/test-plans/{plan_id}/run", json={})
+    assert r.status_code == 200, r.text
+
+    r = client.get(f"/api/test-plans/{plan_id}/batches?limit=10")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_id"] == plan_id
+    assert body["total"] == 2
+    assert len(body["batches"]) == 2

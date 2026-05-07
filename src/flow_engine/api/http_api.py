@@ -17,6 +17,9 @@ from sqlalchemy import select
 
 from flow_engine.db.models import (
     FeFlowDeployment,
+    FeFlowTestBatch,
+    FeFlowTestBatchPlan,
+    FeFlowTestPlan,
     FeWorker,
     FeWorkerAssignment,
 )
@@ -176,12 +179,39 @@ class PatchDeploymentBody(BaseModel):
 
 class CreateTestBatchBody(BaseModel):
     flow_code: str = Field(..., min_length=1, max_length=128)
-    ver_no: int = Field(..., ge=1)
+    # 兼容旧 API：传 ver_no（>=1）；新语义优先使用 version_channel
+    ver_no: int | None = Field(default=None, ge=1)
+    version_channel: str = Field(default="latest", description="latest | draft | vN | N")
     test_ns_code: str = Field(..., min_length=1, max_length=64)
     profile_code: str = Field(..., min_length=1, max_length=64)
     mock_config: dict[str, MockConfig] = Field(default_factory=dict)
+    context_mapping: dict[str, Any] | None = None
     concurrency: int = Field(default=4, ge=1, le=64)
 
+
+class CreateTestPlanBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    flow_code: str = Field(..., min_length=1, max_length=128)
+    version_channel: str = Field(default="latest", min_length=1, max_length=32)
+    test_ns_code: str = Field(..., min_length=1, max_length=64)
+    profile_code: str = Field(..., min_length=1, max_length=64)
+    concurrency: int = Field(default=4, ge=1, le=64)
+    mock_config: dict[str, MockConfig] = Field(default_factory=dict)
+    context_mapping: dict[str, Any] | None = None
+
+
+class PatchTestPlanBody(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    version_channel: str | None = Field(default=None, min_length=1, max_length=32)
+    test_ns_code: str | None = Field(default=None, min_length=1, max_length=64)
+    profile_code: str | None = Field(default=None, min_length=1, max_length=64)
+    concurrency: int | None = Field(default=None, ge=1, le=64)
+    mock_config: dict[str, MockConfig] | None = None
+    context_mapping: dict[str, Any] | None = None
+
+
+class CopyTestPlanBody(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -955,6 +985,250 @@ def create_app() -> FastAPI:
     # Test batches (lookup-namespace driven)
     # -----------------------------------------------------------------------
 
+    def _serialize_test_plan(row: FeFlowTestPlan) -> dict[str, Any]:
+        return {
+            "id": int(row.id),
+            "name": row.name,
+            "flow_code": row.flow_code,
+            "version_channel": row.version_channel,
+            "test_ns_code": row.test_ns_code,
+            "profile_code": row.profile_code,
+            "concurrency": int(row.concurrency),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+
+    @app.get("/api/test-plans")
+    def list_test_plans(
+        flow_code: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        with db_session() as s:
+            stmt = select(FeFlowTestPlan).where(FeFlowTestPlan.deleted_at.is_(None))
+            if flow_code:
+                stmt = stmt.where(FeFlowTestPlan.flow_code == flow_code)
+            stmt = stmt.order_by(FeFlowTestPlan.updated_at.desc())
+            rows = list(s.execute(stmt).scalars().all())
+            return {"plans": [_serialize_test_plan(r) for r in rows]}
+
+    @app.post("/api/test-plans")
+    def create_test_plan(body: CreateTestPlanBody) -> dict[str, Any]:
+        mock_ser = json.dumps(
+            {nid: cfg.model_dump() for nid, cfg in (body.mock_config or {}).items()},
+            ensure_ascii=False,
+            default=str,
+        )
+        mapping_ser = json.dumps(body.context_mapping or {"mode": "spread"}, ensure_ascii=False, default=str)
+        with db_session() as s:
+            row = FeFlowTestPlan(
+                name=body.name,
+                flow_code=body.flow_code,
+                version_channel=(body.version_channel or "latest").strip() or "latest",
+                test_ns_code=body.test_ns_code,
+                profile_code=body.profile_code,
+                concurrency=int(body.concurrency),
+                mock_config=mock_ser,
+                context_mapping=mapping_ser,
+            )
+            s.add(row)
+            s.flush()
+            return _serialize_test_plan(row)
+
+    @app.get("/api/test-plans/{plan_id}")
+    def get_test_plan(plan_id: int) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowTestPlan, plan_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+            return {
+                **_serialize_test_plan(row),
+                "mock_config": json.loads(row.mock_config or "{}"),
+                "context_mapping": json.loads(row.context_mapping or "{}"),
+            }
+
+    @app.patch("/api/test-plans/{plan_id}")
+    def patch_test_plan(plan_id: int, body: PatchTestPlanBody) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowTestPlan, plan_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+            if body.name is not None:
+                row.name = body.name
+            if body.version_channel is not None:
+                row.version_channel = body.version_channel.strip() or "latest"
+            if body.test_ns_code is not None:
+                row.test_ns_code = body.test_ns_code
+            if body.profile_code is not None:
+                row.profile_code = body.profile_code
+            if body.concurrency is not None:
+                row.concurrency = int(body.concurrency)
+            if body.mock_config is not None:
+                row.mock_config = json.dumps(
+                    {nid: cfg.model_dump() for nid, cfg in body.mock_config.items()},
+                    ensure_ascii=False,
+                    default=str,
+                )
+            if body.context_mapping is not None:
+                row.context_mapping = json.dumps(body.context_mapping, ensure_ascii=False, default=str)
+            s.flush()
+            return _serialize_test_plan(row)
+
+    @app.delete("/api/test-plans/{plan_id}")
+    def delete_test_plan(plan_id: int) -> dict[str, Any]:
+        with db_session() as s:
+            row = s.get(FeFlowTestPlan, plan_id)
+            if row is None or row.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+            row.deleted_at = datetime.now(timezone.utc)
+        return {"ok": True}
+
+    @app.post("/api/test-plans/{plan_id}/run")
+    async def run_test_plan(plan_id: int) -> dict[str, Any]:
+        """Run a test plan once, creating a new test batch (Run)."""
+        with db_session() as s:
+            plan = s.get(FeFlowTestPlan, plan_id)
+            if plan is None or plan.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+            plan_data = {
+                "id": int(plan.id),
+                "name": plan.name,
+                "flow_code": plan.flow_code,
+                "version_channel": plan.version_channel,
+                "test_ns_code": plan.test_ns_code,
+                "profile_code": plan.profile_code,
+                "concurrency": int(plan.concurrency),
+                "mock_config": json.loads(plan.mock_config or "{}"),
+                "context_mapping": json.loads(plan.context_mapping or "{}"),
+            }
+
+        res = await create_test_batch(
+            CreateTestBatchBody(
+                flow_code=plan_data["flow_code"],
+                ver_no=None,
+                version_channel=plan_data["version_channel"],
+                test_ns_code=plan_data["test_ns_code"],
+                profile_code=plan_data["profile_code"],
+                mock_config={k: MockConfig.model_validate(v) for k, v in (plan_data["mock_config"] or {}).items()},
+                context_mapping=plan_data["context_mapping"],
+                concurrency=int(plan_data["concurrency"]),
+            )
+        )
+
+        # Attach plan snapshot to the created batch for auditability.
+        batch_id = int(res["batch_id"])
+        await asyncio.to_thread(
+            test_runner.attach_plan_to_batch,
+            batch_id=batch_id,
+            plan_id=int(plan_id),
+            plan_snapshot={
+                "plan": plan_data,
+                "resolved": res.get("resolved") or {},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return res
+
+    @app.get("/api/test-plans/{plan_id}/batches")
+    def list_test_plan_batches(
+        plan_id: int,
+        status: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        """List batches (runs) created from a given test plan."""
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with db_session() as s:
+            plan = s.get(FeFlowTestPlan, plan_id)
+            if plan is None or plan.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+
+            # Load all batch ids for stable per-plan sequence numbers.
+            seq_stmt = (
+                select(FeFlowTestBatchPlan, FeFlowTestBatch)
+                .join(FeFlowTestBatch, FeFlowTestBatch.id == FeFlowTestBatchPlan.batch_id)
+                .where(FeFlowTestBatchPlan.deleted_at.is_(None))
+                .where(FeFlowTestBatch.deleted_at.is_(None))
+                .where(FeFlowTestBatchPlan.plan_id == plan_id)
+                .order_by(FeFlowTestBatch.id.asc())
+            )
+            seq_rows = list(s.execute(seq_stmt).all())
+            seq_map: dict[int, int] = {}
+            for i, (_link, _batch) in enumerate(seq_rows):
+                seq_map[int(_batch.id)] = i + 1
+
+            # Apply user-facing sort: newest first
+            rows = list(reversed(seq_rows))
+            if status:
+                rows = [rb for rb in rows if rb[1].status == status]
+            total = len(rows)
+            page = rows[offset : offset + limit]
+
+            def _elapsed_ms(b: FeFlowTestBatch) -> int | None:
+                if not b.started_at:
+                    return None
+                if not b.finished_at:
+                    return None
+                try:
+                    return int((b.finished_at - b.started_at).total_seconds() * 1000)
+                except Exception:  # noqa: BLE001
+                    return None
+
+            out = []
+            for link, batch in page:
+                # plan_snapshot is MEDIUMTEXT JSON
+                snapshot = {}
+                try:
+                    snapshot = json.loads(link.plan_snapshot or "{}")
+                except Exception:  # noqa: BLE001
+                    snapshot = {}
+                out.append(
+                    {
+                        "plan_batch_no": seq_map.get(int(batch.id), 0),
+                        "batch_id": int(batch.id),
+                        "status": batch.status,
+                        "flow_code": batch.flow_code,
+                        "resolved_ver_no": int(batch.ver_no),
+                        "test_ns_code": batch.test_ns_code,
+                        "profile_code": batch.profile_code,
+                        "total_runs": int(batch.total_runs),
+                        "completed_runs": int(batch.completed_runs),
+                        "error_runs": int(batch.error_runs),
+                        "started_at": batch.started_at.isoformat() if batch.started_at else None,
+                        "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+                        "elapsed_ms": _elapsed_ms(batch),
+                        "snapshot": {
+                            "created_at": snapshot.get("created_at"),
+                            "version_channel": (snapshot.get("plan") or {}).get("version_channel"),
+                        },
+                    }
+                )
+
+            return {"plan_id": int(plan_id), "total": total, "offset": offset, "limit": limit, "batches": out}
+
+    @app.post("/api/test-plans/{plan_id}/copy")
+    def copy_test_plan(plan_id: int, body: CopyTestPlanBody = Body(default_factory=CopyTestPlanBody)) -> dict[str, Any]:
+        """Copy a plan (new id) with the same config."""
+        with db_session() as s:
+            src = s.get(FeFlowTestPlan, plan_id)
+            if src is None or src.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="test plan not found")
+            new_name = (body.name or "").strip()
+            if not new_name:
+                new_name = f"{src.name} (copy)"
+            row = FeFlowTestPlan(
+                name=new_name,
+                flow_code=src.flow_code,
+                version_channel=src.version_channel,
+                test_ns_code=src.test_ns_code,
+                profile_code=src.profile_code,
+                concurrency=int(src.concurrency),
+                mock_config=src.mock_config,
+                context_mapping=src.context_mapping,
+            )
+            s.add(row)
+            s.flush()
+            return _serialize_test_plan(row)
+
     @app.post("/api/test-batches")
     async def create_test_batch(body: CreateTestBatchBody) -> dict[str, Any]:
         """Create a test batch and dispatch case execution in the background.
@@ -968,10 +1242,27 @@ def create_app() -> FastAPI:
             body.test_ns_code,
             body.profile_code,
         )
+        # Resolve flow body (latest/draft/vN) and ver_no for persistence.
+        try:
+            if body.ver_no is not None:
+                resolved_ver_no = int(body.ver_no)
+                flow_data = await asyncio.to_thread(
+                    test_runner._read_flow_version_body,  # noqa: SLF001
+                    body.flow_code,
+                    resolved_ver_no,
+                )
+            else:
+                channel = (body.version_channel or "latest").strip() or "latest"
+                resolved_ver_no, flow_data = registry.resolve_version_data(body.flow_code, channel)
+                # draft channel returns version_num=None; use 0 as a persistent sentinel.
+                resolved_ver_no = int(resolved_ver_no or 0)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Resolve flow version failed: {e}") from e
+
         batch_id = await asyncio.to_thread(
             test_runner._create_test_batch,  # noqa: SLF001
             flow_code=body.flow_code,
-            ver_no=body.ver_no,
+            ver_no=resolved_ver_no,
             test_ns_code=body.test_ns_code,
             profile_code=body.profile_code,
             mock_config=body.mock_config,
@@ -989,11 +1280,6 @@ def create_app() -> FastAPI:
         async def _drive() -> None:
             try:
                 sem = asyncio.Semaphore(max(1, body.concurrency))
-                flow_data = await asyncio.to_thread(
-                    test_runner._read_flow_version_body,  # noqa: SLF001
-                    body.flow_code,
-                    body.ver_no,
-                )
                 resolved = await asyncio.to_thread(data_dict.resolve, body.profile_code)
 
                 async def one(row: dict[str, Any]) -> None:
@@ -1001,12 +1287,13 @@ def create_app() -> FastAPI:
                         await test_runner._run_single_test_case(  # noqa: SLF001
                             batch_id=batch_id,
                             flow_code=body.flow_code,
-                            ver_no=body.ver_no,
+                            ver_no=resolved_ver_no,
                             profile_code=body.profile_code,
                             flow_data=flow_data,
                             dictionary=resolved["resolved_dictionary"],
                             mock_config=body.mock_config,
                             test_input=row,
+                            context_mapping=body.context_mapping,
                         )
 
                 await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
@@ -1023,7 +1310,18 @@ def create_app() -> FastAPI:
                 )
 
         asyncio.create_task(_drive())
-        return {"batch_id": batch_id, "status": "running", "total_runs": len(rows)}
+        return {
+            "batch_id": batch_id,
+            "status": "running",
+            "total_runs": len(rows),
+            "resolved": {
+                "flow_code": body.flow_code,
+                "version_channel": (body.version_channel or ("v" + str(body.ver_no or ""))).strip(),
+                "ver_no": resolved_ver_no,
+                "test_ns_code": body.test_ns_code,
+                "profile_code": body.profile_code,
+            },
+        }
 
     @app.get("/api/test-batches/{batch_id}")
     def get_test_batch(batch_id: int) -> dict[str, Any]:
@@ -1039,12 +1337,24 @@ def create_app() -> FastAPI:
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return runner_persistence.list_flow_runs(
+        page = runner_persistence.list_flow_runs(
             test_batch_id=batch_id,
             status=status,
             offset=offset,
             limit=limit,
         )
+        # Attach per-batch run numbers (stable, 1..N) for display.
+        runs = list(page.get("runs") or [])
+        try:
+            ordered = sorted(runs, key=lambda r: int(r.get("id") or 0))
+            seq = {int(r.get("id") or 0): i + 1 for i, r in enumerate(ordered) if r.get("id") is not None}
+            for r in runs:
+                rid = int(r.get("id") or 0)
+                r["batch_run_no"] = seq.get(rid, 0)
+        except Exception:  # noqa: BLE001
+            pass
+        page["runs"] = runs
+        return page
 
     @app.get("/api/test-batches/{batch_id}/runs/{run_id}")
     def get_test_batch_run(batch_id: int, run_id: int) -> dict[str, Any]:

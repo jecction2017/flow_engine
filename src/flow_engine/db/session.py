@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import threading
 from typing import Generator
 
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from flow_engine.db.config import get_database_url
 
 # 全局单例 Engine（懒初始化），避免每次 db_session() 重建连接池
 _engine: Engine | None = None
+_sqlite_lock = threading.RLock()
 
 
 def get_engine(*, echo: bool = False) -> Engine:
@@ -43,6 +45,17 @@ def db_session() -> Generator[Session, None, None]:
             row = s.get(FeFlow, flow_pk)
             s.add(FeFlow(flow_code="my-flow", ...))
     """
-    with Session(get_engine()) as session:
-        with session.begin():
-            yield session
+    engine = get_engine()
+    # SQLite (esp. :memory: + StaticPool in tests) is not safe for concurrent use across threads.
+    # Serialize access to avoid DBAPI misuse errors during asyncio.to_thread() calls.
+    lock = _sqlite_lock if engine.dialect.name == "sqlite" else None
+    if lock is None:
+        with Session(engine) as session:
+            with session.begin():
+                yield session
+        return
+
+    with lock:
+        with Session(engine) as session:
+            with session.begin():
+                yield session

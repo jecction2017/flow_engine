@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from flow_engine.db.models import FeFlowTestBatch, FeFlowVersion
+from flow_engine.db.models import FeFlowTestBatch, FeFlowTestBatchPlan, FeFlowTestPlan, FeFlowVersion
 from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.engine.loader import load_flow_from_dict
@@ -29,6 +29,55 @@ from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import profile_scope, store as profile_store
 
 logger = logging.getLogger(__name__)
+
+
+def apply_lookup_row_to_context(
+    row: dict[str, Any],
+    mapping: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Map a lookup row to a context fragment that will be merged into global_ns."""
+    if not mapping:
+        return dict(row)
+    mode = str(mapping.get("mode") or "spread")
+    if mode == "spread":
+        return dict(row)
+    if mode == "wrap":
+        key = str(mapping.get("wrap_key") or "input").strip() or "input"
+        wrap_as_list = bool(mapping.get("wrap_as_list"))
+        return {key: [dict(row)] if wrap_as_list else dict(row)}
+    if mode == "rules":
+        rules = mapping.get("rules") or []
+        if not isinstance(rules, list):
+            return dict(row)
+        out: dict[str, Any] = {}
+
+        def set_dotted(root: dict[str, Any], path: str, value: Any) -> None:
+            parts = [p.strip() for p in path.split(".") if p.strip()]
+            if not parts:
+                return
+            cur: dict[str, Any] = root
+            for p in parts[:-1]:
+                nxt = cur.get(p)
+                if nxt is None or not isinstance(nxt, dict):
+                    fresh: dict[str, Any] = {}
+                    cur[p] = fresh
+                    cur = fresh
+                else:
+                    cur = nxt
+            cur[parts[-1]] = value
+
+        for r in rules:
+            if not isinstance(r, dict):
+                continue
+            src = str(r.get("source") or "").strip()
+            tgt = str(r.get("target") or "").strip()
+            if not src or not tgt:
+                continue
+            if src not in row:
+                continue
+            set_dotted(out, tgt, row.get(src))
+        return out
+    return dict(row)
 
 
 def _read_flow_version_body(flow_code: str, ver_no: int) -> dict[str, Any]:
@@ -84,11 +133,12 @@ def _bump_test_batch_counter(batch_id: int, *, success: bool) -> None:
     """
     col = FeFlowTestBatch.completed_runs if success else FeFlowTestBatch.error_runs
     with db_session() as s:
-        s.execute(
+        res = s.execute(
             update(FeFlowTestBatch)
             .where(FeFlowTestBatch.id == batch_id)
             .values({col: col + 1})
         )
+        res.close()
 
 
 def _finalize_test_batch(batch_id: int, *, status: str) -> None:
@@ -187,6 +237,7 @@ async def _run_single_test_case(
     dictionary: dict[str, Any],
     mock_config: dict[str, MockConfig],
     test_input: dict[str, Any],
+    context_mapping: dict[str, Any] | None = None,
 ) -> bool:
     flow = load_flow_from_dict(copy.deepcopy(flow_data))
     run_opts = RunOptions(
@@ -195,7 +246,8 @@ async def _run_single_test_case(
         deployment_capability_policy=[],
     )
     runtime = FlowRuntime(flow, dictionary=dictionary, run_opts=run_opts)
-    runtime.ctx.global_ns.update(test_input)
+    mapped_ctx = apply_lookup_row_to_context(test_input, context_mapping)
+    runtime.ctx.global_ns.update(mapped_ctx)
 
     run_id = await asyncio.to_thread(
         persistence.create_flow_run,
@@ -205,7 +257,7 @@ async def _run_single_test_case(
         flow_code=flow_code,
         ver_no=ver_no,
         mode=RunMode.DEBUG,
-        trigger_context=test_input,
+        trigger_context={"row": test_input, "mapped": mapped_ctx},
     )
 
     success = False
@@ -231,6 +283,20 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
         row = s.get(FeFlowTestBatch, batch_id)
         if row is None or row.deleted_at is not None:
             return None
+        plan_link = (
+            s.execute(
+                select(FeFlowTestBatchPlan)
+                .where(FeFlowTestBatchPlan.batch_id == batch_id)
+                .where(FeFlowTestBatchPlan.deleted_at.is_(None))
+            )
+            .scalars()
+            .one_or_none()
+        )
+        plan_brief: dict[str, Any] | None = None
+        if plan_link is not None:
+            plan_row = s.get(FeFlowTestPlan, int(plan_link.plan_id))
+            if plan_row is not None and plan_row.deleted_at is None:
+                plan_brief = {"id": int(plan_row.id), "name": plan_row.name}
         return {
             "id": row.id,
             "flow_code": row.flow_code,
@@ -243,4 +309,32 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
             "error_runs": row.error_runs,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "plan": plan_brief,
         }
+
+
+def attach_plan_to_batch(
+    *,
+    batch_id: int,
+    plan_id: int,
+    plan_snapshot: dict[str, Any],
+) -> None:
+    snap = json.dumps(plan_snapshot, ensure_ascii=False, default=str)
+    with db_session() as s:
+        # Soft-delete any existing link (shouldn't happen, but keeps it idempotent).
+        res = s.execute(
+            select(FeFlowTestBatchPlan)
+            .where(FeFlowTestBatchPlan.batch_id == batch_id)
+            .where(FeFlowTestBatchPlan.deleted_at.is_(None))
+        )
+        old = res.scalars().first()
+        res.close()
+        if old is not None:
+            old.deleted_at = datetime.now(timezone.utc)
+        s.add(
+            FeFlowTestBatchPlan(
+                batch_id=int(batch_id),
+                plan_id=int(plan_id),
+                plan_snapshot=snap,
+            )
+        )

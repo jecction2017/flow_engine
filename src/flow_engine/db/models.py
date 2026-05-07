@@ -822,6 +822,11 @@ class FeFlowRun(_AuditCols, Base):
         nullable=True,
         comment="flow-level hook 日志 JSON",
     )
+    global_ns: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="运行结束时的 global_ns JSON（已去除 dictionary），用于测试/诊断输出",
+    )
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
@@ -916,6 +921,121 @@ class FeFlowTestBatch(_AuditCols, Base):
         nullable=False,
         server_default=text("0"),
         comment="失败运行数",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_flow_test_plan  测试方案（可独立维护，多次运行）
+# ---------------------------------------------------------------------------
+
+
+class FeFlowTestPlan(_AuditCols, Base):
+    """测试方案定义表（Plan）：
+
+    将「流程版本选择 + 测试集 + profile + 并发 + mock + 上下文映射」固化为可复用资源；
+    每次运行方案会生成一个独立的 fe_flow_test_batch（Run），并通过关联表记录快照。
+    """
+
+    __tablename__ = "fe_flow_test_plan"
+    __table_args__ = (
+        Index("idx_fe_flow_test_plan_flow_code", "flow_code"),
+        {**_FE_TABLE_OPTS, "comment": "测试方案定义表，可复用、多次运行"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        server_default=text("''"),
+        comment="方案名称（展示）",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="流程业务码",
+    )
+    # latest / draft / vN / N
+    version_channel: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text("'latest'"),
+        comment="版本选择通道：latest/draft/vN/N",
+    )
+    test_ns_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="测试集 lookup namespace 编码",
+    )
+    profile_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="运行 profile（数据字典/lookup 解析使用）",
+    )
+    concurrency: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("4"),
+        comment="并发度",
+    )
+    mock_config: Mapped[str] = mapped_column(
+        MEDIUMTEXT,
+        nullable=False,
+        comment="dict[node_id, MockConfig] JSON 序列化",
+    )
+    context_mapping: Mapped[str] = mapped_column(
+        MEDIUMTEXT,
+        nullable=False,
+        comment="lookup row → context 映射 JSON（dict）序列化",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_flow_test_batch_plan  批次与方案关联 + 快照
+# ---------------------------------------------------------------------------
+
+
+class FeFlowTestBatchPlan(_AuditCols, Base):
+    """批次与方案的绑定表（1 batch → 0/1 plan）。
+
+    - 兼容已有 fe_flow_test_batch 表结构（不改旧表字段）
+    - 为每次运行记录 plan 快照，保证“改方案不影响历史运行”
+    """
+
+    __tablename__ = "fe_flow_test_batch_plan"
+    __table_args__ = (
+        UniqueConstraint("batch_id", name="uk_fe_flow_test_batch_plan_batch_id"),
+        Index("idx_fe_flow_test_batch_plan_plan_id", "plan_id"),
+        {**_FE_TABLE_OPTS, "comment": "测试批次与测试方案关联表（含方案快照）"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    batch_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        comment="关联 fe_flow_test_batch.id",
+    )
+    plan_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        comment="关联 fe_flow_test_plan.id",
+    )
+    plan_snapshot: Mapped[str] = mapped_column(
+        MEDIUMTEXT,
+        nullable=False,
+        comment="运行时刻的方案快照 JSON（含解析后的 ver_no 等）",
     )
 
 

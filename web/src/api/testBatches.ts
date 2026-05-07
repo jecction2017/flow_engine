@@ -31,12 +31,30 @@ export type MockConfig = {
   fault_params?: Record<string, unknown>;
 };
 
+export type ContextMapping =
+  | { mode: "spread" }
+  | { mode: "wrap"; wrap_key: string; wrap_as_list?: boolean }
+  | {
+      mode: "rules";
+      rules: Array<{
+        source: string;
+        target: string;
+      }>;
+    };
+
 export type CreateTestBatchBody = {
   flow_code: string;
-  ver_no: number;
+  /**
+   * 版本选择：
+   * - 兼容旧接口：直接用 ver_no（必须 >=1）
+   * - 新接口：用 version_channel（latest/draft/vN/N）
+   */
+  ver_no?: number;
+  version_channel?: string;
   test_ns_code: string;
   profile_code: string;
   mock_config?: Record<string, MockConfig>;
+  context_mapping?: ContextMapping;
   concurrency?: number;
 };
 

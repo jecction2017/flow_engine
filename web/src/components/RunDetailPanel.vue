@@ -193,6 +193,13 @@
       </div>
       <pre class="ctx mono">{{ triggerCtxText }}</pre>
     </section>
+
+    <section v-if="(detail as any).global_ns" class="rd-section">
+      <div class="rd-section-head">
+        <span>全局上下文（global_ns）</span>
+      </div>
+      <pre class="ctx mono">{{ globalNsText }}</pre>
+    </section>
   </div>
 </template>
 
@@ -406,6 +413,11 @@ const elapsedText = computed(() => {
 const triggerCtxText = computed(() =>
   props.detail.trigger_context ? JSON.stringify(props.detail.trigger_context, null, 2) : "",
 );
+
+const globalNsText = computed(() => {
+  const v = (props.detail as any).global_ns;
+  return v ? JSON.stringify(v, null, 2) : "";
+});
 
 function rowTitle(row: NodeRunInfo): string {
   const parts = [`#${row.order + 1} ${row.node_id}`, `状态: ${row.final_state}`];

@@ -6,107 +6,368 @@
         <div class="subtitle">基于 lookup namespace 驱动的批量回归测试</div>
       </div>
       <div class="head-actions">
-        <button type="button" class="btn ghost" @click="newBatch">+ 新建批次</button>
+        <button type="button" class="btn ghost" @click="newPlan">+ 新建方案</button>
+        <div ref="moreWrap" class="menu-wrap" @keydown.esc="closeMoreMenu">
+          <button type="button" class="btn ghost" @click="moreOpen = !moreOpen">更多</button>
+          <div v-if="moreOpen" class="menu">
+            <button type="button" class="menu-item" @click="closeMoreMenu(); newBatch()">临时运行（创建批次）</button>
+          </div>
+        </div>
       </div>
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
 
     <div class="layout">
-      <!-- 左侧：批次列表 -->
+      <!-- 左侧：方案 & 批次列表 -->
       <aside class="sidebar">
         <div class="side-head">
-          <span class="side-title">最近批次</span>
-          <button type="button" class="btn ghost small" @click="refreshBatches">刷新</button>
+          <span class="side-title">测试方案</span>
         </div>
-        <div class="open-by-id">
-          <input v-model.number="openByIdInput" type="number" min="1" class="inp mono" placeholder="batch_id" />
-          <button type="button" class="btn small" :disabled="!openByIdInput" @click="openById">打开</button>
-        </div>
-        <ul v-if="batches.length" class="batch-list">
+
+        <ul v-if="plans.length" class="batch-list">
           <li
-            v-for="b in batches"
-            :key="b.id"
-            :class="{ active: selectedBatchId === b.id }"
-            @click="selectBatch(b.id)"
+            v-for="p in plans"
+            :key="p.id"
+            :class="{ active: selectedPlanId === p.id }"
+            @click="selectPlan(p.id)"
           >
             <div class="batch-row1">
-              <span class="batch-id mono">#{{ b.id }}</span>
-              <span class="tag" :class="batchStatusTag(b.status)">{{ b.status }}</span>
+              <span class="batch-id mono">#P{{ p.id }}</span>
+              <span class="spacer" />
+              <div class="plan-menu-wrap" @click.stop>
+                <button type="button" class="btn ghost small" @click="togglePlanMenu(p.id)">…</button>
+                <div v-if="openPlanMenuId === p.id" class="menu">
+                  <button type="button" class="menu-item" @click="onCopyPlanFromList(p.id)">复制</button>
+                  <button type="button" class="menu-item danger" @click="onDeletePlanFromList(p.id)">删除</button>
+                </div>
+              </div>
             </div>
-            <div class="batch-row2 mono">{{ b.flow_code }} · v{{ b.ver_no }}</div>
+            <div class="batch-row2 mono">{{ p.name }}</div>
             <div class="batch-row3">
-              <span class="muted small">{{ b.completed_runs }}/{{ b.total_runs }} 完成</span>
-              <span v-if="b.error_runs" class="muted small bad">· {{ b.error_runs }} 失败</span>
+              <span class="muted small mono">{{ p.flow_code }} · {{ p.version_channel }}</span>
             </div>
           </li>
         </ul>
-        <div v-else class="muted small pad center">暂无批次记录</div>
+        <div v-else class="muted small pad center">暂无方案（建议先创建方案）</div>
       </aside>
 
       <!-- 右侧：详情或表单 -->
       <main class="main">
-        <!-- 新建批次表单 -->
-        <section v-if="mode === 'create'" class="panel">
+        <!-- 方案详情 -->
+        <section v-if="mode === 'list' && selectedPlanDetail && selectedBatchId == null" class="panel">
           <header class="panel-head">
-            <span class="panel-title">新建批次</span>
-            <span class="muted small">每行 lookup 数据 → 一次 RunMode.DEBUG 流程运行</span>
+            <div>
+              <div class="panel-title">
+                <span class="mono">#P{{ selectedPlanDetail.id }}</span>
+                · {{ selectedPlanDetail.name }}
+              </div>
+              <div class="muted small">
+                <span class="mono">{{ selectedPlanDetail.flow_code }}</span>
+                · <span class="mono">{{ selectedPlanDetail.version_channel }}</span>
+                · test_ns: <span class="mono">{{ selectedPlanDetail.test_ns_code }}</span>
+                · profile: <span class="mono">{{ selectedPlanDetail.profile_code }}</span>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button type="button" class="btn ghost small" @click="refreshSelectedPlan">刷新</button>
+              <button type="button" class="btn primary" @click="runSelectedPlan">运行方案</button>
+              <button
+                v-if="planTab === 'config'"
+                type="button"
+                class="btn primary"
+                :disabled="creating"
+                @click="submitPlan"
+              >
+                {{ creating ? "保存中…" : "保存配置" }}
+              </button>
+            </div>
+          </header>
+
+          <div class="tabs">
+            <button type="button" class="tab" :class="{ active: planTab === 'config' }" @click="planTab = 'config'">
+              Config
+            </button>
+            <button type="button" class="tab" :class="{ active: planTab === 'runs' }" @click="planTab = 'runs'">
+              Runs
+            </button>
+          </div>
+
+          <div v-if="planTab === 'config'" class="config-wrap">
+            <div class="form-grid">
+              <label class="field full">
+                <span>name <em class="req">*</em></span>
+                <input v-model="planForm.name" class="inp" />
+              </label>
+              <label class="field">
+                <span>flow_code <em class="req">*</em></span>
+                <select v-model="planForm.flow_code" class="inp" disabled>
+                  <option :value="planForm.flow_code">{{ flowLabelById(planForm.flow_code) }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>version_channel <em class="req">*</em></span>
+                <select v-model="planForm.version_channel" class="inp" :disabled="!planForm.flow_code">
+                  <option value="latest">latest</option>
+                  <option value="draft">draft</option>
+                  <option v-for="v in versionOptions" :key="v.version" :value="`v${v.version}`">
+                    v{{ v.version }}{{ v.description ? ` · ${v.description}` : "" }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span>test_ns_code <em class="req">*</em></span>
+                <select v-model="planForm.test_ns_code" class="inp">
+                  <option value="">选择测试 lookup namespace</option>
+                  <option v-for="ns in lookupNamespaces" :key="ns" :value="ns">{{ ns }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>profile_code <em class="req">*</em></span>
+                <select v-model="planForm.profile_code" class="inp">
+                  <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>concurrency · {{ planForm.concurrency }}</span>
+                <input v-model.number="planForm.concurrency" type="range" min="1" max="64" step="1" />
+              </label>
+            </div>
+            <details class="advanced" open>
+              <summary>mock_config（方案级，可复用）</summary>
+              <div class="mock-list">
+                <div v-for="(item, idx) in mockEntries" :key="idx" class="mock-card">
+                  <div class="mock-card-head">
+                    <select
+                      v-model="item.nodeId"
+                      class="inp"
+                      style="flex: 1; min-width: 0"
+                      :disabled="mockNodesLoading"
+                    >
+                      <option value="">{{ mockNodesLoading ? "加载节点…" : "选择节点…" }}</option>
+                      <option v-for="opt in mockNodeSelectOptions" :key="opt.id" :value="opt.id">
+                        {{ opt.label }}
+                      </option>
+                    </select>
+                    <select v-model="item.cfg.mode" class="inp" @change="resetCfg(item)">
+                      <option value="script">script</option>
+                      <option value="fixed">fixed</option>
+                      <option value="record_replay">record_replay</option>
+                      <option value="fault">fault</option>
+                    </select>
+                    <InfoTip :text="mockModeInfoText(item.cfg.mode)" wide align-end />
+                    <button type="button" class="btn small danger" @click="removeMockEntry(idx)">移除</button>
+                  </div>
+                  <textarea
+                    v-if="item.cfg.mode === 'script'"
+                    v-model="item.scriptText"
+                    class="ta mono"
+                    rows="4"
+                    placeholder="Starlark script returning the mock result"
+                    spellcheck="false"
+                  />
+                  <textarea
+                    v-else-if="item.cfg.mode === 'fixed'"
+                    v-model="item.resultText"
+                    class="ta mono"
+                    rows="4"
+                    placeholder='{"output": "..."}'
+                    spellcheck="false"
+                  />
+                  <div v-else-if="item.cfg.mode === 'record_replay'" class="rr-grid">
+                    <label class="field">
+                      <span>lookup_ns <em class="req">*</em></span>
+                      <input v-model="item.cfg.lookup_ns" class="inp mono" placeholder="ns_code" />
+                    </label>
+                    <label class="field">
+                      <span>profile_code</span>
+                      <input v-model="item.cfg.profile_code" class="inp mono" />
+                    </label>
+                    <label class="field full">
+                      <span>key_expr</span>
+                      <input v-model="item.cfg.key_expr" class="inp mono" placeholder="ctx.input.id" />
+                    </label>
+                    <label class="check">
+                      <input v-model="item.cfg.record_on_miss" type="checkbox" />
+                      <span>未命中时录制</span>
+                    </label>
+                  </div>
+                  <div v-else class="rr-grid">
+                    <label class="field">
+                      <span>fault_type <em class="req">*</em></span>
+                      <select v-model="item.cfg.fault_type" class="inp">
+                        <option value="timeout">timeout</option>
+                        <option value="exception">exception</option>
+                        <option value="dirty_data">dirty_data</option>
+                      </select>
+                    </label>
+                    <label class="field full">
+                      <span>fault_params (JSON)</span>
+                      <textarea v-model="item.faultParamsText" class="ta mono" rows="3" spellcheck="false" />
+                    </label>
+                  </div>
+                </div>
+                <button type="button" class="btn small ghost" @click="addMockEntry">+ 添加节点 mock</button>
+              </div>
+            </details>
+
+            <details class="advanced">
+              <summary>上下文映射（方案级）</summary>
+              <div class="rr-grid" style="margin-top:8px;">
+                <label class="field">
+                  <span>mode</span>
+                  <select v-model="(contextMapping as any).mode" class="inp">
+                    <option value="spread">spread（按列展开）</option>
+                    <option value="wrap">wrap（包一层 key）</option>
+                    <option value="rules">rules（字段映射）</option>
+                  </select>
+                </label>
+                <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
+                  <span>wrap_key</span>
+                  <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
+                </label>
+                <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
+                  <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
+                  <span>wrap 为数组（生成 {key:[row]}）</span>
+                </label>
+                <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
+                  <span>rules (JSON)</span>
+                  <textarea
+                    class="ta mono"
+                    rows="4"
+                    spellcheck="false"
+                    :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
+                    @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
+                    placeholder='[{\"source\":\"id\",\"target\":\"alarmsId\"}]'
+                  />
+                </label>
+              </div>
+            </details>
+          </div>
+
+          <div v-else>
+            <div class="run-toolbar">
+              <label class="ctl">
+                <span>状态</span>
+                <select v-model="planBatchStatusFilter" class="inp" @change="loadPlanBatches">
+                  <option value="">全部</option>
+                  <option value="running">running</option>
+                  <option value="completed">completed</option>
+                  <option value="failed">failed</option>
+                </select>
+              </label>
+              <span class="spacer" />
+              <button type="button" class="btn ghost small" @click="loadPlanBatches">刷新</button>
+              <span class="muted small">共 {{ planBatches?.total ?? 0 }} 条</span>
+            </div>
+
+            <table class="grid-table">
+              <thead>
+                <tr>
+                  <th style="width:90px">batch_id</th>
+                  <th style="width:110px">状态</th>
+                  <th style="width:160px">started_at</th>
+                  <th style="width:110px">耗时</th>
+                  <th style="width:160px">resolved_ver</th>
+                  <th>进度</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="loadingPlanBatches"><td colspan="6" class="muted center">加载中…</td></tr>
+                <tr v-else-if="!planBatches || planBatches.batches.length === 0">
+                  <td colspan="6" class="muted center">暂无运行记录</td>
+                </tr>
+                <tr
+                  v-for="b in planBatches?.batches ?? []"
+                  :key="b.batch_id"
+                  @click="selectBatch(b.batch_id)"
+                >
+                  <td class="mono">#{{ b.plan_batch_no || 0 }}</td>
+                  <td><span class="tag" :class="batchStatusTag(b.status)">{{ b.status }}</span></td>
+                  <td class="mono small">{{ formatTs(b.started_at) }}</td>
+                  <td class="mono small">{{ b.elapsed_ms != null ? `${b.elapsed_ms}ms` : "—" }}</td>
+                  <td class="mono small">v{{ b.resolved_ver_no }}</td>
+                  <td class="mono small">{{ b.completed_runs }}/{{ b.total_runs }} <span v-if="b.error_runs" class="bad">· {{ b.error_runs }} failed</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </section>
+
+        <!-- 新建方案表单 -->
+        <section v-if="mode === 'plan_create' || mode === 'plan_edit'" class="panel">
+          <header class="panel-head">
+            <span class="panel-title">{{ mode === 'plan_create' ? "新建方案" : "编辑方案" }}</span>
+            <span class="muted small">方案可复用、多次运行；运行会生成独立批次</span>
           </header>
           <div class="form-grid">
+            <label class="field full">
+              <span>name <em class="req">*</em></span>
+              <input v-model="planForm.name" class="inp" placeholder="例如：回归-支付链路-主流程" />
+            </label>
             <label class="field">
               <span>flow_code <em class="req">*</em></span>
-              <select v-model="form.flow_code" class="inp" @change="onFlowChange">
+              <select v-model="planForm.flow_code" class="inp" @change="onPlanFlowChange">
                 <option value="">选择流程</option>
                 <option v-for="f in flowOptions" :key="f.id" :value="f.id">
-                  {{ f.id }}{{ f.display_name ? ` · ${f.display_name}` : "" }}
+                  {{ flowPickerLabel(f) }}
                 </option>
               </select>
             </label>
             <label class="field">
-              <span>ver_no <em class="req">*</em></span>
-              <select v-model.number="form.ver_no" class="inp" :disabled="!form.flow_code">
-                <option :value="0">选择版本</option>
-                <option v-for="v in versionOptions" :key="v.version" :value="v.version">
-                  v{{ v.version }}{{ v.description ? ` · ${v.description}` : "" }}
+              <span>version_channel <em class="req">*</em></span>
+              <select v-model="planForm.version_channel" class="inp" :disabled="!planForm.flow_code">
+                <option value="latest">latest</option>
+                <option value="draft">draft</option>
+                <option v-for="v in versionOptions" :key="v.version" :value="`v${v.version}`">
+                  v{{ v.version }}
                 </option>
               </select>
             </label>
             <label class="field">
               <span>test_ns_code <em class="req">*</em></span>
-              <select v-model="form.test_ns_code" class="inp">
+              <select v-model="planForm.test_ns_code" class="inp">
                 <option value="">选择测试 lookup namespace</option>
                 <option v-for="ns in lookupNamespaces" :key="ns" :value="ns">{{ ns }}</option>
               </select>
             </label>
             <label class="field">
               <span>profile_code <em class="req">*</em></span>
-              <select v-model="form.profile_code" class="inp">
+              <select v-model="planForm.profile_code" class="inp">
                 <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
               </select>
             </label>
             <label class="field">
-              <span>concurrency · {{ form.concurrency }}</span>
-              <input v-model.number="form.concurrency" type="range" min="1" max="64" step="1" />
+              <span>concurrency · {{ planForm.concurrency }}</span>
+              <input v-model.number="planForm.concurrency" type="range" min="1" max="64" step="1" />
             </label>
           </div>
 
-          <details class="advanced">
-            <summary>mock_config（节点级 Mock，按 node_id 配置）</summary>
+          <!-- 复用现有 mockEntries/contextMapping 编辑器（与批次一致） -->
+          <details class="advanced" open>
+            <summary>mock_config（方案级，可复用）</summary>
             <div class="mock-list">
               <div v-for="(item, idx) in mockEntries" :key="idx" class="mock-card">
                 <div class="mock-card-head">
-                  <input
+                  <select
                     v-model="item.nodeId"
-                    class="inp mono"
-                    placeholder="node_id"
-                    style="flex:1"
-                  />
+                    class="inp"
+                    style="flex: 1; min-width: 0"
+                    :disabled="mockNodesLoading"
+                  >
+                    <option value="">{{ mockNodesLoading ? "加载节点…" : "选择节点…" }}</option>
+                    <option v-for="opt in mockNodeSelectOptions" :key="opt.id" :value="opt.id">
+                      {{ opt.label }}
+                    </option>
+                  </select>
                   <select v-model="item.cfg.mode" class="inp" @change="resetCfg(item)">
                     <option value="script">script</option>
                     <option value="fixed">fixed</option>
                     <option value="record_replay">record_replay</option>
                     <option value="fault">fault</option>
                   </select>
+                  <InfoTip :text="mockModeInfoText(item.cfg.mode)" wide align-end />
                   <button type="button" class="btn small danger" @click="removeMockEntry(idx)">移除</button>
                 </div>
                 <textarea
@@ -162,6 +423,226 @@
             </div>
           </details>
 
+          <details class="advanced">
+            <summary>上下文映射（方案级）</summary>
+            <div class="rr-grid" style="margin-top:8px;">
+              <label class="field">
+                <span>mode</span>
+                <select v-model="(contextMapping as any).mode" class="inp">
+                  <option value="spread">spread（按列展开）</option>
+                  <option value="wrap">wrap（包一层 key）</option>
+                  <option value="rules">rules（字段映射）</option>
+                </select>
+              </label>
+              <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
+                <span>wrap_key</span>
+                <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
+              </label>
+              <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
+                <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
+                <span>wrap 为数组（生成 {key:[row]}）</span>
+              </label>
+              <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
+                <span>rules (JSON)</span>
+                <textarea
+                  class="ta mono"
+                  rows="4"
+                  spellcheck="false"
+                  :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
+                  @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
+                  placeholder='[{"source":"id","target":"alarmsId"}]'
+                />
+              </label>
+              <label class="field full">
+                <span>样例 row (JSON，用于预览)</span>
+                <textarea v-model="sampleRowText" class="ta mono" rows="4" spellcheck="false" />
+              </label>
+              <label class="field full">
+                <span>预览：映射后 context</span>
+                <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
+              </label>
+            </div>
+          </details>
+
+          <p v-if="formError" class="err">{{ formError }}</p>
+          <div class="form-actions">
+            <button type="button" class="btn ghost" @click="cancelCreate">取消</button>
+            <button type="button" class="btn primary" :disabled="creating" @click="submitPlan">
+              {{ creating ? "保存中…" : "保存方案" }}
+            </button>
+          </div>
+        </section>
+
+        <!-- 新建批次表单（临时运行） -->
+        <section v-if="mode === 'create'" class="panel">
+          <header class="panel-head">
+            <span class="panel-title">新建批次</span>
+            <span class="muted small">每行 lookup 数据 → 一次 RunMode.DEBUG 流程运行</span>
+          </header>
+          <div class="form-grid">
+            <label class="field">
+              <span>flow_code <em class="req">*</em></span>
+              <select v-model="form.flow_code" class="inp" @change="onFlowChange">
+                <option value="">选择流程</option>
+                <option v-for="f in flowOptions" :key="f.id" :value="f.id">
+                  {{ flowPickerLabel(f) }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span>ver_no <em class="req">*</em></span>
+              <select v-model.number="form.ver_no" class="inp" :disabled="!form.flow_code || form.use_draft">
+                <option :value="0">选择版本</option>
+                <option v-for="v in versionOptions" :key="v.version" :value="v.version">
+                  v{{ v.version }}{{ v.description ? ` · ${v.description}` : "" }}
+                </option>
+              </select>
+            </label>
+            <label class="check" style="align-self:end; margin-top:18px;">
+              <input v-model="form.use_draft" type="checkbox" :disabled="!form.flow_code" />
+              <span>使用草稿（draft）运行</span>
+            </label>
+            <label class="field">
+              <span>test_ns_code <em class="req">*</em></span>
+              <select v-model="form.test_ns_code" class="inp">
+                <option value="">选择测试 lookup namespace</option>
+                <option v-for="ns in lookupNamespaces" :key="ns" :value="ns">{{ ns }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>profile_code <em class="req">*</em></span>
+              <select v-model="form.profile_code" class="inp">
+                <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>concurrency · {{ form.concurrency }}</span>
+              <input v-model.number="form.concurrency" type="range" min="1" max="64" step="1" />
+            </label>
+          </div>
+
+          <details class="advanced">
+            <summary>mock_config（节点级 Mock，按 node_id 配置）</summary>
+            <div class="mock-list">
+              <div v-for="(item, idx) in mockEntries" :key="idx" class="mock-card">
+                <div class="mock-card-head">
+                  <select
+                    v-model="item.nodeId"
+                    class="inp"
+                    style="flex: 1; min-width: 0"
+                    :disabled="mockNodesLoading"
+                  >
+                    <option value="">{{ mockNodesLoading ? "加载节点…" : "选择节点…" }}</option>
+                    <option v-for="opt in mockNodeSelectOptions" :key="opt.id" :value="opt.id">
+                      {{ opt.label }}
+                    </option>
+                  </select>
+                  <select v-model="item.cfg.mode" class="inp" @change="resetCfg(item)">
+                    <option value="script">script</option>
+                    <option value="fixed">fixed</option>
+                    <option value="record_replay">record_replay</option>
+                    <option value="fault">fault</option>
+                  </select>
+                  <InfoTip :text="mockModeInfoText(item.cfg.mode)" wide align-end />
+                  <button type="button" class="btn small danger" @click="removeMockEntry(idx)">移除</button>
+                </div>
+                <textarea
+                  v-if="item.cfg.mode === 'script'"
+                  v-model="item.scriptText"
+                  class="ta mono"
+                  rows="4"
+                  placeholder="Starlark script returning the mock result"
+                  spellcheck="false"
+                />
+                <textarea
+                  v-else-if="item.cfg.mode === 'fixed'"
+                  v-model="item.resultText"
+                  class="ta mono"
+                  rows="4"
+                  placeholder='{"output": "..."}'
+                  spellcheck="false"
+                />
+                <div v-else-if="item.cfg.mode === 'record_replay'" class="rr-grid">
+                  <label class="field">
+                    <span>lookup_ns <em class="req">*</em></span>
+                    <input v-model="item.cfg.lookup_ns" class="inp mono" placeholder="ns_code" />
+                  </label>
+                  <label class="field">
+                    <span>profile_code</span>
+                    <input v-model="item.cfg.profile_code" class="inp mono" />
+                  </label>
+                  <label class="field full">
+                    <span>key_expr</span>
+                    <input v-model="item.cfg.key_expr" class="inp mono" placeholder="ctx.input.id" />
+                  </label>
+                  <label class="check">
+                    <input v-model="item.cfg.record_on_miss" type="checkbox" />
+                    <span>未命中时录制</span>
+                  </label>
+                </div>
+                <div v-else class="rr-grid">
+                  <label class="field">
+                    <span>fault_type <em class="req">*</em></span>
+                    <select v-model="item.cfg.fault_type" class="inp">
+                      <option value="timeout">timeout</option>
+                      <option value="exception">exception</option>
+                      <option value="dirty_data">dirty_data</option>
+                    </select>
+                  </label>
+                  <label class="field full">
+                    <span>fault_params (JSON)</span>
+                    <textarea v-model="item.faultParamsText" class="ta mono" rows="3" spellcheck="false" />
+                  </label>
+                </div>
+              </div>
+              <button type="button" class="btn small ghost" @click="addMockEntry">+ 添加节点 mock</button>
+            </div>
+          </details>
+
+          <details class="advanced">
+            <summary>上下文映射（lookup row → 流程 initial_context/global_ns）</summary>
+            <div class="rr-grid" style="margin-top:8px;">
+              <label class="field">
+                <span>mode</span>
+                <select v-model="(contextMapping as any).mode" class="inp">
+                  <option value="spread">spread（按列展开）</option>
+                  <option value="wrap">wrap（包一层 key）</option>
+                  <option value="rules">rules（字段映射）</option>
+                </select>
+              </label>
+
+              <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
+                <span>wrap_key</span>
+                <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
+              </label>
+              <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
+                <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
+                <span>wrap 为数组（生成 {key:[row]}）</span>
+              </label>
+
+              <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
+                <span>rules (JSON)</span>
+                <textarea
+                  class="ta mono"
+                  rows="4"
+                  spellcheck="false"
+                  :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
+                  @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
+                  placeholder='[{"source":"id","target":"alarmsId"}]'
+                />
+              </label>
+
+              <label class="field full">
+                <span>样例 row (JSON，用于预览)</span>
+                <textarea v-model="sampleRowText" class="ta mono" rows="4" spellcheck="false" />
+              </label>
+              <label class="field full">
+                <span>预览：映射后 context</span>
+                <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
+              </label>
+            </div>
+          </details>
+
           <p v-if="formError" class="err">{{ formError }}</p>
           <div class="form-actions">
             <button type="button" class="btn ghost" @click="cancelCreate">取消</button>
@@ -174,20 +655,43 @@
         <!-- 批次详情 -->
         <section v-else-if="selectedBatch" class="panel">
           <header class="panel-head">
-            <div>
-              <div class="panel-title">
-                <span class="mono">#{{ selectedBatch.id }}</span>
-                · {{ selectedBatch.flow_code }} v{{ selectedBatch.ver_no }}
-                <span class="tag" :class="batchStatusTag(selectedBatch.status)">{{ selectedBatch.status }}</span>
-              </div>
-              <div class="muted small">
-                test_ns: <span class="mono">{{ selectedBatch.test_ns_code }}</span>
-                · profile: <span class="mono">{{ selectedBatch.profile_code }}</span>
-                <span v-if="selectedBatch.started_at"> · 开始 {{ formatTs(selectedBatch.started_at) }}</span>
-                <span v-if="selectedBatch.finished_at"> · 结束 {{ formatTs(selectedBatch.finished_at) }}</span>
+            <div class="panel-head-main">
+              <button
+                v-if="selectedPlanDetail"
+                type="button"
+                class="btn ghost small icon-back"
+                title="返回 Runs"
+                aria-label="返回 Runs"
+                @click="backToPlanRuns"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                  <path
+                    d="M15 18l-6-6 6-6"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <div class="panel-head-text">
+                <div class="panel-title">
+                  <span class="mono">#{{ selectedBatch.id }}</span>
+                  · {{ selectedBatch.flow_code }} v{{ selectedBatch.ver_no }}
+                  <span class="tag" :class="batchStatusTag(selectedBatch.status)">{{ selectedBatch.status }}</span>
+                </div>
+                <div class="muted small">
+                  test_ns: <span class="mono">{{ selectedBatch.test_ns_code }}</span>
+                  · profile: <span class="mono">{{ selectedBatch.profile_code }}</span>
+                  <span v-if="(selectedBatch as any).plan"> · plan: <span class="mono">{{ (selectedBatch as any).plan?.name }}</span></span>
+                  <span v-if="selectedBatch.started_at"> · 开始 {{ formatTs(selectedBatch.started_at) }}</span>
+                  <span v-if="selectedBatch.finished_at"> · 结束 {{ formatTs(selectedBatch.finished_at) }}</span>
+                </div>
               </div>
             </div>
-            <button type="button" class="btn ghost small" @click="refreshSelected">刷新</button>
+            <div class="panel-head-actions">
+              <button type="button" class="btn ghost small" @click="refreshSelected">刷新</button>
+            </div>
           </header>
 
           <div class="progress">
@@ -257,8 +761,8 @@
         </section>
 
         <!-- 空状态 -->
-        <section v-else class="panel empty">
-          <p class="muted center pad">从左侧选择批次，或点击「新建批次」</p>
+        <section v-if="mode === 'list' && !selectedPlanDetail && !selectedBatch" class="panel empty">
+          <p class="muted center pad">从左侧选择方案并运行，或选择批次查看结果</p>
         </section>
       </main>
     </div>
@@ -266,7 +770,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   createTestBatch,
   getBatchRun,
@@ -280,12 +784,29 @@ import {
 } from "@/api/testBatches";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
 import { fetchFlowList, type FlowListItem } from "@/api/flows";
-import { fetchVersionList, type FlowVersionMeta } from "@/api/flowVersions";
+import { fetchDraft, fetchVersion, fetchVersionList, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
+import InfoTip from "@/components/InfoTip.vue";
 import RunDetailPanel from "@/components/RunDetailPanel.vue";
+import type { FlowDocument, FlowNode } from "@/types/flow";
+import { displayName as displayNodeName, nodeId as flowNodeLogicalId } from "@/types/flow";
+import { previewContextMapping } from "@/testCenter/mappingPreview";
+import {
+  createTestPlan,
+  copyTestPlan,
+  deleteTestPlan,
+  getTestPlan,
+  listTestPlans,
+  listTestPlanBatches,
+  patchTestPlan,
+  runTestPlan,
+  type TestPlanDetail,
+  type TestPlanSummary,
+  type TestPlanBatchItem,
+} from "@/api/testPlans";
 
-type Mode = "list" | "create";
+type Mode = "list" | "create" | "plan_create" | "plan_edit";
 type MockEntry = {
   nodeId: string;
   cfg: MockConfig;
@@ -320,13 +841,15 @@ const error = ref("");
 const mode = ref<Mode>("list");
 const batches = ref<TestBatchDetail[]>([]);
 const recentIds = ref<number[]>(loadRecentIds());
+const moreOpen = ref(false);
+const moreWrap = ref<HTMLElement | null>(null);
 
 const selectedBatchId = ref<number | null>(null);
 const selectedBatch = computed<TestBatchDetail | null>(() =>
   batches.value.find((b) => b.id === selectedBatchId.value) ?? null,
 );
 
-const openByIdInput = ref<number | null>(null);
+// 历史批次入口已下沉到方案 Runs 列表；不再提供左侧“按 batch_id 打开”。
 
 // ---------------- form state ----------------
 
@@ -335,22 +858,85 @@ const versionOptions = ref<FlowVersionMeta[]>([]);
 const profileOptions = ref<string[]>([]);
 const lookupNamespaces = ref<string[]>([]);
 
+// ---------------- plans state ----------------
+const plans = ref<TestPlanSummary[]>([]);
+const selectedPlanId = ref<number | null>(null);
+const selectedPlanDetail = ref<TestPlanDetail | null>(null);
+const planTab = ref<"runs" | "config">("config");
+const planBatches = ref<{ total: number; batches: TestPlanBatchItem[] } | null>(null);
+const loadingPlanBatches = ref(false);
+const planBatchStatusFilter = ref("");
+const openPlanMenuId = ref<number | null>(null);
+
+const planForm = reactive<{
+  id: number | null;
+  name: string;
+  flow_code: string;
+  version_channel: string;
+  test_ns_code: string;
+  profile_code: string;
+  concurrency: number;
+}>({
+  id: null,
+  name: "",
+  flow_code: "",
+  version_channel: "latest",
+  test_ns_code: "",
+  profile_code: "default",
+  concurrency: 4,
+});
+
 const form = reactive<{
   flow_code: string;
   ver_no: number;
   test_ns_code: string;
   profile_code: string;
   concurrency: number;
+  use_draft: boolean;
 }>({
   flow_code: "",
   ver_no: 0,
   test_ns_code: "",
   profile_code: "default",
   concurrency: 4,
+  use_draft: false,
 });
 const mockEntries = reactive<MockEntry[]>([]);
+/** 当前流程版本解析出的节点，用于 mock node 下拉；临时批次与方案表单共用。 */
+const mockNodeOptions = ref<Array<{ id: string; label: string }>>([]);
+const mockNodesLoading = ref(false);
 const creating = ref(false);
 const formError = ref("");
+
+const contextMapping = reactive<
+  | { mode: "spread" }
+  | { mode: "wrap"; wrap_key: string; wrap_as_list?: boolean }
+  | { mode: "rules"; rules: Array<{ source: string; target: string }> }
+>({ mode: "spread" });
+const sampleRowText = ref('{"id":"case_1"}');
+const mappedPreviewText = computed(() => {
+  try {
+    const row = JSON.parse(sampleRowText.value || "{}") as Record<string, unknown>;
+    const mapped = previewContextMapping(row, contextMapping as any);
+    return JSON.stringify(mapped, null, 2);
+  } catch (e) {
+    return `预览失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+});
+
+const mockNodeSelectOptions = computed(() => {
+  const base = mockNodeOptions.value;
+  const seen = new Set(base.map((x) => x.id));
+  const extra: { id: string; label: string }[] = [];
+  for (const item of mockEntries) {
+    const id = item.nodeId.trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      extra.push({ id, label: `${id}（未在当前版本图中）` });
+    }
+  }
+  return [...base, ...extra];
+});
 
 function emptyCfg(m: MockMode): MockConfig {
   if (m === "script") return { mode: "script", script: "" };
@@ -383,6 +969,119 @@ function resetCfg(entry: MockEntry) {
   if (entry.cfg.mode === "script") entry.scriptText = "";
   if (entry.cfg.mode === "fixed") entry.resultText = "{}";
   if (entry.cfg.mode === "fault") entry.faultParamsText = "{}";
+}
+
+function walkFlowNodes(nodes: FlowNode[] | undefined, out: FlowNode[]) {
+  if (!nodes?.length) return;
+  for (const n of nodes) {
+    out.push(n);
+    if (n.type === "loop" || n.type === "subflow") walkFlowNodes(n.children, out);
+  }
+}
+
+function nodeChoicesFromDoc(doc: FlowDocument | null | undefined): Array<{ id: string; label: string }> {
+  if (!doc?.nodes?.length) return [];
+  const flat: FlowNode[] = [];
+  walkFlowNodes(doc.nodes, flat);
+  return flat
+    .map((n) => ({ id: flowNodeLogicalId(n), label: displayNodeName(n) }))
+    .filter((x) => x.id);
+}
+
+async function resolvePlanFlowDocument(flowId: string, versionChannel: string): Promise<FlowDocument | null> {
+  const ch = (versionChannel || "latest").trim();
+  try {
+    if (ch === "draft") {
+      try {
+        return (await fetchDraft(flowId)) as FlowDocument;
+      } catch {
+        const vl = await fetchVersionList(flowId);
+        if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
+        return null;
+      }
+    }
+    if (ch === "latest") {
+      const vl = await fetchVersionList(flowId);
+      if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
+      if (vl.has_draft) return (await fetchDraft(flowId)) as FlowDocument;
+      return null;
+    }
+    const m = /^v?(\d+)$/.exec(ch);
+    if (m) return (await fetchVersion(flowId, parseInt(m[1], 10))) as FlowDocument;
+    const vl = await fetchVersionList(flowId);
+    if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldLoadPlanMockNodes(): boolean {
+  if (mode.value === "plan_create" || mode.value === "plan_edit") return !!planForm.flow_code.trim();
+  if (mode.value === "list" && selectedPlanDetail.value && planTab.value === "config") {
+    return !!planForm.flow_code.trim();
+  }
+  return false;
+}
+
+async function loadMockNodeOptionsForPlan() {
+  mockNodeOptions.value = [];
+  const fc = planForm.flow_code.trim();
+  if (!fc) return;
+  mockNodesLoading.value = true;
+  try {
+    const doc = await resolvePlanFlowDocument(fc, planForm.version_channel);
+    mockNodeOptions.value = nodeChoicesFromDoc(doc);
+  } finally {
+    mockNodesLoading.value = false;
+  }
+}
+
+async function loadMockNodeOptionsForBatch() {
+  mockNodeOptions.value = [];
+  const fc = form.flow_code.trim();
+  if (!fc) return;
+  mockNodesLoading.value = true;
+  try {
+    let doc: FlowDocument | null = null;
+    if (form.use_draft) {
+      try {
+        doc = (await fetchDraft(fc)) as FlowDocument;
+      } catch {
+        const vl = await fetchVersionList(fc);
+        if (vl.latest_version > 0) doc = (await fetchVersion(fc, vl.latest_version)) as FlowDocument;
+      }
+    } else if (form.ver_no > 0) {
+      doc = (await fetchVersion(fc, form.ver_no)) as FlowDocument;
+    }
+    mockNodeOptions.value = nodeChoicesFromDoc(doc);
+  } finally {
+    mockNodesLoading.value = false;
+  }
+}
+
+function flowPickerLabel(f: FlowListItem): string {
+  const n = (f.display_name || "").trim();
+  return n || f.id;
+}
+
+function flowLabelById(flowId: string): string {
+  if (!flowId) return "";
+  const hit = flowOptions.value.find((x) => x.id === flowId);
+  return hit ? flowPickerLabel(hit) : flowId;
+}
+
+function mockModeInfoText(m: MockMode): string {
+  if (m === "script") {
+    return "script：用 Starlark 在节点执行前计算返回值（字典），可读 ctx 等运行时对象。适合按上下文拼装结果或轻量分支。例：根据 ctx.input.type 返回不同 output。";
+  }
+  if (m === "fixed") {
+    return 'fixed：直接把 JSON 当作节点输出，不执行脚本。适合稳定桩数据、对照基线。例：{"ok":true,"data":{"id":1}}。';
+  }
+  if (m === "record_replay") {
+    return "record_replay：按 key_expr 在 lookup 命名空间录制/回放上下游结果，首次未命中可写入。适合依赖外部系统时的可重复回归。需配置 lookup_ns，profile 建议与运行环境一致。";
+  }
+  return "fault：故障注入（timeout / exception / dirty_data），用于验证重试、超时与错误路径。可在 fault_params 中配置延时、异常文案、脏数据形状等。";
 }
 
 // ---------------- batch runs state ----------------
@@ -422,42 +1121,211 @@ function stopPolling() {
 
 onUnmounted(stopPolling);
 
-// ---------------- actions ----------------
-
-async function refreshBatches() {
-  error.value = "";
-  const ids = [...recentIds.value];
-  const out: TestBatchDetail[] = [];
-  const stillExisting: number[] = [];
-  for (const id of ids) {
-    try {
-      const b = await getTestBatch(id);
-      out.push(b);
-      stillExisting.push(id);
-    } catch {
-      // batch may have been deleted; drop from recent list
-    }
-  }
-  batches.value = out;
-  recentIds.value = stillExisting;
-  saveRecentIds(stillExisting);
+function closeMoreMenu() {
+  moreOpen.value = false;
 }
 
-async function openById() {
-  if (!openByIdInput.value) return;
-  const id = Number(openByIdInput.value);
-  try {
-    const b = await getTestBatch(id);
-    if (!batches.value.some((x) => x.id === id)) {
-      batches.value.unshift(b);
-      recentIds.value = [id, ...recentIds.value.filter((x) => x !== id)];
-      saveRecentIds(recentIds.value);
+function onDocPointerDown(e: MouseEvent) {
+  const t = e.target as Node | null;
+  if (!t) return;
+
+  // top "more" menu
+  if (moreOpen.value) {
+    const root = moreWrap.value;
+    if (root && !root.contains(t)) closeMoreMenu();
+  }
+
+  // per-plan menu
+  if (openPlanMenuId.value != null) {
+    const el = t instanceof Element ? t : null;
+    if (!el || !el.closest(".plan-menu-wrap")) {
+      openPlanMenuId.value = null;
     }
-    selectBatch(id);
-    openByIdInput.value = null;
+  }
+}
+
+watch(
+  () =>
+    [
+      mode.value,
+      planTab.value,
+      selectedPlanDetail.value?.id,
+      planForm.flow_code,
+      planForm.version_channel,
+    ] as const,
+  () => {
+    if (!shouldLoadPlanMockNodes()) return;
+    void loadMockNodeOptionsForPlan();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [mode.value, form.flow_code, form.ver_no, form.use_draft] as const,
+  () => {
+    if (mode.value !== "create") return;
+    void loadMockNodeOptionsForBatch();
+  },
+  { immediate: true },
+);
+
+onMounted(() => {
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
+});
+
+// ---------------- actions ----------------
+
+async function refreshPlans() {
+  try {
+    const r = await listTestPlans();
+    plans.value = r.plans;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+async function selectPlan(planId: number) {
+  // If we're currently viewing a batch detail, exit that mode first so
+  // switching plans always updates the right-side workspace.
+  selectedBatchId.value = null;
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
+  stopPolling();
+
+  // If we're in any creation/editing mode, switch back to list/detail mode.
+  mode.value = "list";
+
+  selectedPlanId.value = planId;
+  try {
+    // Load select options for Config tab editor.
+    if (profileOptions.value.length === 0) {
+      try {
+        const r = await fetchProfileConfig();
+        profileOptions.value = r.profiles.length ? r.profiles : ["default"];
+      } catch {
+        profileOptions.value = ["default"];
+      }
+    }
+    if (lookupNamespaces.value.length === 0) {
+      try {
+        const r = await fetchLookupList();
+        lookupNamespaces.value = r.namespaces;
+      } catch {
+        // ignore
+      }
+    }
+    if (flowOptions.value.length === 0) {
+      try {
+        const r = await fetchFlowList();
+        flowOptions.value = r.flows;
+      } catch {
+        // ignore — flowLabelById 将回落为 flow_code
+      }
+    }
+
+    selectedPlanDetail.value = await getTestPlan(planId);
+    // Load version list for this flow so version_channel select is populated.
+    try {
+      const vr = await fetchVersionList(selectedPlanDetail.value.flow_code);
+      versionOptions.value = vr.versions;
+    } catch {
+      versionOptions.value = [];
+    }
+    planTab.value = "config";
+    await loadPlanBatches();
+    // hydrate editable editors
+    loadPlanEditorsFromDetail(selectedPlanDetail.value);
+    // 填充编辑表单（但不自动进入编辑模式）
+    planForm.id = selectedPlanDetail.value.id;
+    planForm.name = selectedPlanDetail.value.name;
+    planForm.flow_code = selectedPlanDetail.value.flow_code;
+    planForm.version_channel = selectedPlanDetail.value.version_channel;
+    planForm.test_ns_code = selectedPlanDetail.value.test_ns_code;
+    planForm.profile_code = selectedPlanDetail.value.profile_code;
+    planForm.concurrency = selectedPlanDetail.value.concurrency;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+function togglePlanMenu(planId: number) {
+  openPlanMenuId.value = openPlanMenuId.value === planId ? null : planId;
+}
+
+async function onCopyPlanFromList(planId: number) {
+  openPlanMenuId.value = null;
+  try {
+    const created = await copyTestPlan(planId);
+    await refreshPlans();
+    await selectPlan(created.id);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function onDeletePlanFromList(planId: number) {
+  openPlanMenuId.value = null;
+  const ok = window.confirm("确认删除该测试方案吗？（将被归档/软删）");
+  if (!ok) return;
+  try {
+    await deleteTestPlan(planId);
+    if (selectedPlanId.value === planId) {
+      selectedPlanId.value = null;
+      selectedPlanDetail.value = null;
+    }
+    await refreshPlans();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function refreshSelectedPlan() {
+  if (selectedPlanId.value == null) return;
+  await selectPlan(selectedPlanId.value);
+}
+
+async function loadPlanBatches() {
+  if (selectedPlanId.value == null) return;
+  loadingPlanBatches.value = true;
+  try {
+    const r = await listTestPlanBatches(selectedPlanId.value, {
+      status: planBatchStatusFilter.value || undefined,
+      offset: 0,
+      limit: 50,
+    });
+    planBatches.value = { total: r.total, batches: r.batches };
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingPlanBatches.value = false;
+  }
+}
+
+function loadPlanEditorsFromDetail(detail: TestPlanDetail) {
+  // mockEntries
+  mockEntries.splice(0, mockEntries.length);
+  for (const [nodeId, cfg] of Object.entries(detail.mock_config || {})) {
+    const mode = cfg.mode;
+    const entry: any = {
+      nodeId,
+      cfg: { ...cfg },
+      scriptText: "",
+      resultText: "{}",
+      faultParamsText: "{}",
+    };
+    if (mode === "script") entry.scriptText = cfg.script ?? "";
+    if (mode === "fixed") entry.resultText = JSON.stringify(cfg.result ?? {}, null, 2);
+    if (mode === "fault") entry.faultParamsText = JSON.stringify(cfg.fault_params ?? {}, null, 2);
+    mockEntries.push(entry);
+  }
+  // contextMapping
+  const cm: any = detail.context_mapping || { mode: "spread" };
+  for (const k of Object.keys(contextMapping as any)) delete (contextMapping as any)[k];
+  Object.assign(contextMapping as any, cm);
 }
 
 async function selectBatch(id: number) {
@@ -472,6 +1340,14 @@ async function selectBatch(id: number) {
   } else {
     stopPolling();
   }
+}
+
+function backToPlanRuns() {
+  selectedBatchId.value = null;
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
+  stopPolling();
+  void loadPlanBatches();
 }
 
 async function refreshSelected() {
@@ -515,6 +1391,8 @@ async function selectRun(runId: number) {
 async function newBatch() {
   mode.value = "create";
   selectedBatchId.value = null;
+  selectedPlanId.value = null;
+  selectedPlanDetail.value = null;
   stopPolling();
   formError.value = "";
   if (flowOptions.value.length === 0) {
@@ -544,6 +1422,50 @@ async function newBatch() {
   }
 }
 
+async function newPlan() {
+  mode.value = "plan_create";
+  selectedBatchId.value = null;
+  selectedPlanId.value = null;
+  selectedPlanDetail.value = null;
+  stopPolling();
+  formError.value = "";
+  // 初始化 options（复用 newBatch 的加载逻辑）
+  if (flowOptions.value.length === 0) {
+    try {
+      const r = await fetchFlowList();
+      flowOptions.value = r.flows;
+    } catch (e) {
+      formError.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+  if (profileOptions.value.length === 0) {
+    try {
+      const r = await fetchProfileConfig();
+      profileOptions.value = r.profiles.length ? r.profiles : ["default"];
+    } catch {
+      profileOptions.value = ["default"];
+    }
+  }
+  if (lookupNamespaces.value.length === 0) {
+    try {
+      const r = await fetchLookupList();
+      lookupNamespaces.value = r.namespaces;
+    } catch {
+      // ignore
+    }
+  }
+  // reset form
+  planForm.id = null;
+  planForm.name = "";
+  planForm.flow_code = "";
+  planForm.version_channel = "latest";
+  planForm.test_ns_code = "";
+  planForm.profile_code = profileOptions.value[0] || "default";
+  planForm.concurrency = 4;
+  mockEntries.splice(0, mockEntries.length);
+  (contextMapping as any).mode = "spread";
+}
+
 function cancelCreate() {
   mode.value = "list";
 }
@@ -551,6 +1473,7 @@ function cancelCreate() {
 async function onFlowChange() {
   versionOptions.value = [];
   form.ver_no = 0;
+  form.use_draft = false;
   if (!form.flow_code) return;
   try {
     const r = await fetchVersionList(form.flow_code);
@@ -558,6 +1481,72 @@ async function onFlowChange() {
     if (r.versions.length > 0) form.ver_no = r.versions[0].version;
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function onPlanFlowChange() {
+  versionOptions.value = [];
+  if (!planForm.flow_code) return;
+  try {
+    const r = await fetchVersionList(planForm.flow_code);
+    versionOptions.value = r.versions;
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function submitPlan() {
+  formError.value = "";
+  if (!planForm.name.trim()) return void (formError.value = "请填写方案名称");
+  if (!planForm.flow_code) return void (formError.value = "请选择 flow_code");
+  if (!planForm.test_ns_code) return void (formError.value = "请选择 test_ns_code");
+  if (!planForm.profile_code) return void (formError.value = "请选择 profile_code");
+  const mockResult = buildMockConfig();
+  if (!mockResult.ok) return void (formError.value = mockResult.err);
+
+  creating.value = true;
+  try {
+    if (planForm.id == null) {
+      await createTestPlan({
+        name: planForm.name,
+        flow_code: planForm.flow_code,
+        version_channel: planForm.version_channel,
+        test_ns_code: planForm.test_ns_code,
+        profile_code: planForm.profile_code,
+        concurrency: planForm.concurrency,
+        mock_config: mockResult.data,
+        context_mapping: contextMapping as any,
+      });
+    } else {
+      await patchTestPlan(planForm.id, {
+        name: planForm.name,
+        flow_code: planForm.flow_code,
+        version_channel: planForm.version_channel,
+        test_ns_code: planForm.test_ns_code,
+        profile_code: planForm.profile_code,
+        concurrency: planForm.concurrency,
+        mock_config: mockResult.data,
+        context_mapping: contextMapping as any,
+      });
+    }
+    await refreshPlans();
+    mode.value = "list";
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    creating.value = false;
+  }
+}
+
+async function runSelectedPlan() {
+  if (selectedPlanId.value == null) return;
+  try {
+    const res = await runTestPlan(selectedPlanId.value);
+    recentIds.value = [res.batch_id, ...recentIds.value.filter((x) => x !== res.batch_id)];
+    saveRecentIds(recentIds.value);
+    await selectBatch(res.batch_id);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
@@ -601,7 +1590,7 @@ async function submitBatch() {
     formError.value = "请选择 flow_code";
     return;
   }
-  if (!form.ver_no) {
+  if (!form.use_draft && !form.ver_no) {
     formError.value = "请选择 ver_no";
     return;
   }
@@ -620,18 +1609,18 @@ async function submitBatch() {
   }
   const body: CreateTestBatchBody = {
     flow_code: form.flow_code,
-    ver_no: form.ver_no,
+    ...(form.use_draft ? { version_channel: "draft" } : { ver_no: form.ver_no }),
     test_ns_code: form.test_ns_code,
     profile_code: form.profile_code,
     concurrency: form.concurrency,
     mock_config: mockResult.data,
+    context_mapping: contextMapping as any,
   };
   creating.value = true;
   try {
     const res = await createTestBatch(body);
     recentIds.value = [res.batch_id, ...recentIds.value.filter((x) => x !== res.batch_id)];
     saveRecentIds(recentIds.value);
-    await refreshBatches();
     await selectBatch(res.batch_id);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
@@ -694,7 +1683,7 @@ watch(
   },
 );
 
-void refreshBatches();
+void refreshPlans();
 </script>
 
 <style scoped>
@@ -727,6 +1716,84 @@ void refreshBatches();
 .head-actions {
   display: flex;
   gap: 8px;
+}
+
+.menu-wrap {
+  position: relative;
+}
+
+.plan-menu-wrap {
+  position: relative;
+}
+
+.plan-menu-wrap .menu {
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 180px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 20;
+}
+
+.menu-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+
+.menu-item.danger {
+  color: #b91c1c;
+}
+
+.menu-item.danger:hover {
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.tab {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.tab.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  font-weight: 600;
+}
+
+.inp.readonly {
+  background: #fbfdff;
 }
 
 .err {
@@ -854,6 +1921,37 @@ void refreshBatches();
   flex-wrap: wrap;
 }
 
+.panel-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.panel-head-text {
+  min-width: 0;
+}
+
+.panel-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn.icon-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  line-height: 0;
+  color: var(--muted);
+}
+
+.btn.icon-back:hover {
+  color: var(--text);
+}
+
 .panel-title {
   font-weight: 700;
   font-size: 13px;
@@ -958,6 +2056,7 @@ void refreshBatches();
 
 .mock-card-head {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }

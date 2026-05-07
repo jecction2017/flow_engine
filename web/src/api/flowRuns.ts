@@ -74,6 +74,7 @@ export type FlowRunDetail = {
   /** resident 流程：聚合统计；其它为 null。 */
   node_stats: NodeStats | null;
   flow_logs: LogEntry[] | null;
+  global_ns?: Record<string, unknown> | null;
   error: string | null;
 };
 
