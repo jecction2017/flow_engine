@@ -17,6 +17,14 @@ export type FlowRunStatus =
   | "terminated"
   | string;
 
+export type RunEvaluation = {
+  verdict?: string;
+  flow_state?: string;
+  rules?: Array<{ id: string; pass: boolean; message: string }>;
+  reason?: string;
+  message?: string;
+};
+
 export type FlowRunSummary = {
   id: number;
   deployment_id: number | null;
@@ -30,6 +38,11 @@ export type FlowRunSummary = {
   finished_at: string | null;
   iteration_count: number | null;
   error: string | null;
+  /** 测试批次下列表专用 */
+  case_index?: number | null;
+  case_key?: string | null;
+  verdict?: string | null;
+  batch_run_no?: number;
 };
 
 export type FlowRunsListResponse = {
@@ -76,6 +89,7 @@ export type FlowRunDetail = {
   flow_logs: LogEntry[] | null;
   global_ns?: Record<string, unknown> | null;
   error: string | null;
+  evaluation?: RunEvaluation | null;
 };
 
 export type ListFlowRunsParams = {

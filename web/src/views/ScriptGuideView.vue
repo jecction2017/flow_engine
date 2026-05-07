@@ -9,6 +9,7 @@
       <a href="#soc" class="toc-link">SOC 实战模板</a>
       <a href="#editor" class="toc-link">编辑器使用</a>
       <a href="#debug" class="toc-link">调试步骤</a>
+      <a href="#assertions" class="toc-link">测试中心断言</a>
       <a href="#faq" class="toc-link">常见问题</a>
     </aside>
 
@@ -99,8 +100,54 @@
         </div>
       </section>
 
+      <section id="assertions" class="card">
+        <h2>7) 测试中心断言（assertions）</h2>
+        <p class="muted">
+          断言对比对象是运行结束时的 <code class="mono">global_ns</code>。方案级 <code class="mono">assertions</code> 与用例行内
+          <code class="mono">_expect</code> 会合并执行，结果显示为 <code class="mono">verdict=pass/fail</code>。
+        </p>
+
+        <h3>7.1 规则结构（JSON 数组）</h3>
+        <div class="code-box">
+          <pre class="code mono">{{ sampleAssertShape }}</pre>
+          <button type="button" class="copy-btn" @click="copyCode(sampleAssertShape)">复制</button>
+        </div>
+
+        <h3>7.2 支持的 op</h3>
+        <ul>
+          <li><code class="mono">eq</code>/<code class="mono">ne</code>：严格相等/不等</li>
+          <li><code class="mono">contains</code>：字符串包含（把值转为字符串）</li>
+          <li><code class="mono">regex</code>：正则匹配（字符串）</li>
+          <li><code class="mono">json_match</code>：expected 是 actual 的子集（忽略多余字段）</li>
+          <li><code class="mono">starlark</code>：执行表达式，读取 <code class="mono">global_ns</code>（可返回 bool 或 <code class="mono">{pass,message}</code>）</li>
+        </ul>
+
+        <h3>7.3 案例：json_match（结构子集）</h3>
+        <div class="code-box">
+          <pre class="code mono">{{ sampleAssertJsonMatch }}</pre>
+          <button type="button" class="copy-btn" @click="copyCode(sampleAssertJsonMatch)">复制</button>
+        </div>
+
+        <h3>7.4 案例：starlark（数组包含 + 自定义 message）</h3>
+        <div class="code-box">
+          <pre class="code mono">{{ sampleAssertStarlark }}</pre>
+          <button type="button" class="copy-btn" @click="copyCode(sampleAssertStarlark)">复制</button>
+        </div>
+
+        <h3>7.5 低门槛：用例行内 _expect</h3>
+        <p class="muted">Runner 会剥离 <code class="mono">_expect</code> / <code class="mono">_expect.*</code>，避免注入 global_ns，并自动生成断言规则。</p>
+        <div class="code-box">
+          <pre class="code mono">{{ sampleRowExpect }}</pre>
+          <button type="button" class="copy-btn" @click="copyCode(sampleRowExpect)">复制</button>
+        </div>
+
+        <p class="tip">
+          更完整的说明与更多案例见仓库文档：<code class="mono">docs/test-center-assertions.md</code>（给研发/运维查阅）。
+        </p>
+      </section>
+
       <section id="faq" class="card">
-        <h2>7) 常见问题</h2>
+        <h2>8) 常见问题</h2>
         <h3>Q: 报错 “Task script must evaluate to a dict”</h3>
         <p>A: 你的脚本最终返回值不是字典。请确保末尾结果是 <code class="mono">{...}</code>。</p>
         <h3>Q: 函数没提示怎么办？</h3>
@@ -170,6 +217,34 @@ const sampleDebugCtx = `# 上下文 JSON 示例
     "src_ip": "1.2.3.4",
     "dest_ip": "198.51.100.7"
   }
+}`;
+
+const sampleAssertShape = `[
+  { "id": "ok", "op": "eq", "path": "out.ok", "expected": true }
+]`;
+
+const sampleAssertJsonMatch = `[
+  {
+    "id": "payment_subset",
+    "op": "json_match",
+    "path": "out.payment",
+    "expected": { "status": "SUCCESS", "currency": "CNY" }
+  }
+]`;
+
+const sampleAssertStarlark = `[
+  {
+    "id": "items_contains_sku",
+    "op": "starlark",
+    "expr": "{'pass': any([x.get('sku') == 'A001' for x in (global_ns.get('out', {}).get('items') or [])]), 'message': 'missing sku A001'}"
+  }
+]`;
+
+const sampleRowExpect = `{
+  "case_id": "c1",
+  "input": 1,
+  "_expect.path": "out.result",
+  "_expect.equals": 2
 }`;
 
 async function copyCode(text: string) {

@@ -243,6 +243,18 @@
                 </label>
               </div>
             </details>
+
+            <details class="advanced">
+              <summary class="summary-with-tip">
+                断言 assertions（JSON 数组）
+                <InfoTip
+                  text="与运行结束时的 global_ns 对比。字段：id、op（eq/ne/contains/regex/json_match/starlark）、path（点路径）、expected；starlark 用 expr，可读 global_ns。测试集行可用 _expect: { path, equals }。"
+                  wide
+                  align-end
+                />
+              </summary>
+              <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
+            </details>
           </div>
 
           <div v-else>
@@ -270,12 +282,13 @@
                   <th style="width:110px">耗时</th>
                   <th style="width:160px">resolved_ver</th>
                   <th>进度</th>
+                  <th style="width:100px">断言通过</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="loadingPlanBatches"><td colspan="6" class="muted center">加载中…</td></tr>
+                <tr v-if="loadingPlanBatches"><td colspan="7" class="muted center">加载中…</td></tr>
                 <tr v-else-if="!planBatches || planBatches.batches.length === 0">
-                  <td colspan="6" class="muted center">暂无运行记录</td>
+                  <td colspan="7" class="muted center">暂无运行记录</td>
                 </tr>
                 <tr
                   v-for="b in planBatches?.batches ?? []"
@@ -288,6 +301,10 @@
                   <td class="mono small">{{ b.elapsed_ms != null ? `${b.elapsed_ms}ms` : "—" }}</td>
                   <td class="mono small">v{{ b.resolved_ver_no }}</td>
                   <td class="mono small">{{ b.completed_runs }}/{{ b.total_runs }} <span v-if="b.error_runs" class="bad">· {{ b.error_runs }} failed</span></td>
+                  <td class="mono small">
+                    <span v-if="b.assertion_pass_rate != null">{{ b.assertion_pass_rate }}%</span>
+                    <span v-else class="muted">—</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -462,6 +479,18 @@
                 <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
               </label>
             </div>
+          </details>
+
+          <details class="advanced">
+            <summary class="summary-with-tip">
+              断言 assertions（JSON 数组）
+              <InfoTip
+                text="与运行结束时的 global_ns 对比。字段：id、op（eq/ne/contains/regex/json_match/starlark）、path、expected；starlark 用 expr，可读 global_ns。"
+                wide
+                align-end
+              />
+            </summary>
+            <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
           </details>
 
           <p v-if="formError" class="err">{{ formError }}</p>
@@ -696,15 +725,51 @@
 
           <div class="progress">
             <div class="progress-info">
-              <span><strong>{{ selectedBatch.completed_runs }}</strong> / {{ selectedBatch.total_runs }} 完成</span>
-              <span v-if="selectedBatch.error_runs" class="bad">{{ selectedBatch.error_runs }} 失败</span>
-              <span v-if="selectedBatch.total_runs > 0" class="muted small">{{ progressPct(selectedBatch) }}%</span>
+              <span
+                ><strong class="ok">{{ selectedBatch.completed_runs }}</strong> 通过 ·
+                <strong :class="selectedBatch.error_runs ? 'bad' : ''">{{ selectedBatch.error_runs }}</strong> 失败 · 共
+                {{ selectedBatch.total_runs }} 条</span
+              >
+              <span v-if="selectedBatch.total_runs > 0" class="muted small"
+                >已结束 {{ progressFinishedPct(selectedBatch) }}%</span
+              >
             </div>
             <div class="progress-bar">
-              <div class="progress-fill ok" :style="{ width: `${(selectedBatch.completed_runs - selectedBatch.error_runs) / Math.max(1, selectedBatch.total_runs) * 100}%` }" />
-              <div class="progress-fill bad" :style="{ width: `${selectedBatch.error_runs / Math.max(1, selectedBatch.total_runs) * 100}%` }" />
+              <div
+                class="progress-fill ok"
+                :style="{
+                  width: `${(selectedBatch.completed_runs / Math.max(1, selectedBatch.total_runs)) * 100}%`,
+                }"
+              />
+              <div
+                class="progress-fill bad"
+                :style="{
+                  width: `${(selectedBatch.error_runs / Math.max(1, selectedBatch.total_runs)) * 100}%`,
+                }"
+              />
             </div>
           </div>
+
+          <details v-if="selectedBatch.summary" class="advanced batch-summary">
+            <summary>结果摘要（状态分布 / 断言 / 首批失败）</summary>
+            <div class="summary-body muted small">
+              <p>
+                <span class="mono">by_status</span> {{ JSON.stringify(selectedBatch.summary.by_status) }}
+              </p>
+              <p>
+                <span class="mono">verdict_counts</span>
+                {{ JSON.stringify(selectedBatch.summary.verdict_counts) }}
+              </p>
+              <ul v-if="(selectedBatch.summary.first_failures || []).length" class="fail-list">
+                <li v-for="(f, i) in selectedBatch.summary.first_failures" :key="i">
+                  <span class="mono">#{{ f.case_index }}</span> {{ f.case_key || "—" }} ·
+                  <span class="tag" :class="runStatusTag(f.status)">{{ f.status }}</span>
+                  <span v-if="f.verdict" class="tag" :class="verdictTag(f.verdict)">{{ f.verdict }}</span>
+                  <span v-if="f.error" class="bad">{{ f.error }}</span>
+                </li>
+              </ul>
+            </div>
+          </details>
 
           <div class="run-toolbar">
             <label class="ctl">
@@ -724,17 +789,20 @@
           <table class="grid-table">
             <thead>
               <tr>
-                <th style="width:80px">run_id</th>
-                <th style="width:110px">状态</th>
+                <th style="width:56px">#</th>
+                <th style="width:80px">run</th>
+                <th style="width:140px">用例键</th>
+                <th style="width:72px">断言</th>
+                <th style="width:100px">状态</th>
                 <th style="width:160px">started_at</th>
                 <th style="width:110px">耗时</th>
                 <th>error</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="loadingRuns"><td colspan="5" class="muted center">加载中…</td></tr>
+              <tr v-if="loadingRuns"><td colspan="8" class="muted center">加载中…</td></tr>
               <tr v-else-if="!runs || runs.runs.length === 0">
-                <td colspan="5" class="muted center">暂无运行记录</td>
+                <td colspan="8" class="muted center">暂无运行记录</td>
               </tr>
               <tr
                 v-for="r in runs?.runs ?? []"
@@ -742,7 +810,13 @@
                 :class="{ active: selectedRunId === r.id }"
                 @click="selectRun(r.id)"
               >
+                <td class="mono small">{{ r.batch_run_no ?? r.case_index ?? "—" }}</td>
                 <td class="mono">#{{ r.id }}</td>
+                <td class="mono small" :title="r.case_key || ''">{{ r.case_key || "—" }}</td>
+                <td>
+                  <span v-if="r.verdict" class="tag" :class="verdictTag(r.verdict)">{{ r.verdict }}</span>
+                  <span v-else class="muted">—</span>
+                </td>
                 <td><span class="tag" :class="runStatusTag(r.status)">{{ r.status }}</span></td>
                 <td class="mono small">{{ formatTs(r.started_at) }}</td>
                 <td class="mono small">{{ runElapsed(r) }}</td>
@@ -876,6 +950,7 @@ const planForm = reactive<{
   test_ns_code: string;
   profile_code: string;
   concurrency: number;
+  assertionsText: string;
 }>({
   id: null,
   name: "",
@@ -884,6 +959,7 @@ const planForm = reactive<{
   test_ns_code: "",
   profile_code: "default",
   concurrency: 4,
+  assertionsText: "[]",
 });
 
 const form = reactive<{
@@ -1093,6 +1169,40 @@ const selectedRunId = ref<number | null>(null);
 const selectedRunDetail = ref<FlowRunDetail | null>(null);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let planBatchesPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopPlanBatchesPoll() {
+  if (planBatchesPollTimer) {
+    clearInterval(planBatchesPollTimer);
+    planBatchesPollTimer = null;
+  }
+}
+
+/** While方案 Runs 列表里仍有 running 批次时，轻量轮询刷新列表。 */
+function ensurePlanBatchesPollRunning() {
+  stopPlanBatchesPoll();
+  if (planTab.value !== "runs" || selectedPlanId.value == null || mode.value !== "list") return;
+  if (!planBatches.value?.batches?.some((b) => b.status === "running")) return;
+  planBatchesPollTimer = setInterval(async () => {
+    if (selectedPlanId.value == null || planTab.value !== "runs") {
+      stopPlanBatchesPoll();
+      return;
+    }
+    try {
+      const r = await listTestPlanBatches(selectedPlanId.value, {
+        status: planBatchStatusFilter.value || undefined,
+        offset: 0,
+        limit: 50,
+      });
+      planBatches.value = { total: r.total, batches: r.batches };
+    } catch {
+      // keep polling on blip
+    }
+    if (!planBatches.value?.batches?.some((b) => b.status === "running")) {
+      stopPlanBatchesPoll();
+    }
+  }, 3000);
+}
 
 function startPolling(batchId: number) {
   stopPolling();
@@ -1118,8 +1228,6 @@ function stopPolling() {
     pollTimer = null;
   }
 }
-
-onUnmounted(stopPolling);
 
 function closeMoreMenu() {
   moreOpen.value = false;
@@ -1174,6 +1282,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  stopPolling();
+  stopPlanBatchesPoll();
   document.removeEventListener("pointerdown", onDocPointerDown, true);
 });
 
@@ -1302,6 +1412,7 @@ async function loadPlanBatches() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     loadingPlanBatches.value = false;
+    ensurePlanBatchesPollRunning();
   }
 }
 
@@ -1326,6 +1437,7 @@ function loadPlanEditorsFromDetail(detail: TestPlanDetail) {
   const cm: any = detail.context_mapping || { mode: "spread" };
   for (const k of Object.keys(contextMapping as any)) delete (contextMapping as any)[k];
   Object.assign(contextMapping as any, cm);
+  planForm.assertionsText = JSON.stringify(detail.assertions ?? [], null, 2);
 }
 
 async function selectBatch(id: number) {
@@ -1347,6 +1459,7 @@ function backToPlanRuns() {
   selectedRunId.value = null;
   selectedRunDetail.value = null;
   stopPolling();
+  planTab.value = "runs";
   void loadPlanBatches();
 }
 
@@ -1462,6 +1575,7 @@ async function newPlan() {
   planForm.test_ns_code = "";
   planForm.profile_code = profileOptions.value[0] || "default";
   planForm.concurrency = 4;
+  planForm.assertionsText = "[]";
   mockEntries.splice(0, mockEntries.length);
   (contextMapping as any).mode = "spread";
 }
@@ -1503,6 +1617,15 @@ async function submitPlan() {
   if (!planForm.profile_code) return void (formError.value = "请选择 profile_code");
   const mockResult = buildMockConfig();
   if (!mockResult.ok) return void (formError.value = mockResult.err);
+  let assertions: Array<Record<string, unknown>> = [];
+  try {
+    const raw = JSON.parse(planForm.assertionsText || "[]");
+    if (!Array.isArray(raw)) throw new Error("assertions 必须是 JSON 数组");
+    assertions = raw as Array<Record<string, unknown>>;
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
+    return;
+  }
 
   creating.value = true;
   try {
@@ -1516,6 +1639,7 @@ async function submitPlan() {
         concurrency: planForm.concurrency,
         mock_config: mockResult.data,
         context_mapping: contextMapping as any,
+        assertions,
       });
     } else {
       await patchTestPlan(planForm.id, {
@@ -1527,6 +1651,7 @@ async function submitPlan() {
         concurrency: planForm.concurrency,
         mock_config: mockResult.data,
         context_mapping: contextMapping as any,
+        assertions,
       });
     }
     await refreshPlans();
@@ -1544,7 +1669,9 @@ async function runSelectedPlan() {
     const res = await runTestPlan(selectedPlanId.value);
     recentIds.value = [res.batch_id, ...recentIds.value.filter((x) => x !== res.batch_id)];
     saveRecentIds(recentIds.value);
+    planTab.value = "runs";
     await selectBatch(res.batch_id);
+    void loadPlanBatches();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -1646,6 +1773,12 @@ function runStatusTag(status: string): string {
   return "info";
 }
 
+function verdictTag(verdict: string | null | undefined): string {
+  if (verdict === "pass") return "ok";
+  if (verdict === "fail") return "bad";
+  return "info";
+}
+
 function formatTs(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -1657,9 +1790,10 @@ function formatTs(iso: string | null): string {
   }
 }
 
-function progressPct(b: TestBatchDetail): number {
+/** Share of cases that have finished (pass or fail); counters are mutually exclusive per case. */
+function progressFinishedPct(b: TestBatchDetail): number {
   if (b.total_runs <= 0) return 0;
-  return Math.round((b.completed_runs / b.total_runs) * 100);
+  return Math.round(((b.completed_runs + b.error_runs) / b.total_runs) * 100);
 }
 
 function runElapsed(r: FlowRunSummary): string {
@@ -1682,6 +1816,16 @@ watch(
     else stopPolling();
   },
 );
+
+watch(planTab, (t) => {
+  if (t !== "runs") {
+    stopPlanBatchesPoll();
+    return;
+  }
+  if (selectedPlanId.value != null && mode.value === "list") {
+    void loadPlanBatches();
+  }
+});
 
 void refreshPlans();
 </script>
@@ -2035,6 +2179,30 @@ void refreshPlans();
   cursor: pointer;
   font-weight: 600;
   font-size: 12px;
+}
+
+.summary-with-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.batch-summary {
+  margin-top: 10px;
+}
+
+.summary-body {
+  margin-top: 8px;
+}
+
+.fail-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.fail-list li {
+  margin: 4px 0;
 }
 
 .mock-list {

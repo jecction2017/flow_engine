@@ -1,7 +1,7 @@
 """Lookup-namespace-driven test runner.
 
 每行 lookup namespace 数据 → 一次 ``RunMode.DEBUG`` 流程运行 → 一条
-``fe_flow_run``；本模块不做自动断言（用户自行分析输出）。
+``fe_flow_run``；可选断言规则写入 ``FeFlowRun.evaluation``。
 
 并发由 ``asyncio.Semaphore`` 控制；DB 访问全部经 ``asyncio.to_thread``。
 """
@@ -23,6 +23,7 @@ from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.lookup.lookup_service import lookup_query_page
+from flow_engine.runner import assertions as assertions_mod
 from flow_engine.runner import persistence
 from flow_engine.runner.models import MockConfig, RunMode, RunOptions
 from flow_engine.stores import data_dict
@@ -176,6 +177,7 @@ async def run_test_batch(
     mock_config: dict[str, MockConfig],
     *,
     concurrency: int = 4,
+    assertions: list[dict[str, Any]] | None = None,
 ) -> int:
     """触发一次测试批次，立即创建批次行并并发运行；返回 ``batch_id``。
 
@@ -214,6 +216,7 @@ async def run_test_batch(
                 dictionary=dictionary,
                 mock_config=mock_config,
                 test_input=row,
+                assertions=assertions,
             )
 
     results = await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
@@ -238,6 +241,7 @@ async def _run_single_test_case(
     mock_config: dict[str, MockConfig],
     test_input: dict[str, Any],
     context_mapping: dict[str, Any] | None = None,
+    assertions: list[dict[str, Any]] | None = None,
 ) -> bool:
     flow = load_flow_from_dict(copy.deepcopy(flow_data))
     run_opts = RunOptions(
@@ -246,7 +250,8 @@ async def _run_single_test_case(
         deployment_capability_policy=[],
     )
     runtime = FlowRuntime(flow, dictionary=dictionary, run_opts=run_opts)
-    mapped_ctx = apply_lookup_row_to_context(test_input, context_mapping)
+    row_clean = assertions_mod.strip_expect_keys(test_input)
+    mapped_ctx = apply_lookup_row_to_context(row_clean, context_mapping)
     runtime.ctx.global_ns.update(mapped_ctx)
 
     run_id = await asyncio.to_thread(
@@ -269,10 +274,31 @@ async def _run_single_test_case(
         )
         from flow_engine.engine.models import FlowState as _FS
 
+        gns = dict(getattr(result.context, "global_ns", {}) or {})
+        gns.pop("dictionary", None)
+        rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
+            test_input
+        )
+        ev = assertions_mod.evaluate_assertions(
+            flow_state=result.state,
+            global_ns=gns,
+            rules=rules,
+        )
+        await asyncio.to_thread(persistence.set_flow_run_evaluation, run_id, ev)
         success = result.state == _FS.COMPLETED
     except Exception as e:  # noqa: BLE001
         logger.exception("test run failed (run_id=%s)", run_id)
         await asyncio.to_thread(persistence.fail_flow_run, run_id, str(e))
+        await asyncio.to_thread(
+            persistence.set_flow_run_evaluation,
+            run_id,
+            {
+                "verdict": "fail",
+                "reason": "exception",
+                "message": str(e),
+                "rules": [],
+            },
+        )
     finally:
         await asyncio.to_thread(_bump_test_batch_counter, batch_id, success=success)
     return success
@@ -297,7 +323,7 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
             plan_row = s.get(FeFlowTestPlan, int(plan_link.plan_id))
             if plan_row is not None and plan_row.deleted_at is None:
                 plan_brief = {"id": int(plan_row.id), "name": plan_row.name}
-        return {
+        out: dict[str, Any] = {
             "id": row.id,
             "flow_code": row.flow_code,
             "ver_no": row.ver_no,
@@ -311,6 +337,11 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
             "plan": plan_brief,
         }
+        try:
+            out["summary"] = persistence.summarize_batch_runs(int(row.id))
+        except Exception:  # noqa: BLE001
+            out["summary"] = None
+        return out
 
 
 def attach_plan_to_batch(

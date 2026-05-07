@@ -56,6 +56,7 @@ export type CreateTestBatchBody = {
   mock_config?: Record<string, MockConfig>;
   context_mapping?: ContextMapping;
   concurrency?: number;
+  assertions?: Array<Record<string, unknown>>;
 };
 
 export type CreateTestBatchResponse = {
@@ -65,6 +66,19 @@ export type CreateTestBatchResponse = {
 };
 
 export type TestBatchStatus = "running" | "completed" | "failed" | string;
+
+export type BatchResultSummary = {
+  by_status: Record<string, number>;
+  verdict_counts: { pass: number; fail: number; none: number };
+  first_failures: Array<{
+    run_id: number;
+    case_index: number;
+    case_key: string;
+    status: string;
+    verdict: string | null;
+    error: string | null;
+  }>;
+};
 
 export type TestBatchDetail = {
   id: number;
@@ -78,6 +92,8 @@ export type TestBatchDetail = {
   error_runs: number;
   started_at: string | null;
   finished_at: string | null;
+  plan?: { id: number; name: string } | null;
+  summary?: BatchResultSummary | null;
 };
 
 export async function createTestBatch(

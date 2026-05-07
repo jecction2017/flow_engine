@@ -1,6 +1,6 @@
 /** REST client for `/api/test-plans` (测试方案：可维护、多次运行). */
 
-import type { ContextMapping, MockConfig } from "@/api/testBatches";
+import type { BatchResultSummary, ContextMapping, MockConfig } from "@/api/testBatches";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -27,6 +27,7 @@ export type TestPlanSummary = {
 export type TestPlanDetail = TestPlanSummary & {
   mock_config: Record<string, MockConfig>;
   context_mapping: ContextMapping;
+  assertions: Array<Record<string, unknown>>;
 };
 
 export type CreateTestPlanBody = {
@@ -38,6 +39,7 @@ export type CreateTestPlanBody = {
   concurrency?: number;
   mock_config?: Record<string, MockConfig>;
   context_mapping?: ContextMapping;
+  assertions?: Array<Record<string, unknown>>;
 };
 
 export type PatchTestPlanBody = Partial<CreateTestPlanBody>;
@@ -108,6 +110,8 @@ export type TestPlanBatchItem = {
   finished_at: string | null;
   elapsed_ms: number | null;
   snapshot: { created_at?: string; version_channel?: string | null };
+  result_summary?: BatchResultSummary;
+  assertion_pass_rate?: number | null;
 };
 
 export async function listTestPlanBatches(
@@ -132,5 +136,36 @@ export async function copyTestPlan(planId: number, body: { name?: string } = {})
     }),
   );
   return r.json() as Promise<TestPlanSummary>;
+}
+
+export async function compareTestPlanBatches(
+  planId: number,
+  leftBatchId: number,
+  rightBatchId: number,
+): Promise<{
+  left_batch_id: number;
+  right_batch_id: number;
+  cases: Array<{
+    case_key: string;
+    left: { run_id: number; status: string; verdict?: string } | null;
+    right: { run_id: number; status: string; verdict?: string } | null;
+    changed: boolean;
+  }>;
+}> {
+  const qs = new URLSearchParams({
+    left: String(leftBatchId),
+    right: String(rightBatchId),
+  });
+  const r = await checkOk(await fetch(`/api/test-plans/${planId}/batches/compare?${qs}`));
+  return r.json() as Promise<{
+    left_batch_id: number;
+    right_batch_id: number;
+    cases: Array<{
+      case_key: string;
+      left: { run_id: number; status: string; verdict?: string } | null;
+      right: { run_id: number; status: string; verdict?: string } | null;
+      changed: boolean;
+    }>;
+  }>;
 }
 

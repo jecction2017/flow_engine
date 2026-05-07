@@ -832,6 +832,11 @@ class FeFlowRun(_AuditCols, Base):
         nullable=True,
         comment="失败 / 终止时的错误信息",
     )
+    evaluation: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="测试断言评估结果：verdict / rules 等（JSON）",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -994,6 +999,12 @@ class FeFlowTestPlan(_AuditCols, Base):
         MEDIUMTEXT,
         nullable=False,
         comment="lookup row → context 映射 JSON（dict）序列化",
+    )
+    assertions: Mapped[str] = mapped_column(
+        MEDIUMTEXT,
+        nullable=False,
+        server_default=text("'[]'"),
+        comment="断言规则 JSON 数组（与 mock_config 并列）",
     )
 
 

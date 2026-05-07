@@ -11,6 +11,7 @@ Resident vs once/cron/test 写入策略不同（设计文档 §7.4）：
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from statistics import mean
@@ -133,6 +134,14 @@ def fail_flow_run(run_id: int, error: str) -> None:
         row.error = error
 
 
+def set_flow_run_evaluation(run_id: int, evaluation: dict[str, Any]) -> None:
+    with db_session() as s:
+        row = s.get(FeFlowRun, run_id)
+        if row is None:
+            return
+        row.evaluation = evaluation
+
+
 def update_iteration_count(run_id: int, count: int) -> None:
     with db_session() as s:
         row = s.get(FeFlowRun, run_id)
@@ -152,6 +161,156 @@ def update_node_stats(run_id: int, stats: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Listing helpers (used by HTTP API)
 # ---------------------------------------------------------------------------
+
+
+def _derive_case_key(trigger_context: Any) -> str:
+    if not isinstance(trigger_context, dict):
+        return ""
+    row = trigger_context.get("row")
+    if not isinstance(row, dict):
+        return ""
+    for key in ("id", "code", "key", "case_id"):
+        if key in row and row[key] is not None:
+            return str(row[key])
+    for k in sorted(row.keys()):
+        if str(k).startswith("_expect"):
+            continue
+        v = row[k]
+        if isinstance(v, (str, int, float, bool)) and not str(k).startswith("_"):
+            return f"{k}={v}"
+    try:
+        raw = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    except (TypeError, ValueError):
+        return ""
+
+
+def summarize_batch_runs(test_batch_id: int, *, failure_limit: int = 10) -> dict[str, Any]:
+    """Aggregate run rows while still bound to a Session (avoid DetachedInstanceError)."""
+    with db_session() as s:
+        stmt = (
+            select(FeFlowRun)
+            .where(FeFlowRun.test_batch_id == test_batch_id)
+            .where(FeFlowRun.deleted_at.is_(None))
+        )
+        rows = list(s.execute(stmt).scalars().all())
+        snapshots: list[dict[str, Any]] = []
+        for r in rows:
+            ev_raw = getattr(r, "evaluation", None)
+            ev = ev_raw if isinstance(ev_raw, dict) else None
+            tc = r.trigger_context
+            snapshots.append(
+                {
+                    "id": int(r.id),
+                    "status": str(r.status),
+                    "evaluation": ev,
+                    "trigger_context": tc if isinstance(tc, dict) else None,
+                    "error": r.error,
+                }
+            )
+
+    by_status: dict[str, int] = {}
+    for snap in snapshots:
+        st = snap["status"]
+        by_status[st] = by_status.get(st, 0) + 1
+    ordered = sorted(snapshots, key=lambda x: int(x["id"]))
+    idx_map = {int(x["id"]): i + 1 for i, x in enumerate(ordered)}
+    verdict_counts = {"pass": 0, "fail": 0, "none": 0}
+    first_failures: list[dict[str, Any]] = []
+    for snap in ordered:
+        ev = snap.get("evaluation")
+        verdict = (ev or {}).get("verdict") if ev else None
+        if verdict == "pass":
+            verdict_counts["pass"] += 1
+        elif verdict == "fail":
+            verdict_counts["fail"] += 1
+        else:
+            verdict_counts["none"] += 1
+
+        st = snap["status"]
+        flow_bad = st in ("failed", "terminated")
+        assert_bad = verdict == "fail"
+        if (flow_bad or assert_bad) and len(first_failures) < failure_limit:
+            tc = snap.get("trigger_context")
+            err = snap.get("error")
+            first_failures.append(
+                {
+                    "run_id": int(snap["id"]),
+                    "case_index": idx_map.get(int(snap["id"]), 0),
+                    "case_key": _derive_case_key(tc),
+                    "status": st,
+                    "verdict": verdict,
+                    "error": (err or "")[:2000] if err else None,
+                }
+            )
+    return {
+        "by_status": by_status,
+        "verdict_counts": verdict_counts,
+        "first_failures": first_failures,
+    }
+
+
+def compare_test_batches(left_batch_id: int, right_batch_id: int) -> dict[str, Any]:
+    """Align runs by ``case_key`` and compare status / assertion verdict."""
+
+    def _load_snapshots(batch_id: int) -> list[dict[str, Any]]:
+        with db_session() as s:
+            stmt = (
+                select(FeFlowRun)
+                .where(FeFlowRun.test_batch_id == batch_id)
+                .where(FeFlowRun.deleted_at.is_(None))
+            )
+            rows = list(s.execute(stmt).scalars().all())
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                ev_raw = getattr(r, "evaluation", None)
+                ev = ev_raw if isinstance(ev_raw, dict) else {}
+                tc = r.trigger_context
+                out.append(
+                    {
+                        "id": int(r.id),
+                        "status": str(r.status),
+                        "verdict": ev.get("verdict"),
+                        "trigger_context": tc if isinstance(tc, dict) else None,
+                    }
+                )
+            return out
+
+    def _index(snaps: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        keyed: dict[str, dict[str, Any]] = {}
+        for snap in snaps:
+            tc = snap.get("trigger_context")
+            k = _derive_case_key(tc) if isinstance(tc, dict) else ""
+            if not k:
+                k = f"run:{snap['id']}"
+            keyed[k] = snap
+        return keyed
+
+    left_snaps = _load_snapshots(left_batch_id)
+    right_snaps = _load_snapshots(right_batch_id)
+    lm, rm = _index(left_snaps), _index(right_snaps)
+
+    def _brief(snap: dict[str, Any] | None) -> dict[str, Any] | None:
+        if snap is None:
+            return None
+        return {
+            "run_id": int(snap["id"]),
+            "status": snap["status"],
+            "verdict": snap.get("verdict"),
+        }
+
+    keys = sorted(set(lm.keys()) | set(rm.keys()))
+    cases: list[dict[str, Any]] = []
+    for k in keys:
+        l_snap, r_snap = lm.get(k), rm.get(k)
+        sl, sr = _brief(l_snap), _brief(r_snap)
+        changed = sl != sr
+        cases.append({"case_key": k, "left": sl, "right": sr, "changed": changed})
+    return {
+        "left_batch_id": int(left_batch_id),
+        "right_batch_id": int(right_batch_id),
+        "cases": cases,
+    }
 
 
 def list_flow_runs(
@@ -189,27 +348,41 @@ def list_flow_runs(
         all_rows = list(s.execute(stmt).scalars().all())
         total = len(all_rows)
         page = all_rows[offset : offset + limit]
+        case_index_by_id: dict[int, int] = {}
+        if test_batch_id is not None and all_rows:
+            ordered = sorted(all_rows, key=lambda x: int(x.id))
+            case_index_by_id = {int(r.id): i + 1 for i, r in enumerate(ordered)}
+
+        def _run_dict(r: FeFlowRun) -> dict[str, Any]:
+            ev_raw = getattr(r, "evaluation", None)
+            ev = ev_raw if isinstance(ev_raw, dict) else None
+            base: dict[str, Any] = {
+                "id": r.id,
+                "deployment_id": r.deployment_id,
+                "test_batch_id": r.test_batch_id,
+                "flow_code": r.flow_code,
+                "ver_no": r.ver_no,
+                "mode": r.mode,
+                "status": r.status,
+                "worker_id": r.worker_id,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "iteration_count": r.iteration_count,
+                "error": r.error,
+            }
+            if test_batch_id is not None:
+                base["case_index"] = case_index_by_id.get(int(r.id))
+                base["case_key"] = _derive_case_key(
+                    r.trigger_context if isinstance(r.trigger_context, dict) else None
+                )
+                base["verdict"] = (ev or {}).get("verdict") if ev else None
+            return base
+
         return {
             "total": total,
             "offset": offset,
             "limit": limit,
-            "runs": [
-                {
-                    "id": r.id,
-                    "deployment_id": r.deployment_id,
-                    "test_batch_id": r.test_batch_id,
-                    "flow_code": r.flow_code,
-                    "ver_no": r.ver_no,
-                    "mode": r.mode,
-                    "status": r.status,
-                    "worker_id": r.worker_id,
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-                    "iteration_count": r.iteration_count,
-                    "error": r.error,
-                }
-                for r in page
-            ],
+            "runs": [_run_dict(r) for r in page],
         }
 
 
@@ -222,6 +395,8 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
         node_stats = _safe_json_load(row.node_stats)
         flow_logs = _safe_json_load(row.flow_logs)
         global_ns = _safe_json_load(row.global_ns)
+        ev_raw = getattr(row, "evaluation", None)
+        evaluation = ev_raw if isinstance(ev_raw, dict) else None
         return {
             "id": row.id,
             "deployment_id": row.deployment_id,
@@ -240,6 +415,7 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
             "flow_logs": flow_logs,
             "global_ns": global_ns,
             "error": row.error,
+            "evaluation": evaluation,
         }
 
 

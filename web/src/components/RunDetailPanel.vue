@@ -187,6 +187,28 @@
       <div v-else class="muted tl-logs-empty">当前过滤条件下没有可显示的日志</div>
     </section>
 
+    <section v-if="evaluationBlock" class="rd-section">
+      <div class="rd-section-head">
+        <span>评估结果（assertions）</span>
+        <span class="badge" :class="evaluationBlock.verdict === 'pass' ? 'ok' : 'bad'">{{
+          evaluationBlock.verdict
+        }}</span>
+      </div>
+      <p v-if="evaluationBlock.reason" class="muted small">{{ evaluationBlock.reason }}</p>
+      <p v-if="evaluationBlock.message" class="err small">{{ evaluationBlock.message }}</p>
+      <ul v-if="evaluationBlock.rules?.length" class="eval-rules">
+        <li
+          v-for="(rule, i) in evaluationBlock.rules"
+          :key="i"
+          :class="{ ok: rule.pass, bad: !rule.pass }"
+        >
+          <span class="mono">{{ rule.id }}</span>
+          <span>{{ rule.pass ? "pass" : "fail" }}</span>
+          <span v-if="rule.message" class="muted">{{ rule.message }}</span>
+        </li>
+      </ul>
+    </section>
+
     <section v-if="detail.trigger_context" class="rd-section">
       <div class="rd-section-head">
         <span>触发上下文（trigger_context）</span>
@@ -219,6 +241,13 @@ type TreeRow = NodeRunInfo & {
 };
 
 const props = defineProps<{ detail: FlowRunDetail }>();
+
+const evaluationBlock = computed(() => {
+  const ev = props.detail.evaluation;
+  if (!ev || typeof ev !== "object") return null;
+  if (!ev.verdict && !(ev.rules && ev.rules.length) && !ev.reason && !ev.message) return null;
+  return ev;
+});
 
 const collapsed = reactive(new Set<string>());
 const openLogsFor = ref<string | null>(null);
@@ -527,6 +556,29 @@ function rowTitle(row: NodeRunInfo): string {
   background: color-mix(in srgb, #3b82f6 14%, transparent);
   color: #1d4ed8;
   border-color: color-mix(in srgb, #3b82f6 35%, transparent);
+}
+
+.eval-rules {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.eval-rules li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.eval-rules li.ok {
+  color: #047857;
+}
+
+.eval-rules li.bad {
+  color: #b91c1c;
 }
 
 .err {

@@ -187,6 +187,10 @@ class CreateTestBatchBody(BaseModel):
     mock_config: dict[str, MockConfig] = Field(default_factory=dict)
     context_mapping: dict[str, Any] | None = None
     concurrency: int = Field(default=4, ge=1, le=64)
+    assertions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="断言规则（与方案 assertions 同结构）；临时批次可内联传入",
+    )
 
 
 class CreateTestPlanBody(BaseModel):
@@ -198,6 +202,7 @@ class CreateTestPlanBody(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=64)
     mock_config: dict[str, MockConfig] = Field(default_factory=dict)
     context_mapping: dict[str, Any] | None = None
+    assertions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PatchTestPlanBody(BaseModel):
@@ -208,6 +213,7 @@ class PatchTestPlanBody(BaseModel):
     concurrency: int | None = Field(default=None, ge=1, le=64)
     mock_config: dict[str, MockConfig] | None = None
     context_mapping: dict[str, Any] | None = None
+    assertions: list[dict[str, Any]] | None = None
 
 
 class CopyTestPlanBody(BaseModel):
@@ -1018,6 +1024,7 @@ def create_app() -> FastAPI:
             default=str,
         )
         mapping_ser = json.dumps(body.context_mapping or {"mode": "spread"}, ensure_ascii=False, default=str)
+        assertions_ser = json.dumps(body.assertions or [], ensure_ascii=False, default=str)
         with db_session() as s:
             row = FeFlowTestPlan(
                 name=body.name,
@@ -1028,6 +1035,7 @@ def create_app() -> FastAPI:
                 concurrency=int(body.concurrency),
                 mock_config=mock_ser,
                 context_mapping=mapping_ser,
+                assertions=assertions_ser,
             )
             s.add(row)
             s.flush()
@@ -1043,6 +1051,7 @@ def create_app() -> FastAPI:
                 **_serialize_test_plan(row),
                 "mock_config": json.loads(row.mock_config or "{}"),
                 "context_mapping": json.loads(row.context_mapping or "{}"),
+                "assertions": json.loads(getattr(row, "assertions", None) or "[]"),
             }
 
     @app.patch("/api/test-plans/{plan_id}")
@@ -1069,6 +1078,8 @@ def create_app() -> FastAPI:
                 )
             if body.context_mapping is not None:
                 row.context_mapping = json.dumps(body.context_mapping, ensure_ascii=False, default=str)
+            if body.assertions is not None:
+                row.assertions = json.dumps(body.assertions, ensure_ascii=False, default=str)
             s.flush()
             return _serialize_test_plan(row)
 
@@ -1098,6 +1109,7 @@ def create_app() -> FastAPI:
                 "concurrency": int(plan.concurrency),
                 "mock_config": json.loads(plan.mock_config or "{}"),
                 "context_mapping": json.loads(plan.context_mapping or "{}"),
+                "assertions": json.loads(getattr(plan, "assertions", None) or "[]"),
             }
 
         res = await create_test_batch(
@@ -1110,6 +1122,7 @@ def create_app() -> FastAPI:
                 mock_config={k: MockConfig.model_validate(v) for k, v in (plan_data["mock_config"] or {}).items()},
                 context_mapping=plan_data["context_mapping"],
                 concurrency=int(plan_data["concurrency"]),
+                assertions=list(plan_data.get("assertions") or []),
             )
         )
 
@@ -1181,6 +1194,9 @@ def create_app() -> FastAPI:
                     snapshot = json.loads(link.plan_snapshot or "{}")
                 except Exception:  # noqa: BLE001
                     snapshot = {}
+                summ = runner_persistence.summarize_batch_runs(int(batch.id))
+                vc = summ.get("verdict_counts") or {}
+                tr = max(1, int(batch.total_runs))
                 out.append(
                     {
                         "plan_batch_no": seq_map.get(int(batch.id), 0),
@@ -1200,10 +1216,37 @@ def create_app() -> FastAPI:
                             "created_at": snapshot.get("created_at"),
                             "version_channel": (snapshot.get("plan") or {}).get("version_channel"),
                         },
+                        "result_summary": summ,
+                        "assertion_pass_rate":
+                            round((int(vc.get("pass") or 0) / tr) * 100, 1)
+                            if batch.status != "running"
+                            else None,
                     }
                 )
 
             return {"plan_id": int(plan_id), "total": total, "offset": offset, "limit": limit, "batches": out}
+
+    @app.get("/api/test-plans/{plan_id}/batches/compare")
+    def compare_test_plan_batches(
+        plan_id: int,
+        left: int = Query(description="Left batch id"),
+        right: int = Query(description="Right batch id"),
+    ) -> dict[str, Any]:
+        """Compare two batches from the same plan (runs aligned by case_key)."""
+
+        def _batch_belongs(pid: int, batch_id: int) -> bool:
+            with db_session() as s:
+                link = s.execute(
+                    select(FeFlowTestBatchPlan)
+                    .where(FeFlowTestBatchPlan.plan_id == pid)
+                    .where(FeFlowTestBatchPlan.batch_id == batch_id)
+                    .where(FeFlowTestBatchPlan.deleted_at.is_(None))
+                ).scalar_one_or_none()
+                return link is not None
+
+        if not _batch_belongs(plan_id, left) or not _batch_belongs(plan_id, right):
+            raise HTTPException(status_code=404, detail="batch not found for this plan")
+        return runner_persistence.compare_test_batches(left, right)
 
     @app.post("/api/test-plans/{plan_id}/copy")
     def copy_test_plan(plan_id: int, body: CopyTestPlanBody = Body(default_factory=CopyTestPlanBody)) -> dict[str, Any]:
@@ -1224,6 +1267,7 @@ def create_app() -> FastAPI:
                 concurrency=int(src.concurrency),
                 mock_config=src.mock_config,
                 context_mapping=src.context_mapping,
+                assertions=getattr(src, "assertions", None) or "[]",
             )
             s.add(row)
             s.flush()
@@ -1294,6 +1338,7 @@ def create_app() -> FastAPI:
                             mock_config=body.mock_config,
                             test_input=row,
                             context_mapping=body.context_mapping,
+                            assertions=body.assertions or [],
                         )
 
                 await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
@@ -1350,7 +1395,8 @@ def create_app() -> FastAPI:
             seq = {int(r.get("id") or 0): i + 1 for i, r in enumerate(ordered) if r.get("id") is not None}
             for r in runs:
                 rid = int(r.get("id") or 0)
-                r["batch_run_no"] = seq.get(rid, 0)
+                ci = r.get("case_index")
+                r["batch_run_no"] = int(ci) if ci is not None else seq.get(rid, 0)
         except Exception:  # noqa: BLE001
             pass
         page["runs"] = runs
