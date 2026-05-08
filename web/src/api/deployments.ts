@@ -37,6 +37,11 @@ export type WorkerPolicy = {
   [k: string]: unknown;
 };
 
+export type WorkerTargeting =
+  | { mode: "any" }
+  | { mode: "pin"; worker_id: string }
+  | { mode: "pool"; worker_ids: string[] };
+
 export type ScheduleConfig = {
   cron_expr?: string;
   [k: string]: unknown;
@@ -51,9 +56,9 @@ export type Deployment = {
   schedule_config: ScheduleConfig;
   worker_policy: WorkerPolicy;
   capability_policy: CapabilityRule[];
-  worker_targeting?: Record<string, unknown>;
-  pin_worker_id?: string;
+  worker_targeting: WorkerTargeting;
   status: DeploymentStatus;
+  status_detail?: Record<string, unknown> | null;
   env_profile_code: string;
   parent_deployment_id: number | null;
   created_at: string | null;
@@ -78,14 +83,15 @@ export type CreateDeploymentBody = {
   worker_policy?: WorkerPolicy;
   capability_policy?: CapabilityRule[];
   env_profile_code?: string;
-  worker_targeting?: Record<string, unknown>;
-  pin_worker_id?: string;
+  worker_targeting?: WorkerTargeting;
 };
 
 export type ListDeploymentsParams = {
   flow_code?: string;
   status?: string;
   mode?: string;
+  /** Exclude legacy cron child deployment rows (parent_deployment_id set). */
+  root_only?: boolean;
 };
 
 export async function listDeployments(
@@ -95,6 +101,7 @@ export async function listDeployments(
   if (params.flow_code) qs.set("flow_code", params.flow_code);
   if (params.status) qs.set("status", params.status);
   if (params.mode) qs.set("mode", params.mode);
+  if (params.root_only) qs.set("root_only", "true");
   const q = qs.toString();
   const r = await checkOk(await fetch(`/api/deployments${q ? `?${q}` : ""}`));
   return r.json() as Promise<{ deployments: Deployment[] }>;

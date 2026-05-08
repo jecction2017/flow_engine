@@ -1,9 +1,9 @@
-"""Cron scheduler embedded inside the Coordinator process (设计文档 §8.5).
+"""Cron scheduler embedded inside the Coordinator process.
 
-定时由 Coordinator.run() 的事件循环每 30s 调用一次 ``Scheduler.tick``。
-``tick`` 扫描 cron 模板部署，按 cron 表达式判定是否需要 fire；fire 时克隆出
-一个 once 子部署（``status='pending'``、``parent_deployment_id=template.id``），
-让 Coordinator 下一轮分配 Worker。
+定时由 Coordinator.run() 的事件循环按 ``FLOW_SCHEDULER_TICK_S`` 调用 ``Scheduler.tick``。
+``tick`` 扫描 cron 模板部署，按 cron 表达式判定是否需要 fire；fire 时在 ``fe_deploy_run``
+插入 ``status='queued'`` 的一条记录（同一 ``deployment_id``），由 Coordinator 分配 Worker，
+Worker claim 后执行。
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from flow_engine.db.models import FeDeployRun, FeFlowDeployment
+from flow_engine.db.models import FeDeployRun, FeFlowDeployment, FeWorker
 from flow_engine.db.session import db_session
 
 logger = logging.getLogger(__name__)
@@ -57,26 +57,85 @@ class Scheduler:
 # tick implementation
 # ---------------------------------------------------------------------------
 
+def _normalize_targeting(raw: Any) -> dict[str, Any]:
+    """Best-effort normalize; invalid shapes become mode=any."""
+    if not isinstance(raw, dict):
+        return {"mode": "any"}
+    mode = str(raw.get("mode") or "any").strip().lower()
+    if mode == "pin":
+        worker_id = str(raw.get("worker_id") or "").strip()
+        if worker_id:
+            return {"mode": "pin", "worker_id": worker_id}
+        return {"mode": "any"}
+    if mode == "pool":
+        worker_ids = raw.get("worker_ids")
+        if isinstance(worker_ids, list):
+            ids = [str(x).strip() for x in worker_ids if str(x).strip()]
+            if ids:
+                return {"mode": "pool", "worker_ids": list(dict.fromkeys(ids))}
+        return {"mode": "any"}
+    return {"mode": "any"}
+
+
+def _has_eligible_worker(*, tmpl: FeFlowDeployment, active_workers: set[str]) -> bool:
+    """Whether this template has at least one eligible active worker."""
+    targeting = _normalize_targeting(getattr(tmpl, "worker_targeting", None) or {})
+    mode = targeting.get("mode")
+    if mode == "pin":
+        return targeting["worker_id"] in active_workers
+    if mode == "pool":
+        pool = {str(x) for x in (targeting.get("worker_ids") or []) if str(x)}
+        return bool(active_workers & pool)
+    return bool(active_workers)
+
 
 def _tick_sync() -> int:
-    """Synchronous core. Returns how many cron fires were created."""
+    """Synchronous core. Returns how many cron fires (queued runs) were created."""
     fires = 0
     now = datetime.now(timezone.utc)
     with db_session() as s:
+        active_workers = set(
+            s.execute(
+                select(FeWorker.worker_id)
+                .where(FeWorker.status == "active")
+                .where(FeWorker.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
+        )
         stmt = (
             select(FeFlowDeployment)
             .where(FeFlowDeployment.schedule_type == "cron")
-            .where(FeFlowDeployment.status.in_(("running", "stopped")))
+            # Only running templates should fire. Stopped means disabled.
+            .where(FeFlowDeployment.status == "running")
             .where(FeFlowDeployment.deleted_at.is_(None))
         )
         templates = list(s.execute(stmt).scalars().all())
 
         for tmpl in templates:
+            if not _has_eligible_worker(tmpl=tmpl, active_workers=active_workers):
+                targeting = _normalize_targeting(getattr(tmpl, "worker_targeting", None) or {})
+                tmpl.status = "failed"
+                tmpl.status_detail = {
+                    "reason": "no_eligible_worker",
+                    "schedule_type": "cron",
+                    "targeting": targeting,
+                    "active_worker_count": len(active_workers),
+                    "ts": now.isoformat(),
+                    "message": "cron due but no eligible active worker",
+                }
+                logger.warning(
+                    "cron template due but no eligible active workers; mark failed: dep_id=%s targeting=%s active=%d",
+                    tmpl.id,
+                    targeting,
+                    len(active_workers),
+                )
+                continue
             cfg = tmpl.schedule_config or {}
             cron_expr = cfg.get("cron_expr")
             if not cron_expr:
                 continue
-            base = _last_fire_time(s, tmpl) or tmpl.created_at or now
+            base = _cron_schedule_base_time(s, tmpl) or now
             try:
                 nxt = _parse_cron_next(cron_expr, base)
             except Exception:  # noqa: BLE001
@@ -87,47 +146,47 @@ def _tick_sync() -> int:
             if nxt > now:
                 continue
 
-            # Fire: clone as a once child deployment.
-            child = FeFlowDeployment(
-                flow_code=tmpl.flow_code,
-                ver_no=tmpl.ver_no,
-                mode=tmpl.mode,
-                schedule_type="once",
-                schedule_config={},
-                worker_policy=tmpl.worker_policy,
-                capability_policy=tmpl.capability_policy,
-                worker_targeting=getattr(tmpl, "worker_targeting", None) or {},
-                pin_worker_id=getattr(tmpl, "pin_worker_id", "") or "",
-                status="pending",
-                env_profile_code=tmpl.env_profile_code,
-                parent_deployment_id=tmpl.id,
+            s.add(
+                FeDeployRun(
+                    deployment_id=int(tmpl.id),
+                    worker_id=None,
+                    flow_code=tmpl.flow_code,
+                    ver_no=int(tmpl.ver_no),
+                    mode=str(tmpl.mode),
+                    schedule_type="cron",
+                    trigger_type="cron",
+                    trigger_context=None,
+                    status="queued",
+                    started_at=None,
+                )
             )
-            s.add(child)
             fires += 1
     return fires
 
 
-def _last_fire_time(session: Any, tmpl: FeFlowDeployment) -> datetime | None:
-    """Approximation: the latest ``started_at`` of children produced by this template.
+def _cron_schedule_base_time(session: Any, tmpl: FeFlowDeployment) -> datetime | None:
+    """Anchor for ``croniter.get_next``: last time we enqueued a cron run for this template.
 
-    If none, fall back to ``tmpl.created_at``. We never persist a dedicated
-    "last fire" column to keep the schema flat.
+    Uses ``max(created_at)`` of ``FeDeployRun`` rows for this deployment with
+    ``trigger_type='cron'``. If none, uses the template's ``created_at``.
     """
     stmt = (
-        select(FeDeployRun)
-        .join(
-            FeFlowDeployment,
-            FeFlowDeployment.id == FeDeployRun.deployment_id,
-        )
-        .where(FeFlowDeployment.parent_deployment_id == tmpl.id)
+        select(func.max(FeDeployRun.created_at))
+        .where(FeDeployRun.deployment_id == tmpl.id)
+        .where(FeDeployRun.trigger_type == "cron")
         .where(FeDeployRun.deleted_at.is_(None))
-        .order_by(FeDeployRun.started_at.desc())
-        .limit(1)
     )
-    row = session.execute(stmt).scalars().first()
-    if row is None:
-        return tmpl.created_at
-    return row.started_at
+    max_enqueued = session.execute(stmt).scalar_one_or_none()
+    if max_enqueued is not None:
+        if max_enqueued.tzinfo is None:
+            return max_enqueued.replace(tzinfo=timezone.utc)
+        return max_enqueued
+    created = tmpl.created_at
+    if created is None:
+        return None
+    if created.tzinfo is None:
+        return created.replace(tzinfo=timezone.utc)
+    return created
 
 
 async def _tick_async() -> None:

@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 
 from flow_engine.db.models import (
+    FeDeployRun,
     FeFlowDeployment,
     FeWorker,
     FeWorkerAssignment,
@@ -42,6 +43,7 @@ COORDINATOR_TICK_S = float(os.environ.get("FLOW_COORDINATOR_TICK_S", "5"))
 SCHEDULER_TICK_S = float(os.environ.get("FLOW_SCHEDULER_TICK_S", "30"))
 DEAD_THRESHOLD_S = float(os.environ.get("FLOW_COORDINATOR_DEAD_THRESHOLD_S", "30"))
 LEADER_LEASE_S = float(os.environ.get("FLOW_COORDINATOR_LEASE_S", "60"))
+RUN_REAPER_GRACE_S = float(os.environ.get("FLOW_COORDINATOR_RUN_REAPER_GRACE_S", "60"))
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +69,6 @@ def _list_pending_deployments() -> list[dict[str, Any]]:
                 "schedule_type": r.schedule_type,
                 "worker_policy": r.worker_policy,
                 "worker_targeting": getattr(r, "worker_targeting", None) or {},
-                "pin_worker_id": (getattr(r, "pin_worker_id", "") or "").strip(),
             }
             for r in s.execute(stmt).scalars().all()
         ]
@@ -98,6 +99,186 @@ def _list_dead_workers() -> list[str]:
         return list(s.execute(stmt).scalars().all())
 
 
+def _upsert_assignment(
+    s: Any,
+    *,
+    dep_id: int,
+    worker_id: str,
+    role: str,
+    lease_expires_at: datetime | None,
+) -> None:
+    """Create or revive an assignment row (see unique key on deployment_id, worker_id)."""
+    with s.no_autoflush:
+        row = (
+            s.execute(
+                select(FeWorkerAssignment)
+                .where(FeWorkerAssignment.deployment_id == dep_id)
+                .where(FeWorkerAssignment.worker_id == worker_id)
+            )
+            .scalars()
+            .first()
+        )
+    if row is None:
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id=worker_id,
+                role=role,
+                lease_expires_at=lease_expires_at,
+            )
+        )
+        return
+
+    row.deleted_at = None
+    row.role = role
+    row.lease_expires_at = lease_expires_at
+
+
+def _normalize_targeting(raw: Any) -> dict[str, Any]:
+    """Best-effort normalize; invalid shapes become mode=any (scheduler safety)."""
+    if not isinstance(raw, dict):
+        return {"mode": "any"}
+    mode = str(raw.get("mode") or "any").strip().lower()
+    if mode == "pin":
+        worker_id = str(raw.get("worker_id") or "").strip()
+        if worker_id:
+            return {"mode": "pin", "worker_id": worker_id}
+        return {"mode": "any"}
+    if mode == "pool":
+        worker_ids = raw.get("worker_ids")
+        if isinstance(worker_ids, list):
+            ids = [str(x).strip() for x in worker_ids if str(x).strip()]
+            if ids:
+                return {"mode": "pool", "worker_ids": list(dict.fromkeys(ids))}
+        return {"mode": "any"}
+    return {"mode": "any"}
+
+
+def _eligible_by_targeting(
+    *,
+    active_workers: list[str] | set[str],
+    targeting_raw: Any,
+) -> tuple[str, set[str]]:
+    """Return (mode, eligible_set) for the given targeting spec.
+
+    Notes:
+    - mode=pin: eligible is either {worker_id} (if active) or empty.
+    - mode=pool: eligible is active ∩ pool_ids.
+    - mode=any: eligible is active.
+    """
+    targeting = _normalize_targeting(targeting_raw or {})
+    active_set = set(active_workers)
+    mode = str(targeting.get("mode") or "any")
+    if mode == "pin":
+        w = targeting.get("worker_id")
+        if isinstance(w, str) and w and w in active_set:
+            return "pin", {w}
+        return "pin", set()
+    if mode == "pool":
+        pool = targeting.get("worker_ids") or []
+        pool_set = {str(x) for x in pool if str(x)}
+        return "pool", active_set & pool_set
+    return "any", active_set
+
+
+def _stop_stopping_deployments_sync() -> int:
+    """Close the loop for stop requests.
+
+    Semantics: stopping -> immediately release assignments and mark deployment stopped.
+    """
+    now = _now()
+    actions = 0
+    with db_session() as s:
+        deps = list(
+            s.execute(
+                select(FeFlowDeployment)
+                .where(FeFlowDeployment.status == "stopping")
+                .where(FeFlowDeployment.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
+        )
+        if not deps:
+            return 0
+        dep_ids = [int(d.id) for d in deps]
+        assns = list(
+            s.execute(
+                select(FeWorkerAssignment)
+                .where(FeWorkerAssignment.deployment_id.in_(dep_ids))
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
+        )
+        for a in assns:
+            a.deleted_at = now
+            actions += 1
+        for d in deps:
+            d.status = "stopped"
+            actions += 1
+    return actions
+
+
+def _reap_stale_runs_sync() -> int:
+    """Fail deploy runs that are stuck in running but their worker is dead/lost."""
+    now = _now()
+    actions = 0
+    with db_session() as s:
+        runs = list(
+            s.execute(
+                select(FeDeployRun)
+                .where(FeDeployRun.status == "running")
+                .where(FeDeployRun.worker_id.is_not(None))
+                .where(FeDeployRun.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
+        )
+        if not runs:
+            return 0
+
+        # Load workers in one query.
+        worker_ids = {str(r.worker_id) for r in runs if r.worker_id}
+        workers = {
+            w.worker_id: w
+            for w in s.execute(
+                select(FeWorker).where(FeWorker.worker_id.in_(list(worker_ids)))
+            )
+            .scalars()
+            .all()
+        }
+        cutoff = now - timedelta(seconds=DEAD_THRESHOLD_S)
+        grace = now - timedelta(seconds=RUN_REAPER_GRACE_S)
+
+        for r in runs:
+            wid = str(r.worker_id or "")
+            if not wid:
+                continue
+            if r.started_at and r.started_at.tzinfo is None:
+                # Treat as UTC if naive.
+                started_at = r.started_at.replace(tzinfo=timezone.utc)
+            else:
+                started_at = r.started_at
+            if started_at and started_at > grace:
+                continue
+
+            w = workers.get(wid)
+            worker_lost = (
+                w is None
+                or w.deleted_at is not None
+                or w.status != "active"
+                or (w.last_heartbeat is not None and w.last_heartbeat <= cutoff)
+            )
+            if not worker_lost:
+                continue
+
+            r.status = "failed"
+            r.finished_at = now
+            r.error = f"worker lost: {wid}"
+            actions += 1
+    return actions
+
+
 def _assign_pending_sync() -> int:
     """Assign all pending deployments and return the number of assignments created."""
     created = 0
@@ -113,51 +294,17 @@ def _assign_pending_sync() -> int:
     lease_until = now + timedelta(seconds=LEADER_LEASE_S)
 
     with db_session() as s:
-        def _upsert_assignment(*, dep_id: int, worker_id: str, role: str, lease_expires_at: datetime | None) -> None:
-            """Create or revive an assignment row.
-
-            ``fe_worker_assignment`` has a unique key (deployment_id, worker_id) that
-            still applies after soft-delete. A worker may "release" an assignment by
-            setting ``deleted_at``; when re-assigning the same deployment to the same
-            worker, we must revive the existing row instead of inserting a new one.
-            """
-            with s.no_autoflush:
-                row = (
-                    s.execute(
-                        select(FeWorkerAssignment)
-                        .where(FeWorkerAssignment.deployment_id == dep_id)
-                        .where(FeWorkerAssignment.worker_id == worker_id)
-                    )
-                    .scalars()
-                    .first()
-                )
-            if row is None:
-                s.add(
-                    FeWorkerAssignment(
-                        deployment_id=dep_id,
-                        worker_id=worker_id,
-                        role=role,
-                        lease_expires_at=lease_expires_at,
-                    )
-                )
-                return
-
-            # revive/update in-place
-            row.deleted_at = None
-            row.role = role
-            row.lease_expires_at = lease_expires_at
-
         for dep in pending:
-            # cron deployments are templates; they are driven by Scheduler.tick()
-            # which clones once children. Do not assign cron templates to workers.
-            if dep.get("schedule_type") == "cron":
-                dep_row = s.get(FeFlowDeployment, dep["id"])
-                if dep_row is not None and dep_row.status == "pending":
-                    dep_row.status = "running"
-                continue
             wp = dep["worker_policy"] or {}
             wp_type = wp.get("type", "single_active")
             min_workers = max(1, int(wp.get("min_workers", 1)))
+            if dep.get("schedule_type") == "cron":
+                # cron template should be active without requiring assignments
+                dep_row = s.get(FeFlowDeployment, dep["id"])
+                if dep_row is not None and dep_row.status == "pending":
+                    dep_row.status = "running"
+                    created += 1
+                continue
 
             existing_stmt = (
                 select(FeWorkerAssignment.worker_id)
@@ -166,44 +313,216 @@ def _assign_pending_sync() -> int:
             )
             existing = set(s.execute(existing_stmt).scalars().all())
 
-            eligible = [w for w in workers if w not in existing]
-            pin = (dep.get("pin_worker_id") or "").strip()
-            if pin:
-                if pin not in workers:
-                    # Pin requested but worker not active: fail fast (explicit targeting contract).
-                    dep_row = s.get(FeFlowDeployment, dep["id"])
-                    if dep_row is not None and dep_row.status == "pending":
-                        dep_row.status = "failed"
-                    logger.warning("deployment pin worker not active: dep_id=%s worker_id=%s", dep["id"], pin)
-                    continue
-                eligible = [pin] if pin in eligible else []
-            else:
-                targeting = dep.get("worker_targeting") or {}
-                pool = targeting.get("worker_ids") if isinstance(targeting, dict) else None
-                if isinstance(pool, list) and pool:
-                    pool_set = {str(x) for x in pool if str(x)}
-                    eligible = [w for w in eligible if w in pool_set]
+            mode, eligible_set = _eligible_by_targeting(
+                active_workers=workers,
+                targeting_raw=dep.get("worker_targeting") or {},
+            )
+            if mode == "pin" and not eligible_set:
+                # Pin requested but worker not active: fail fast (explicit targeting contract).
+                targeting = _normalize_targeting(dep.get("worker_targeting") or {})
+                pin = targeting.get("worker_id")
+                dep_row = s.get(FeFlowDeployment, dep["id"])
+                if dep_row is not None and dep_row.status == "pending":
+                    dep_row.status = "failed"
+                    dep_row.status_detail = {
+                        "reason": "pin_worker_offline",
+                        "worker_id": pin,
+                        "targeting": targeting,
+                        "ts": _now().isoformat(),
+                        "message": "pin worker not active",
+                    }
+                logger.warning("deployment pin worker not active: dep_id=%s worker_id=%s", dep["id"], pin)
+                continue
+
+            eligible = [w for w in workers if w not in existing and w in eligible_set]
 
             picks = eligible[:min_workers]
 
             if wp_type == "multi_active":
                 for w in picks:
-                    _upsert_assignment(dep_id=int(dep["id"]), worker_id=w, role="replica", lease_expires_at=None)
+                    _upsert_assignment(
+                        s,
+                        dep_id=int(dep["id"]),
+                        worker_id=w,
+                        role="replica",
+                        lease_expires_at=None,
+                    )
                     created += 1
             else:
                 # single_active
                 if not picks:
                     continue
                 leader_w = picks[0]
-                _upsert_assignment(dep_id=int(dep["id"]), worker_id=leader_w, role="leader", lease_expires_at=lease_until)
+                _upsert_assignment(
+                    s,
+                    dep_id=int(dep["id"]),
+                    worker_id=leader_w,
+                    role="leader",
+                    lease_expires_at=lease_until,
+                )
                 created += 1
                 for w in picks[1:]:
-                    _upsert_assignment(dep_id=int(dep["id"]), worker_id=w, role="standby", lease_expires_at=None)
+                    _upsert_assignment(
+                        s,
+                        dep_id=int(dep["id"]),
+                        worker_id=w,
+                        role="standby",
+                        lease_expires_at=None,
+                    )
                     created += 1
 
             # Mark deployment running (we have at least one assignment now).
             dep_row = s.get(FeFlowDeployment, dep["id"])
             if dep_row is not None and dep_row.status == "pending":
+                dep_row.status = "running"
+    return created
+
+
+def _assign_cron_queued_sync() -> int:
+    """Create assignments for cron templates that have queued FeDeployRun rows."""
+    created = 0
+    workers = _list_active_workers()
+    if not workers:
+        with db_session() as s:
+            n_queued = (
+                s.execute(
+                    select(FeDeployRun.deployment_id)
+                    .where(FeDeployRun.status == "queued")
+                    .where(FeDeployRun.deleted_at.is_(None))
+                    .distinct()
+                )
+                .scalars()
+                .all()
+            )
+        if n_queued:
+            logger.info(
+                "no active workers; cron queued runs wait on %d deployment(s)",
+                len(n_queued),
+            )
+        return 0
+
+    now = _now()
+    lease_until = now + timedelta(seconds=LEADER_LEASE_S)
+
+    with db_session() as s:
+        dep_ids = [
+            int(x)
+            for x in s.execute(
+                select(FeDeployRun.deployment_id)
+                .where(FeDeployRun.status == "queued")
+                .where(FeDeployRun.deleted_at.is_(None))
+                .distinct()
+            ).scalars().all()
+        ]
+        for dep_id in dep_ids:
+            dep_row = s.get(FeFlowDeployment, dep_id)
+            if dep_row is None or dep_row.deleted_at is not None:
+                continue
+            if dep_row.schedule_type != "cron":
+                continue
+            if dep_row.status not in ("running", "stopped"):
+                continue
+
+            active_assn = (
+                s.execute(
+                    select(FeWorkerAssignment)
+                    .where(FeWorkerAssignment.deployment_id == dep_id)
+                    .where(FeWorkerAssignment.deleted_at.is_(None))
+                )
+                .scalars()
+                .first()
+            )
+            if active_assn is not None:
+                continue
+
+            wp = dep_row.worker_policy or {}
+            wp_type = wp.get("type", "single_active")
+            min_workers = max(1, int(wp.get("min_workers", 1)))
+
+            existing_stmt = (
+                select(FeWorkerAssignment.worker_id)
+                .where(FeWorkerAssignment.deployment_id == dep_id)
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+            )
+            existing = set(s.execute(existing_stmt).scalars().all())
+            eligible = [w for w in workers if w not in existing]
+            mode, eligible_set = _eligible_by_targeting(
+                active_workers=workers,
+                targeting_raw=getattr(dep_row, "worker_targeting", None) or {},
+            )
+            if mode == "pin" and not eligible_set:
+                targeting = _normalize_targeting(getattr(dep_row, "worker_targeting", None) or {})
+                pin = targeting.get("worker_id")
+                # Fail queued runs to avoid infinite backlog.
+                queued = list(
+                    s.execute(
+                        select(FeDeployRun)
+                        .where(FeDeployRun.deployment_id == dep_id)
+                        .where(FeDeployRun.status == "queued")
+                        .where(FeDeployRun.deleted_at.is_(None))
+                    )
+                    .scalars()
+                    .all()
+                )
+                for r in queued:
+                    r.status = "failed"
+                    r.finished_at = _now()
+                    r.error = f"pin worker offline: {pin}"
+                    created += 1
+                dep_row.status = "failed"
+                dep_row.status_detail = {
+                    "reason": "pin_worker_offline",
+                    "worker_id": pin,
+                    "targeting": targeting,
+                    "queued_failed": len(queued),
+                    "ts": _now().isoformat(),
+                    "message": "cron pin worker offline; failed queued runs",
+                }
+                logger.warning(
+                    "cron deployment pin worker not active; failed %d queued run(s): dep_id=%s worker_id=%s",
+                    len(queued),
+                    dep_id,
+                    pin,
+                )
+                continue
+
+            eligible = [w for w in workers if w not in existing and w in eligible_set]
+
+            picks = eligible[:min_workers]
+
+            if wp_type == "multi_active":
+                for w in picks:
+                    _upsert_assignment(
+                        s,
+                        dep_id=dep_id,
+                        worker_id=w,
+                        role="replica",
+                        lease_expires_at=None,
+                    )
+                    created += 1
+            else:
+                if not picks:
+                    continue
+                leader_w = picks[0]
+                _upsert_assignment(
+                    s,
+                    dep_id=dep_id,
+                    worker_id=leader_w,
+                    role="leader",
+                    lease_expires_at=lease_until,
+                )
+                created += 1
+                for w in picks[1:]:
+                    _upsert_assignment(
+                        s,
+                        dep_id=dep_id,
+                        worker_id=w,
+                        role="standby",
+                        lease_expires_at=None,
+                    )
+                    created += 1
+
+            if dep_row.status == "pending":
                 dep_row.status = "running"
     return created
 
@@ -253,10 +572,11 @@ def _check_dead_workers_sync() -> int:
                         promoted.lease_expires_at = lease_until
                         actions += 1
                     else:
-                        # No standby → re-queue the deployment.
+                        # No standby → re-queue the deployment (once/resident).
                         dep_row = s.get(FeFlowDeployment, a.deployment_id)
                         if dep_row is not None and dep_row.status == "running":
-                            dep_row.status = "pending"
+                            if dep_row.schedule_type != "cron":
+                                dep_row.status = "pending"
                             actions += 1
                 elif a.role == "replica":
                     # Find another active worker not already holding this deployment.
@@ -266,7 +586,16 @@ def _check_dead_workers_sync() -> int:
                         .where(FeWorkerAssignment.deleted_at.is_(None))
                     )
                     held = set(s.execute(held_stmt).scalars().all())
-                    candidates = [w for w in active_ids if w not in held]
+                    dep_row = s.get(FeFlowDeployment, a.deployment_id)
+                    mode, eligible_set = _eligible_by_targeting(
+                        active_workers=active_ids,
+                        targeting_raw=getattr(dep_row, "worker_targeting", None) if dep_row else {},
+                    )
+                    # pin means "do not replace with a different worker"
+                    if mode != "pin":
+                        candidates = [w for w in eligible_set if w not in held]
+                    else:
+                        candidates = []
                     if candidates:
                         s.add(
                             FeWorkerAssignment(
@@ -303,8 +632,11 @@ class Coordinator:
             while not self._stop_evt.is_set():
                 started = time.monotonic()
                 try:
+                    await asyncio.to_thread(_stop_stopping_deployments_sync)
                     await asyncio.to_thread(_assign_pending_sync)
+                    await asyncio.to_thread(_assign_cron_queued_sync)
                     await asyncio.to_thread(_check_dead_workers_sync)
+                    await asyncio.to_thread(_reap_stale_runs_sync)
                 except Exception:  # noqa: BLE001
                     logger.exception("coordinator tick failed")
 

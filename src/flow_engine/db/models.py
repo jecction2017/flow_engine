@@ -504,7 +504,7 @@ class FeFlowDeployment(_AuditCols, Base):
 
     schedule_type:
         once     一次性触发（执行一次后 stopped）
-        cron     按 cron 表达式周期触发（每次产生一个 once 子部署）
+        cron     按 cron 表达式周期触发（每次在 fe_deploy_run 插入一条 queued 记录）
         resident 常驻流程（带重启 backoff）
 
     schedule_config:
@@ -575,19 +575,22 @@ class FeFlowDeployment(_AuditCols, Base):
     worker_targeting: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
-        comment="Worker 定向策略 JSON（pool/labels 等）；空对象表示不限制",
-    )
-    pin_worker_id: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-        server_default=text("''"),
-        comment="强绑定到指定 worker_id；空字符串表示不强绑定",
+        comment=(
+            "Worker 定向策略 JSON。推荐结构："
+            '{"mode":"any"} / {"mode":"pin","worker_id":"..."} / {"mode":"pool","worker_ids":["..."]}；'
+            "空对象等价于 any"
+        ),
     )
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         server_default=text("'pending'"),
         comment="状态：pending / running / stopping / stopped / failed",
+    )
+    status_detail: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="状态诊断信息 JSON（失败原因、最近一次异常等）",
     )
     env_profile_code: Mapped[str] = mapped_column(
         String(64),
@@ -598,7 +601,7 @@ class FeFlowDeployment(_AuditCols, Base):
     parent_deployment_id: Mapped[int | None] = mapped_column(
         BIGINT(unsigned=True),
         nullable=True,
-        comment="cron 触发时填父 deployment.id；其他场景 NULL",
+        comment="已废弃：历史数据可能为旧版 cron 克隆子部署；新代码勿写入",
     )
 
 
@@ -738,6 +741,7 @@ class FeDeployRun(_AuditCols, Base):
     __tablename__ = "fe_deploy_run"
     __table_args__ = (
         Index("idx_fe_deploy_run_deployment_id", "deployment_id"),
+        Index("idx_fe_deploy_run_deployment_id_status", "deployment_id", "status"),
         Index("idx_fe_deploy_run_flow_code_started_at", "flow_code", "started_at"),
         Index("idx_fe_deploy_run_worker_id_started_at", "worker_id", "started_at"),
         {**_FE_TABLE_OPTS, "comment": "部署运行实例表（运行中心专用）"},
@@ -797,14 +801,12 @@ class FeDeployRun(_AuditCols, Base):
         String(16),
         nullable=False,
         server_default=text("'running'"),
-        comment="状态：running / completed / failed / terminated",
+        comment="状态：queued / running / completed / failed / terminated",
     )
-    started_at: Mapped[datetime] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         MySQLDateTime(fsp=3),
-        nullable=False,
-        default=_utcnow,
-        server_default=text("CURRENT_TIMESTAMP(3)"),
-        comment="开始时间",
+        nullable=True,
+        comment="执行开始时间；queued 时为 NULL，claim 后写入",
     )
     finished_at: Mapped[datetime | None] = mapped_column(
         MySQLDateTime(fsp=3),

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from statistics import mean
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from flow_engine.db.models import FeDeployRun
 from flow_engine.db.session import db_session
@@ -52,6 +52,32 @@ def create_deploy_run(
             started_at=now,
         )
         s.add(row)
+        s.flush()
+        return int(row.id)
+
+
+def claim_queued_deploy_run(deployment_id: int, worker_id: str) -> int | None:
+    """FIFO-claim the oldest queued run for ``deployment_id``; returns run id or None."""
+    with db_session() as s:
+        row = (
+            s.execute(
+                select(FeDeployRun)
+                .where(FeDeployRun.deployment_id == int(deployment_id))
+                .where(FeDeployRun.status == "queued")
+                .where(FeDeployRun.deleted_at.is_(None))
+                .order_by(FeDeployRun.id.asc())
+                .limit(1)
+                .with_for_update()
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            return None
+        now = datetime.now(timezone.utc)
+        row.status = "running"
+        row.worker_id = worker_id
+        row.started_at = now
         s.flush()
         return int(row.id)
 
@@ -168,7 +194,9 @@ def list_deploy_runs(
             stmt = stmt.where(FeDeployRun.status == status)
         if worker_id:
             stmt = stmt.where(FeDeployRun.worker_id == worker_id)
-        stmt = stmt.order_by(FeDeployRun.started_at.desc())
+        stmt = stmt.order_by(
+            func.coalesce(FeDeployRun.started_at, FeDeployRun.created_at).desc()
+        )
 
         all_rows = list(s.execute(stmt).scalars().all())
         total = len(all_rows)

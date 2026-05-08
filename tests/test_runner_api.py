@@ -73,6 +73,54 @@ def test_create_and_list_deployment(client: TestClient) -> None:
     assert any(d["id"] == dep["id"] for d in rows)
 
 
+def test_list_deployments_root_only_hides_legacy_children(client: TestClient) -> None:
+    from flow_engine.db.models import FeFlowDeployment
+    from flow_engine.db.session import db_session
+
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    root_id = int(r.json()["id"])
+    with db_session() as s:
+        s.add(
+            FeFlowDeployment(
+                flow_code="runner_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                schedule_config={},
+                worker_policy={"type": "single_active", "min_workers": 1},
+                capability_policy=[],
+                worker_targeting={},
+                status="failed",
+                env_profile_code="default",
+                parent_deployment_id=root_id,
+            )
+        )
+
+    r_all = client.get("/api/deployments")
+    assert r_all.status_code == 200
+    n_all = len(r_all.json()["deployments"])
+
+    r_root = client.get("/api/deployments?root_only=true")
+    assert r_root.status_code == 200
+    ids = {d["id"] for d in r_root.json()["deployments"]}
+    assert root_id in ids
+    assert n_all >= len(ids) + 1
+
+
 def test_create_cron_requires_cron_expr(client: TestClient) -> None:
     ver = _commit_flow(client)
     r = client.post(

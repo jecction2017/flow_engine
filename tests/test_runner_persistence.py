@@ -99,7 +99,7 @@ async def test_persist_resident_run_writes_node_stats_not_runs() -> None:
 async def test_test_runner_creates_batch_and_runs() -> None:
     """End-to-end: lookup ns rows → run_test_batch → fe_flow_test_batch + fe_flow_run rows."""
     from flow_engine.lookup.lookup_service import put_table
-    from flow_engine.runner import test_runner
+    from flow_engine.runner import test_persistence, test_runner
     from flow_engine.runner.models import MockConfig, MockMode
 
     # Set up a flow version
@@ -146,7 +146,7 @@ async def test_test_runner_creates_batch_and_runs() -> None:
     assert info["completed_runs"] == 3
     assert info["error_runs"] == 0
 
-    runs = persistence.list_flow_runs(test_batch_id=batch_id)
+    runs = test_persistence.list_test_runs(test_batch_id=batch_id)
     assert runs["total"] == 3
     for r in runs["runs"]:
         assert r["mode"] == "debug"

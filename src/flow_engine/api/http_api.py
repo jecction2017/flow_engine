@@ -175,10 +175,34 @@ class CreateDeploymentBody(BaseModel):
         default_factory=dict,
         description="Worker 定向策略（pool/labels 等）；空对象表示不限制",
     )
-    pin_worker_id: str = Field(
-        default="",
-        description="强绑定到指定 worker_id；空字符串表示不强绑定",
-    )
+
+
+def _normalize_worker_targeting(raw: Any) -> dict[str, Any]:
+    """Normalize & validate worker_targeting into a strict any/pin/pool shape."""
+    targeting: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    mode = str(targeting.get("mode") or "any").strip().lower()
+    if mode not in ("any", "pin", "pool"):
+        raise HTTPException(status_code=400, detail="worker_targeting.mode must be any|pin|pool")
+
+    if mode == "any":
+        return {"mode": "any"}
+
+    if mode == "pin":
+        worker_id = str(targeting.get("worker_id") or "").strip()
+        if not worker_id:
+            raise HTTPException(status_code=400, detail="worker_targeting.worker_id is required for mode=pin")
+        return {"mode": "pin", "worker_id": worker_id}
+
+    # pool
+    raw_ids = targeting.get("worker_ids")
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="worker_targeting.worker_ids must be a non-empty list for mode=pool")
+    ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="worker_targeting.worker_ids must be a non-empty list for mode=pool")
+    # stable order + de-dup
+    dedup = list(dict.fromkeys(ids))
+    return {"mode": "pool", "worker_ids": dedup}
 
 
 class PatchDeploymentBody(BaseModel):
@@ -868,9 +892,9 @@ def create_app() -> FastAPI:
             "schedule_config": row.schedule_config,
             "worker_policy": row.worker_policy,
             "capability_policy": row.capability_policy,
-            "worker_targeting": getattr(row, "worker_targeting", None) or {},
-            "pin_worker_id": getattr(row, "pin_worker_id", "") or "",
+            "worker_targeting": _normalize_worker_targeting(getattr(row, "worker_targeting", None) or {}),
             "status": row.status,
+            "status_detail": getattr(row, "status_detail", None),
             "env_profile_code": row.env_profile_code,
             "parent_deployment_id": row.parent_deployment_id,
             "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -888,6 +912,7 @@ def create_app() -> FastAPI:
             # cron deployments are templates; they should be active immediately so the
             # Scheduler can fire child once deployments. Do not enqueue them as pending.
             initial_status = "running" if body.schedule_type == "cron" else "pending"
+            targeting = _normalize_worker_targeting(body.worker_targeting or {})
             row = FeFlowDeployment(
                 flow_code=body.flow_code,
                 ver_no=body.ver_no,
@@ -898,8 +923,7 @@ def create_app() -> FastAPI:
                 capability_policy=[r.model_dump() for r in body.capability_policy],
                 status=initial_status,
                 env_profile_code=body.env_profile_code or "",
-                worker_targeting=body.worker_targeting or {},
-                pin_worker_id=(body.pin_worker_id or "").strip(),
+                worker_targeting=targeting,
             )
             s.add(row)
             s.flush()
@@ -910,9 +934,15 @@ def create_app() -> FastAPI:
         flow_code: str | None = Query(default=None),
         status: str | None = Query(default=None),
         mode: str | None = Query(default=None),
+        root_only: bool = Query(
+            default=False,
+            description="If true, exclude rows with parent_deployment_id set (legacy cron clones).",
+        ),
     ) -> dict[str, Any]:
         with db_session() as s:
             stmt = select(FeFlowDeployment).where(FeFlowDeployment.deleted_at.is_(None))
+            if root_only:
+                stmt = stmt.where(FeFlowDeployment.parent_deployment_id.is_(None))
             if flow_code:
                 stmt = stmt.where(FeFlowDeployment.flow_code == flow_code)
             if status:

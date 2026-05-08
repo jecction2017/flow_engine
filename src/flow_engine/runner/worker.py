@@ -334,8 +334,6 @@ class Worker:
             if st == "resident":
                 await self._run_resident(deployment)
             elif st in ("once", "cron"):
-                # cron 部署本身是“模板”：实际由 Scheduler 克隆出 once 子部署交给 Coordinator；
-                # 一个 cron 模板自身落到 Worker 时按 once 语义跑一次（兼容直接触发场景）。
                 await self._run_once_flow(deployment)
             else:
                 logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)
@@ -357,18 +355,38 @@ class Worker:
 
     async def _run_once_flow(self, deployment: dict[str, Any]) -> None:
         deployment_id = int(deployment["id"])
+        st = str(deployment.get("schedule_type") or "once")
         run_id: int | None = None
         try:
-            run_id, runtime, profile_id = await self._prepare_runtime(
-                deployment, trigger_context=None
-            )
+            if st == "cron":
+                run_id = await asyncio.to_thread(
+                    deploy_persistence.claim_queued_deploy_run,
+                    deployment_id,
+                    self.worker_id,
+                )
+                if run_id is None:
+                    logger.warning(
+                        "cron queue empty after assignment deployment_id=%s",
+                        deployment_id,
+                    )
+                    return
+                run_id, runtime, profile_id = await self._prepare_runtime(
+                    deployment,
+                    trigger_context=None,
+                    existing_run_id=run_id,
+                )
+            else:
+                run_id, runtime, profile_id = await self._prepare_runtime(
+                    deployment, trigger_context=None
+                )
             with profile_scope(profile_id):
                 result = await runtime.run()
             await asyncio.to_thread(
                     deploy_persistence.complete_deploy_run, run_id, result, is_resident=False
             )
-            final = "stopped" if result.state == FlowState.COMPLETED else "failed"
-            await asyncio.to_thread(_set_deployment_status, deployment_id, final)
+            if st == "once":
+                final = "stopped" if result.state == FlowState.COMPLETED else "failed"
+                await asyncio.to_thread(_set_deployment_status, deployment_id, final)
         except asyncio.CancelledError:
             if run_id is not None:
                 await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
@@ -377,7 +395,8 @@ class Worker:
             logger.exception("once/cron run failed deployment_id=%s", deployment_id)
             if run_id is not None:
                 await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
-            await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
+            if st == "once":
+                await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
 
     async def _run_resident(self, deployment: dict[str, Any]) -> None:
         deployment_id = int(deployment["id"])
@@ -479,6 +498,7 @@ class Worker:
         deployment: dict[str, Any],
         *,
         trigger_context: dict[str, Any] | None,
+        existing_run_id: int | None = None,
     ) -> tuple[int, FlowRuntime, str]:
         flow_code = deployment["flow_code"]
         ver_no = int(deployment["ver_no"])
@@ -509,6 +529,9 @@ class Worker:
         )
         if trigger_context:
             runtime.ctx.global_ns.update(trigger_context)
+
+        if existing_run_id is not None:
+            return int(existing_run_id), runtime, profile_id
 
         run_id = await asyncio.to_thread(
             deploy_persistence.create_deploy_run,

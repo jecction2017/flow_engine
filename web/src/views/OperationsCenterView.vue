@@ -475,7 +475,24 @@
                 <div class="kv"><div class="k">status</div><div class="v"><span class="tag" :class="statusTag(selectedDeployment.status)">{{ selectedDeployment.status }}</span></div></div>
                 <div class="kv"><div class="k">schedule_type</div><div class="v mono">{{ selectedDeployment.schedule_type }}</div></div>
                 <div class="kv"><div class="k">env_profile</div><div class="v mono">{{ selectedDeployment.env_profile_code || "—" }}</div></div>
-                <div class="kv"><div class="k">pin_worker_id</div><div class="v mono">{{ selectedDeployment.pin_worker_id || "—" }}</div></div>
+                <div class="kv">
+                  <div class="k">status_detail</div>
+                  <div class="v mono">{{ selectedDeployment.status_detail ? JSON.stringify(selectedDeployment.status_detail) : "—" }}</div>
+                </div>
+                <div class="kv">
+                  <div class="k">worker_targeting</div>
+                  <div class="v mono">
+                    <template v-if="selectedDeployment.worker_targeting?.mode === 'pin'">
+                      pin: {{ selectedDeployment.worker_targeting.worker_id }}
+                    </template>
+                    <template v-else-if="selectedDeployment.worker_targeting?.mode === 'pool'">
+                      pool: {{ (selectedDeployment.worker_targeting.worker_ids || []).join(', ') || '—' }}
+                    </template>
+                    <template v-else>
+                      any
+                    </template>
+                  </div>
+                </div>
               </div>
 
               <div class="side-section" style="margin-top:12px;">
@@ -944,6 +961,7 @@ async function loadDeployments() {
       flow_code: depFilters.flow_code.trim() || undefined,
       status: depFilters.status || undefined,
       mode: depFilters.mode || undefined,
+      root_only: true,
     });
     deployments.value = res.deployments;
   } catch (e) {
@@ -1202,10 +1220,10 @@ async function submitDeployment() {
   };
 
   const selectedIds = [...workerSelected];
-  const targeting = (() => {
-    if (selectedIds.length === 0) return { pin: undefined as string | undefined, pool: undefined as string[] | undefined };
-    if (selectedIds.length === 1) return { pin: selectedIds[0]!, pool: undefined };
-    return { pin: undefined, pool: selectedIds };
+  const workerTargeting = (() => {
+    if (selectedIds.length === 0) return { mode: "any" as const };
+    if (selectedIds.length === 1) return { mode: "pin" as const, worker_id: selectedIds[0]! };
+    return { mode: "pool" as const, worker_ids: selectedIds };
   })();
 
   let capabilityPolicy: CapabilityRule[];
@@ -1227,11 +1245,7 @@ async function submitDeployment() {
     worker_policy: workerPolicy,
     capability_policy: capabilityPolicy,
     env_profile_code: form.env_profile_code,
-    pin_worker_id: targeting.pin,
-    worker_targeting: (() => {
-      if (!targeting.pool?.length) return undefined;
-      return { worker_ids: targeting.pool };
-    })(),
+    worker_targeting: workerTargeting,
   };
 
   creating.value = true;
@@ -1253,6 +1267,8 @@ function deploymentCfgText(d: DeploymentDetail): string {
       schedule_config: d.schedule_config,
       worker_policy: d.worker_policy,
       capability_policy: d.capability_policy,
+      worker_targeting: d.worker_targeting,
+      env_profile_code: d.env_profile_code,
     },
     null,
     2,
