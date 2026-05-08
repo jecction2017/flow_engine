@@ -86,10 +86,10 @@
 
           <div class="tabs">
             <button type="button" class="tab" :class="{ active: planTab === 'config' }" @click="planTab = 'config'">
-              Config
+              配置
             </button>
             <button type="button" class="tab" :class="{ active: planTab === 'runs' }" @click="planTab = 'runs'">
-              Runs
+              批次
             </button>
           </div>
 
@@ -288,7 +288,7 @@
               <tbody>
                 <tr v-if="loadingPlanBatches"><td colspan="7" class="muted center">加载中…</td></tr>
                 <tr v-else-if="!planBatches || planBatches.batches.length === 0">
-                  <td colspan="7" class="muted center">暂无运行记录</td>
+                  <td colspan="7" class="muted center">暂无批次记录</td>
                 </tr>
                 <tr
                   v-for="b in planBatches?.batches ?? []"
@@ -689,8 +689,8 @@
                 v-if="selectedPlanDetail"
                 type="button"
                 class="btn ghost small icon-back"
-                title="返回 Runs"
-                aria-label="返回 Runs"
+                title="返回批次列表"
+                aria-label="返回批次列表"
                 @click="backToPlanRuns"
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
@@ -827,7 +827,7 @@
 
           <section v-if="selectedRunDetail" class="run-detail-wrap">
             <header class="side-head">
-              <span class="side-title">运行详情</span>
+              <span class="side-title">用例运行详情</span>
               <button type="button" class="btn ghost small" @click="selectedRunId = null">关闭</button>
             </header>
             <RunDetailPanel :detail="selectedRunDetail" />

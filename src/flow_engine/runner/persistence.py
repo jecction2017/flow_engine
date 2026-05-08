@@ -317,6 +317,7 @@ def list_flow_runs(
     *,
     deployment_id: int | None = None,
     test_batch_id: int | None = None,
+    source: str | None = None,
     flow_code: str | None = None,
     mode: str | None = None,
     status: str | None = None,
@@ -329,6 +330,20 @@ def list_flow_runs(
     offset = max(0, int(offset))
     with db_session() as s:
         stmt = select(FeFlowRun).where(FeFlowRun.deleted_at.is_(None))
+        if source:
+            src = source.strip().lower()
+            if src in {"deployment", "prod", "production"}:
+                stmt = stmt.where(FeFlowRun.deployment_id.is_not(None))
+            elif src in {"test_batch", "test", "batch"}:
+                stmt = stmt.where(FeFlowRun.test_batch_id.is_not(None))
+            elif src in {"adhoc", "ad_hoc", "debug"}:
+                stmt = stmt.where(FeFlowRun.deployment_id.is_(None)).where(
+                    FeFlowRun.test_batch_id.is_(None)
+                )
+            else:
+                raise ValueError(
+                    "source must be one of: deployment | test_batch | adhoc"
+                )
         if deployment_id is not None:
             stmt = stmt.where(FeFlowRun.deployment_id == deployment_id)
         if test_batch_id is not None:
@@ -356,10 +371,17 @@ def list_flow_runs(
         def _run_dict(r: FeFlowRun) -> dict[str, Any]:
             ev_raw = getattr(r, "evaluation", None)
             ev = ev_raw if isinstance(ev_raw, dict) else None
+            if r.deployment_id is not None:
+                run_source = "deployment"
+            elif r.test_batch_id is not None:
+                run_source = "test_batch"
+            else:
+                run_source = "adhoc"
             base: dict[str, Any] = {
                 "id": r.id,
                 "deployment_id": r.deployment_id,
                 "test_batch_id": r.test_batch_id,
+                "source": run_source,
                 "flow_code": r.flow_code,
                 "ver_no": r.ver_no,
                 "mode": r.mode,
@@ -397,10 +419,17 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
         global_ns = _safe_json_load(row.global_ns)
         ev_raw = getattr(row, "evaluation", None)
         evaluation = ev_raw if isinstance(ev_raw, dict) else None
+        if row.deployment_id is not None:
+            run_source = "deployment"
+        elif row.test_batch_id is not None:
+            run_source = "test_batch"
+        else:
+            run_source = "adhoc"
         return {
             "id": row.id,
             "deployment_id": row.deployment_id,
             "test_batch_id": row.test_batch_id,
+            "source": run_source,
             "worker_id": row.worker_id,
             "flow_code": row.flow_code,
             "ver_no": row.ver_no,

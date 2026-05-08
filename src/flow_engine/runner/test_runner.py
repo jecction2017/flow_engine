@@ -24,7 +24,7 @@ from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.lookup.lookup_service import lookup_query_page
 from flow_engine.runner import assertions as assertions_mod
-from flow_engine.runner import persistence
+from flow_engine.runner import test_persistence
 from flow_engine.runner.models import MockConfig, RunMode, RunOptions
 from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import profile_scope, store as profile_store
@@ -255,13 +255,11 @@ async def _run_single_test_case(
     runtime.ctx.global_ns.update(mapped_ctx)
 
     run_id = await asyncio.to_thread(
-        persistence.create_flow_run,
-        deployment_id=None,
+        test_persistence.create_test_run,
         test_batch_id=batch_id,
         worker_id=None,
         flow_code=flow_code,
         ver_no=ver_no,
-        mode=RunMode.DEBUG,
         trigger_context={"row": test_input, "mapped": mapped_ctx},
     )
 
@@ -269,13 +267,22 @@ async def _run_single_test_case(
     try:
         with profile_scope(profile_code):
             result = await runtime.run()
-        await asyncio.to_thread(
-            persistence.complete_flow_run, run_id, result, is_resident=False
-        )
-        from flow_engine.engine.models import FlowState as _FS
-
+        node_runs = [r.to_dict() for r in result.node_runs]
+        flow_logs = list(result.flow_logs)
         gns = dict(getattr(result.context, "global_ns", {}) or {})
         gns.pop("dictionary", None)
+        from flow_engine.engine.models import FlowState as _FS
+
+        status = "completed" if result.state == _FS.COMPLETED else ("terminated" if result.state == _FS.TERMINATED else "failed")
+        await asyncio.to_thread(
+            test_persistence.complete_test_run,
+            run_id,
+            status=status,
+            node_runs=node_runs,
+            flow_logs=flow_logs,
+            global_ns=gns,
+            error=result.message,
+        )
         rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
             test_input
         )
@@ -284,20 +291,15 @@ async def _run_single_test_case(
             global_ns=gns,
             rules=rules,
         )
-        await asyncio.to_thread(persistence.set_flow_run_evaluation, run_id, ev)
+        await asyncio.to_thread(test_persistence.set_test_run_evaluation, run_id, ev)
         success = result.state == _FS.COMPLETED
     except Exception as e:  # noqa: BLE001
         logger.exception("test run failed (run_id=%s)", run_id)
-        await asyncio.to_thread(persistence.fail_flow_run, run_id, str(e))
+        await asyncio.to_thread(test_persistence.fail_test_run, run_id, str(e))
         await asyncio.to_thread(
-            persistence.set_flow_run_evaluation,
+            test_persistence.set_test_run_evaluation,
             run_id,
-            {
-                "verdict": "fail",
-                "reason": "exception",
-                "message": str(e),
-                "rules": [],
-            },
+            {"verdict": "fail", "reason": "exception", "message": str(e), "rules": []},
         )
     finally:
         await asyncio.to_thread(_bump_test_batch_counter, batch_id, success=success)
@@ -338,7 +340,7 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
             "plan": plan_brief,
         }
         try:
-            out["summary"] = persistence.summarize_batch_runs(int(row.id))
+            out["summary"] = test_persistence.summarize_batch_runs(int(row.id))
         except Exception:  # noqa: BLE001
             out["summary"] = None
         return out

@@ -29,6 +29,8 @@ export type FlowRunSummary = {
   id: number;
   deployment_id: number | null;
   test_batch_id: number | null;
+  /** run origin (derived server-side). */
+  source?: "deployment" | "test_batch" | "adhoc" | string;
   flow_code: string;
   ver_no: number;
   mode: string;
@@ -73,6 +75,7 @@ export type FlowRunDetail = {
   id: number;
   deployment_id: number | null;
   test_batch_id: number | null;
+  source?: "deployment" | "test_batch" | "adhoc" | string;
   worker_id: string | null;
   flow_code: string;
   ver_no: number;
@@ -94,6 +97,7 @@ export type FlowRunDetail = {
 
 export type ListFlowRunsParams = {
   deployment_id?: number;
+  source?: string;
   flow_code?: string;
   mode?: string;
   status?: string;
@@ -104,19 +108,15 @@ export type ListFlowRunsParams = {
 export async function listFlowRuns(
   params: ListFlowRunsParams = {},
 ): Promise<FlowRunsListResponse> {
-  const qs = new URLSearchParams();
-  if (params.deployment_id != null) qs.set("deployment_id", String(params.deployment_id));
-  if (params.flow_code) qs.set("flow_code", params.flow_code);
-  if (params.mode) qs.set("mode", params.mode);
-  if (params.status) qs.set("status", params.status);
-  if (params.offset != null) qs.set("offset", String(params.offset));
-  if (params.limit != null) qs.set("limit", String(params.limit));
-  const q = qs.toString();
-  const r = await checkOk(await fetch(`/api/flow-runs${q ? `?${q}` : ""}`));
-  return r.json() as Promise<FlowRunsListResponse>;
+  void params;
+  throw new Error(
+    "Deprecated: /api/flow-runs has been removed. Use /api/deploy-runs (Run Center) or /api/test-batches/{id}/runs (Test Center).",
+  );
 }
 
 export async function getFlowRun(runId: number): Promise<FlowRunDetail> {
-  const r = await checkOk(await fetch(`/api/flow-runs/${runId}`));
-  return r.json() as Promise<FlowRunDetail>;
+  void runId;
+  throw new Error(
+    "Deprecated: /api/flow-runs/{id} has been removed. Use /api/deploy-runs/{id} (Run Center) or /api/test-batches/{batch}/runs/{id} (Test Center).",
+  );
 }

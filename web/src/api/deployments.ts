@@ -10,7 +10,7 @@ async function checkOk(r: Response): Promise<Response> {
   return r;
 }
 
-export type RunMode = "debug" | "shadow" | "production";
+export type RunMode = "shadow" | "production";
 export type ScheduleType = "once" | "cron" | "resident";
 export type DeploymentStatus =
   | "pending"
@@ -51,6 +51,8 @@ export type Deployment = {
   schedule_config: ScheduleConfig;
   worker_policy: WorkerPolicy;
   capability_policy: CapabilityRule[];
+  worker_targeting?: Record<string, unknown>;
+  pin_worker_id?: string;
   status: DeploymentStatus;
   env_profile_code: string;
   parent_deployment_id: number | null;
@@ -76,6 +78,8 @@ export type CreateDeploymentBody = {
   worker_policy?: WorkerPolicy;
   capability_policy?: CapabilityRule[];
   env_profile_code?: string;
+  worker_targeting?: Record<string, unknown>;
+  pin_worker_id?: string;
 };
 
 export type ListDeploymentsParams = {

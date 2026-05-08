@@ -35,7 +35,7 @@ from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import FlowState
 from flow_engine.engine.orchestrator import FlowRuntime
-from flow_engine.runner import persistence
+from flow_engine.runner import deploy_persistence
 from flow_engine.runner.exceptions import RunnerConfigError
 from flow_engine.runner.models import CapabilityRule, RunMode, RunOptions
 from flow_engine.stores import data_dict
@@ -181,6 +181,25 @@ def _set_deployment_status(deployment_id: int, status: str) -> None:
         row.status = status
 
 
+def _release_assignment(worker_id: str, deployment_id: int) -> None:
+    """Soft-delete the assignment so once deployments don't re-run forever.
+
+    Worker polls ``fe_worker_assignment``; if an assignment row remains after a
+    once/cron run finishes, the worker will see it again and start a new run.
+    """
+    now = datetime.now(timezone.utc)
+    with db_session() as s:
+        stmt = (
+            select(FeWorkerAssignment)
+            .where(FeWorkerAssignment.worker_id == worker_id)
+            .where(FeWorkerAssignment.deployment_id == deployment_id)
+            .where(FeWorkerAssignment.deleted_at.is_(None))
+        )
+        rows = list(s.execute(stmt).scalars().all())
+        for r in rows:
+            r.deleted_at = now
+
+
 # ---------------------------------------------------------------------------
 # Worker class
 # ---------------------------------------------------------------------------
@@ -311,15 +330,28 @@ class Worker:
             logger.warning("deployment %s vanished before run", deployment_id)
             return
         st = deployment["schedule_type"]
-        if st == "resident":
-            await self._run_resident(deployment)
-        elif st in ("once", "cron"):
-            # cron 部署本身是“模板”：实际由 Scheduler 克隆出 once 子部署交给 Coordinator；
-            # 一个 cron 模板自身落到 Worker 时按 once 语义跑一次（兼容直接触发场景）。
-            await self._run_once_flow(deployment)
-        else:
-            logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)
-            await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
+        try:
+            if st == "resident":
+                await self._run_resident(deployment)
+            elif st in ("once", "cron"):
+                # cron 部署本身是“模板”：实际由 Scheduler 克隆出 once 子部署交给 Coordinator；
+                # 一个 cron 模板自身落到 Worker 时按 once 语义跑一次（兼容直接触发场景）。
+                await self._run_once_flow(deployment)
+            else:
+                logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)
+                await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
+        finally:
+            # once/cron should be "consumed" after completion; otherwise the assignment
+            # poller will start it again and create endless runs.
+            if st in ("once", "cron"):
+                try:
+                    await asyncio.to_thread(_release_assignment, self.worker_id, deployment_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "failed to release assignment worker_id=%s deployment_id=%s",
+                        self.worker_id,
+                        deployment_id,
+                    )
 
     # ---------------- run modes ----------------
 
@@ -333,18 +365,18 @@ class Worker:
             with profile_scope(profile_id):
                 result = await runtime.run()
             await asyncio.to_thread(
-                persistence.complete_flow_run, run_id, result, is_resident=False
+                    deploy_persistence.complete_deploy_run, run_id, result, is_resident=False
             )
             final = "stopped" if result.state == FlowState.COMPLETED else "failed"
             await asyncio.to_thread(_set_deployment_status, deployment_id, final)
         except asyncio.CancelledError:
             if run_id is not None:
-                await asyncio.to_thread(persistence.fail_flow_run, run_id, "cancelled")
+                await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
             raise
         except Exception as e:  # noqa: BLE001
             logger.exception("once/cron run failed deployment_id=%s", deployment_id)
             if run_id is not None:
-                await asyncio.to_thread(persistence.fail_flow_run, run_id, str(e))
+                await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
             await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
 
     async def _run_resident(self, deployment: dict[str, Any]) -> None:
@@ -373,7 +405,7 @@ class Worker:
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
                 await asyncio.to_thread(
-                    persistence.complete_flow_run, run_id, result, is_resident=True
+                    deploy_persistence.complete_deploy_run, run_id, result, is_resident=True
                 )
                 # resident 流程正常退出（用户主动 terminate）：标记 stopped 并退出循环。
                 await asyncio.to_thread(_set_deployment_status, deployment_id, "stopped")
@@ -382,7 +414,7 @@ class Worker:
                 if stats_task and not stats_task.done():
                     stats_task.cancel()
                 if run_id is not None:
-                    await asyncio.to_thread(persistence.fail_flow_run, run_id, "cancelled")
+                    await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.exception("resident run failed deployment_id=%s", deployment_id)
@@ -393,7 +425,7 @@ class Worker:
                     except (asyncio.CancelledError, Exception):  # noqa: BLE001
                         pass
                 if run_id is not None:
-                    await asyncio.to_thread(persistence.fail_flow_run, run_id, str(e))
+                    await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
                 restart_count += 1
                 if restart_count > max_restarts:
                     await asyncio.to_thread(
@@ -427,13 +459,13 @@ class Worker:
                 await asyncio.sleep(RESIDENT_STATS_INTERVAL_S)
                 try:
                     runs = list(runtime._node_runs.values())  # noqa: SLF001
-                    stats = persistence._aggregate_node_stats(runs)  # noqa: SLF001
+                    stats = deploy_persistence._aggregate_node_stats(runs)  # noqa: SLF001
                     iter_count = sum(r.execution_count for r in runs)
                     await asyncio.to_thread(
-                        persistence.update_node_stats, run_id, stats
+                        deploy_persistence.update_node_stats, run_id, stats
                     )
                     await asyncio.to_thread(
-                        persistence.update_iteration_count, run_id, iter_count
+                        deploy_persistence.update_iteration_count, run_id, iter_count
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception("resident stats flush failed")
@@ -479,13 +511,14 @@ class Worker:
             runtime.ctx.global_ns.update(trigger_context)
 
         run_id = await asyncio.to_thread(
-            persistence.create_flow_run,
+            deploy_persistence.create_deploy_run,
             deployment_id=int(deployment["id"]),
-            test_batch_id=None,
             worker_id=self.worker_id,
             flow_code=flow_code,
             ver_no=ver_no,
             mode=mode,
+            schedule_type=str(deployment.get("schedule_type") or "once"),
+            trigger_type="manual",
             trigger_context=trigger_context,
         )
         return run_id, runtime, profile_id

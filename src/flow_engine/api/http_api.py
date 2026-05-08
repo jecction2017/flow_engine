@@ -29,7 +29,7 @@ from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
-from flow_engine.runner import persistence as runner_persistence
+from flow_engine.runner import deploy_persistence, test_persistence
 from flow_engine.runner import test_runner
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode
 from flow_engine.lookup.lookup_import import rows_from_bytes
@@ -158,7 +158,7 @@ class CommitVersionBody(BaseModel):
 class CreateDeploymentBody(BaseModel):
     flow_code: str = Field(..., min_length=1, max_length=128)
     ver_no: int = Field(..., ge=1)
-    mode: RunMode = RunMode.PRODUCTION
+    mode: str = Field(default="production", pattern=r"^(shadow|production)$")
     schedule_type: str = Field(..., pattern=r"^(once|cron|resident)$")
     schedule_config: dict[str, Any] = Field(default_factory=dict)
     worker_policy: dict[str, Any] = Field(
@@ -171,6 +171,14 @@ class CreateDeploymentBody(BaseModel):
     )
     capability_policy: list[CapabilityRule] = Field(default_factory=list)
     env_profile_code: str = ""
+    worker_targeting: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Worker 定向策略（pool/labels 等）；空对象表示不限制",
+    )
+    pin_worker_id: str = Field(
+        default="",
+        description="强绑定到指定 worker_id；空字符串表示不强绑定",
+    )
 
 
 class PatchDeploymentBody(BaseModel):
@@ -860,6 +868,8 @@ def create_app() -> FastAPI:
             "schedule_config": row.schedule_config,
             "worker_policy": row.worker_policy,
             "capability_policy": row.capability_policy,
+            "worker_targeting": getattr(row, "worker_targeting", None) or {},
+            "pin_worker_id": getattr(row, "pin_worker_id", "") or "",
             "status": row.status,
             "env_profile_code": row.env_profile_code,
             "parent_deployment_id": row.parent_deployment_id,
@@ -875,16 +885,21 @@ def create_app() -> FastAPI:
                     status_code=400, detail="cron schedule requires schedule_config.cron_expr"
                 )
         with db_session() as s:
+            # cron deployments are templates; they should be active immediately so the
+            # Scheduler can fire child once deployments. Do not enqueue them as pending.
+            initial_status = "running" if body.schedule_type == "cron" else "pending"
             row = FeFlowDeployment(
                 flow_code=body.flow_code,
                 ver_no=body.ver_no,
-                mode=body.mode.value,
+                mode=body.mode,
                 schedule_type=body.schedule_type,
                 schedule_config=body.schedule_config or {},
                 worker_policy=body.worker_policy or {},
                 capability_policy=[r.model_dump() for r in body.capability_policy],
-                status="pending",
+                status=initial_status,
                 env_profile_code=body.env_profile_code or "",
+                worker_targeting=body.worker_targeting or {},
+                pin_worker_id=(body.pin_worker_id or "").strip(),
             )
             s.add(row)
             s.flush()
@@ -1194,7 +1209,7 @@ def create_app() -> FastAPI:
                     snapshot = json.loads(link.plan_snapshot or "{}")
                 except Exception:  # noqa: BLE001
                     snapshot = {}
-                summ = runner_persistence.summarize_batch_runs(int(batch.id))
+                summ = test_persistence.summarize_batch_runs(int(batch.id))
                 vc = summ.get("verdict_counts") or {}
                 tr = max(1, int(batch.total_runs))
                 out.append(
@@ -1246,7 +1261,7 @@ def create_app() -> FastAPI:
 
         if not _batch_belongs(plan_id, left) or not _batch_belongs(plan_id, right):
             raise HTTPException(status_code=404, detail="batch not found for this plan")
-        return runner_persistence.compare_test_batches(left, right)
+        return test_persistence.compare_test_batches(left, right)
 
     @app.post("/api/test-plans/{plan_id}/copy")
     def copy_test_plan(plan_id: int, body: CopyTestPlanBody = Body(default_factory=CopyTestPlanBody)) -> dict[str, Any]:
@@ -1382,58 +1397,48 @@ def create_app() -> FastAPI:
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        page = runner_persistence.list_flow_runs(
+        page = test_persistence.list_test_runs(
             test_batch_id=batch_id,
             status=status,
             offset=offset,
             limit=limit,
         )
-        # Attach per-batch run numbers (stable, 1..N) for display.
-        runs = list(page.get("runs") or [])
-        try:
-            ordered = sorted(runs, key=lambda r: int(r.get("id") or 0))
-            seq = {int(r.get("id") or 0): i + 1 for i, r in enumerate(ordered) if r.get("id") is not None}
-            for r in runs:
-                rid = int(r.get("id") or 0)
-                ci = r.get("case_index")
-                r["batch_run_no"] = int(ci) if ci is not None else seq.get(rid, 0)
-        except Exception:  # noqa: BLE001
-            pass
-        page["runs"] = runs
         return page
 
     @app.get("/api/test-batches/{batch_id}/runs/{run_id}")
     def get_test_batch_run(batch_id: int, run_id: int) -> dict[str, Any]:
-        info = runner_persistence.get_flow_run_detail(run_id)
-        if info is None or info.get("test_batch_id") != batch_id:
+        info = test_persistence.get_test_run_detail(run_id)
+        if info is None or info.get("test_batch_id") != int(batch_id):
             raise HTTPException(status_code=404, detail="run not found in batch")
         return info
 
     # -----------------------------------------------------------------------
-    # Flow runs (production history)
+    # Deploy runs (Run Center domain)
     # -----------------------------------------------------------------------
 
-    @app.get("/api/flow-runs")
-    def list_flow_runs(
+    @app.get("/api/deploy-runs")
+    def list_deploy_runs(
         deployment_id: int | None = Query(default=None),
         flow_code: str | None = Query(default=None),
         mode: str | None = Query(default=None),
         status: str | None = Query(default=None),
+        worker_id: str | None = Query(default=None),
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return runner_persistence.list_flow_runs(
+        return deploy_persistence.list_deploy_runs(
             deployment_id=deployment_id,
             flow_code=flow_code,
             mode=mode,
             status=status,
+            worker_id=worker_id,
             offset=offset,
             limit=limit,
         )
 
-    @app.get("/api/flow-runs/{run_id}")
-    def get_flow_run(run_id: int) -> dict[str, Any]:
-        info = runner_persistence.get_flow_run_detail(run_id)
+    @app.get("/api/deploy-runs/{run_id}")
+    def get_deploy_run(run_id: int) -> dict[str, Any]:
+        info = deploy_persistence.get_deploy_run_detail(run_id)
         if info is None:
             raise HTTPException(status_code=404, detail="run not found")
         return info

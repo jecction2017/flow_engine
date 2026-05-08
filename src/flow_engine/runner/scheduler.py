@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from flow_engine.db.models import FeFlowDeployment, FeFlowRun
+from flow_engine.db.models import FeDeployRun, FeFlowDeployment
 from flow_engine.db.session import db_session
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,13 @@ def _parse_cron_next(cron_expr: str, base_time: datetime) -> datetime:
     Imported lazily so the module is usable on systems without croniter when
     cron schedules are not exercised (tests / debug).
     """
-    from croniter import croniter
+    try:
+        from croniter import croniter
+    except ModuleNotFoundError as e:  # pragma: no cover
+        raise RuntimeError(
+            "cron schedule requires extra dependency 'croniter'. "
+            "Install with: pip install -e \".[runner]\" (or pip install croniter)."
+        ) from e
 
     if base_time.tzinfo is None:
         base_time = base_time.replace(tzinfo=timezone.utc)
@@ -90,6 +96,8 @@ def _tick_sync() -> int:
                 schedule_config={},
                 worker_policy=tmpl.worker_policy,
                 capability_policy=tmpl.capability_policy,
+                worker_targeting=getattr(tmpl, "worker_targeting", None) or {},
+                pin_worker_id=getattr(tmpl, "pin_worker_id", "") or "",
                 status="pending",
                 env_profile_code=tmpl.env_profile_code,
                 parent_deployment_id=tmpl.id,
@@ -106,14 +114,14 @@ def _last_fire_time(session: Any, tmpl: FeFlowDeployment) -> datetime | None:
     "last fire" column to keep the schema flat.
     """
     stmt = (
-        select(FeFlowRun)
+        select(FeDeployRun)
         .join(
             FeFlowDeployment,
-            FeFlowDeployment.id == FeFlowRun.deployment_id,
+            FeFlowDeployment.id == FeDeployRun.deployment_id,
         )
         .where(FeFlowDeployment.parent_deployment_id == tmpl.id)
-        .where(FeFlowRun.deleted_at.is_(None))
-        .order_by(FeFlowRun.started_at.desc())
+        .where(FeDeployRun.deleted_at.is_(None))
+        .order_by(FeDeployRun.started_at.desc())
         .limit(1)
     )
     row = session.execute(stmt).scalars().first()

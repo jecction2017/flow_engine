@@ -66,6 +66,8 @@ def _list_pending_deployments() -> list[dict[str, Any]]:
                 "flow_code": r.flow_code,
                 "schedule_type": r.schedule_type,
                 "worker_policy": r.worker_policy,
+                "worker_targeting": getattr(r, "worker_targeting", None) or {},
+                "pin_worker_id": (getattr(r, "pin_worker_id", "") or "").strip(),
             }
             for r in s.execute(stmt).scalars().all()
         ]
@@ -111,7 +113,48 @@ def _assign_pending_sync() -> int:
     lease_until = now + timedelta(seconds=LEADER_LEASE_S)
 
     with db_session() as s:
+        def _upsert_assignment(*, dep_id: int, worker_id: str, role: str, lease_expires_at: datetime | None) -> None:
+            """Create or revive an assignment row.
+
+            ``fe_worker_assignment`` has a unique key (deployment_id, worker_id) that
+            still applies after soft-delete. A worker may "release" an assignment by
+            setting ``deleted_at``; when re-assigning the same deployment to the same
+            worker, we must revive the existing row instead of inserting a new one.
+            """
+            with s.no_autoflush:
+                row = (
+                    s.execute(
+                        select(FeWorkerAssignment)
+                        .where(FeWorkerAssignment.deployment_id == dep_id)
+                        .where(FeWorkerAssignment.worker_id == worker_id)
+                    )
+                    .scalars()
+                    .first()
+                )
+            if row is None:
+                s.add(
+                    FeWorkerAssignment(
+                        deployment_id=dep_id,
+                        worker_id=worker_id,
+                        role=role,
+                        lease_expires_at=lease_expires_at,
+                    )
+                )
+                return
+
+            # revive/update in-place
+            row.deleted_at = None
+            row.role = role
+            row.lease_expires_at = lease_expires_at
+
         for dep in pending:
+            # cron deployments are templates; they are driven by Scheduler.tick()
+            # which clones once children. Do not assign cron templates to workers.
+            if dep.get("schedule_type") == "cron":
+                dep_row = s.get(FeFlowDeployment, dep["id"])
+                if dep_row is not None and dep_row.status == "pending":
+                    dep_row.status = "running"
+                continue
             wp = dep["worker_policy"] or {}
             wp_type = wp.get("type", "single_active")
             min_workers = max(1, int(wp.get("min_workers", 1)))
@@ -122,42 +165,40 @@ def _assign_pending_sync() -> int:
                 .where(FeWorkerAssignment.deleted_at.is_(None))
             )
             existing = set(s.execute(existing_stmt).scalars().all())
-            picks = [w for w in workers if w not in existing][:min_workers]
+
+            eligible = [w for w in workers if w not in existing]
+            pin = (dep.get("pin_worker_id") or "").strip()
+            if pin:
+                if pin not in workers:
+                    # Pin requested but worker not active: fail fast (explicit targeting contract).
+                    dep_row = s.get(FeFlowDeployment, dep["id"])
+                    if dep_row is not None and dep_row.status == "pending":
+                        dep_row.status = "failed"
+                    logger.warning("deployment pin worker not active: dep_id=%s worker_id=%s", dep["id"], pin)
+                    continue
+                eligible = [pin] if pin in eligible else []
+            else:
+                targeting = dep.get("worker_targeting") or {}
+                pool = targeting.get("worker_ids") if isinstance(targeting, dict) else None
+                if isinstance(pool, list) and pool:
+                    pool_set = {str(x) for x in pool if str(x)}
+                    eligible = [w for w in eligible if w in pool_set]
+
+            picks = eligible[:min_workers]
 
             if wp_type == "multi_active":
                 for w in picks:
-                    s.add(
-                        FeWorkerAssignment(
-                            deployment_id=dep["id"],
-                            worker_id=w,
-                            role="replica",
-                            lease_expires_at=None,
-                        )
-                    )
+                    _upsert_assignment(dep_id=int(dep["id"]), worker_id=w, role="replica", lease_expires_at=None)
                     created += 1
             else:
                 # single_active
                 if not picks:
                     continue
                 leader_w = picks[0]
-                s.add(
-                    FeWorkerAssignment(
-                        deployment_id=dep["id"],
-                        worker_id=leader_w,
-                        role="leader",
-                        lease_expires_at=lease_until,
-                    )
-                )
+                _upsert_assignment(dep_id=int(dep["id"]), worker_id=leader_w, role="leader", lease_expires_at=lease_until)
                 created += 1
                 for w in picks[1:]:
-                    s.add(
-                        FeWorkerAssignment(
-                            deployment_id=dep["id"],
-                            worker_id=w,
-                            role="standby",
-                            lease_expires_at=None,
-                        )
-                    )
+                    _upsert_assignment(dep_id=int(dep["id"]), worker_id=w, role="standby", lease_expires_at=None)
                     created += 1
 
             # Mark deployment running (we have at least one assignment now).
