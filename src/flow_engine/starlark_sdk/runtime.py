@@ -12,11 +12,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
+import copy as _copy
+
 import starlark as sl
 
 from flow_engine.engine.context import ContextStack
 from flow_engine.engine.exceptions import starlark_to_python
-from flow_engine.starlark_sdk.builtin_registry import builtin_map
+from flow_engine.starlark_sdk.builtin_registry import (
+    PythonBuiltinSpec,
+    list_registered_builtins,
+)
 from flow_engine.starlark_sdk.loader import build_file_loader, dialect_with_load, loader_stats, warmup_modules
 
 
@@ -290,12 +295,69 @@ def runtime_log_debug(*args: Any) -> None:
     return None
 
 
-def _guard_builtin(name: str, fn: Any) -> Any:
+# ---------------------------------------------------------------------------
+# Capability-aware builtin guard
+#
+# `_guard_builtin` enforces TWO orthogonal constraints in one wrapper:
+#  1. Per-eval execution budget (time / call count).
+#  2. CapabilityPolicy: SUPPRESS short-circuits with the spec's
+#     ``suppress_result`` (still counted against the budget so a runaway
+#     loop can't infinite-loop on a suppressed call); REDIRECT forwards
+#     ``redirect_params`` to the function body via thread-local — only
+#     builtins that need to *change behaviour* on redirect read it via
+#     :func:`get_redirect_params`. ALLOW / "none"-side-effect builtins
+#     skip the capability lookup entirely (zero overhead).
+#
+# Why thread-local for redirect params (not arg passing): preserves the
+# Starlark callable signature so user code stays identical regardless of
+# whether the function happened to be redirected.
+# ---------------------------------------------------------------------------
+
+
+_REDIRECT_PARAMS_LOCAL = threading.local()
+
+
+def get_redirect_params() -> dict[str, Any]:
+    """Return REDIRECT params for the currently-executing builtin call.
+
+    Returns ``{}`` for ALLOW / SUPPRESS / non-side-effect builtins. Only
+    valid during the synchronous body of a guarded builtin call.
+    """
+    return getattr(_REDIRECT_PARAMS_LOCAL, "params", {}) or {}
+
+
+def _guard_builtin(name: str, fn: Any, spec: PythonBuiltinSpec | None = None) -> Any:
+    has_side_effect = bool(spec is not None and spec.side_effects and spec.side_effects != "none")
+    suppress_result = spec.suppress_result if spec is not None else None
+    category = spec.category if spec is not None else ""
+
     def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        from flow_engine.runner.mode_context import CapabilityAction, check_capability
+
         b = _active_budget()
         if b is not None:
             b.before_builtin_call(name)
-        out = fn(*args, **kwargs)
+
+        if has_side_effect:
+            action, redirect_params = check_capability(category, name)
+            if action == CapabilityAction.SUPPRESS:
+                # Defensive copy so user code can't mutate the shared
+                # ``suppress_result`` literal stored on the spec.
+                if isinstance(suppress_result, (dict, list)):
+                    out = _copy.deepcopy(suppress_result)
+                else:
+                    out = suppress_result
+                if b is not None:
+                    b.after_builtin_call(name)
+                return out
+            _REDIRECT_PARAMS_LOCAL.params = redirect_params if action == CapabilityAction.REDIRECT else {}
+        else:
+            _REDIRECT_PARAMS_LOCAL.params = {}
+
+        try:
+            out = fn(*args, **kwargs)
+        finally:
+            _REDIRECT_PARAMS_LOCAL.params = {}
         if b is not None:
             b.after_builtin_call(name)
         return out
@@ -310,15 +372,16 @@ def _attach_sdk_python(mod: sl.Module) -> None:
     # even when runtime is used outside HTTP API bootstrap.
     from flow_engine.starlark_sdk import python_builtin_impl as _python_builtin_impl  # noqa: F401
 
-    py_builtins = builtin_map()
-    for name, fn in py_builtins.items():
+    for entry in list_registered_builtins():
+        name = entry.spec.starlark_name
+        fn = entry.fn
         # `log*` are intentionally NOT wrapped by `_guard_builtin`: they're
         # side-effect-free accumulators and we don't want debug prints inside
         # a tight loop to burn through the Python-builtin call budget.
         if name in {"log", "log_info", "log_warn", "log_error", "log_debug"}:
             mod.add_callable(name, fn)
         else:
-            mod.add_callable(name, _guard_builtin(name, fn))
+            mod.add_callable(name, _guard_builtin(name, fn, entry.spec))
 
 
 def _prepare_module(mod: sl.Module, ctx: ContextStack, boundary_inputs: dict[str, str]) -> None:
@@ -363,6 +426,9 @@ def eval_task_script(
 def debug_task_script(
     script: str,
     variables: dict[str, Any] | None = None,
+    *,
+    run_mode: Any = None,
+    capability_policy: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Debug-only evaluation for a task node.
 
@@ -371,18 +437,44 @@ def debug_task_script(
     Starlark global so the script can reference them by name. A lightweight
     ``ContextStack`` backed by the same dict is also provided so helpers such
     as ``resolve("$.key")`` continue to work identically to production runs.
+
+    ``run_mode`` and ``capability_policy`` activate a ``run_mode_scope`` so
+    capability constraints take effect for the duration of evaluation. Both
+    default to ``None``: callers (HTTP debug endpoints, process worker)
+    pass them explicitly when needed; non-passing callers preserve the
+    pre-existing behaviour (no scope opened — capability defaults to whatever
+    is already active in the calling context, or PRODUCTION when none is).
+
     Returns ``(result_dict, log_entries)``.
     """
+    from contextlib import nullcontext
+
     from flow_engine.engine.starlark_glue import (
         _attach_builtins,
         cf_guard,
         inject_resolve,
     )
+    from flow_engine.runner.mode_context import run_mode_scope
+    from flow_engine.runner.models import CapabilityRule, RunMode
 
     vars_map: dict[str, Any] = dict(variables or {})
     ctx = ContextStack(global_ns=vars_map)
 
-    with _budget_scope(), log_scope("task") as coll:
+    if run_mode is None and capability_policy is None:
+        scope_cm: Any = nullcontext()
+    else:
+        mode = run_mode if isinstance(run_mode, RunMode) else (
+            RunMode(run_mode) if run_mode is not None else RunMode.DEBUG
+        )
+        rules: list[CapabilityRule] = []
+        for r in capability_policy or []:
+            if isinstance(r, CapabilityRule):
+                rules.append(r)
+            else:
+                rules.append(CapabilityRule.model_validate(r))
+        scope_cm = run_mode_scope(mode, rules)
+
+    with scope_cm, _budget_scope(), log_scope("task") as coll:
         mod = sl.Module()
         for name, value in vars_map.items():
             mod[name] = value

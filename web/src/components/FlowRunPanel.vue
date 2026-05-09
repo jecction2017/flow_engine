@@ -2,7 +2,10 @@
   <div class="run-panel" :class="{ open: visible }">
     <header class="bar">
       <div class="title">
-        <span>流程运行结果</span>
+        <span>流程试运行</span>
+        <span class="badge suppressed-inline" title="试运行恒为 RunMode.DEBUG，副作用类 builtin 默认 SUPPRESS，不会触发真实生产副作用">
+          副作用已抑制
+        </span>
         <span v-if="response" class="badge" :class="stateClass(response.state)">{{ response.state }}</span>
         <span v-if="response" class="muted">· {{ response.elapsed_ms }}ms</span>
         <template v-if="summary">
@@ -21,7 +24,7 @@
           <input v-model.number="timeoutSec" type="number" min="1" max="600" step="1" />
         </label>
         <button class="btn primary" :disabled="pending || !flowId" @click="run">
-          {{ pending ? "运行中…" : "运行" }}
+          {{ pending ? "运行中…" : "试运行" }}
         </button>
         <button class="btn ghost" @click="$emit('close')">关闭</button>
       </div>
@@ -38,6 +41,17 @@
         <textarea v-model="ctxText" class="area mono" rows="10" spellcheck="false" />
         <div class="lbl">runtime_patch（JSON，可留空）</div>
         <textarea v-model="runtimePatchText" class="area mono" rows="7" spellcheck="false" placeholder="{ }" />
+        <details class="cap-details">
+          <summary class="cap-sum">附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）</summary>
+          <div class="cap-hint">
+            试运行恒以 RunMode.DEBUG 运行，副作用类 builtin（HTTP / DB / MQ）
+            默认 SUPPRESS。此处规则用于
+            <strong>显式放行</strong>（action: allow）或
+            <strong>重定向到沙箱</strong>（redirect_params）。
+            真实生产请走 deployment 路径。
+          </div>
+          <CapabilityRulesEditor v-model="capabilityPolicy" />
+        </details>
         <p v-if="error" class="err">{{ error }}</p>
       </section>
       <section class="col timeline-col">
@@ -227,6 +241,8 @@ import { computed, reactive, ref, watch } from "vue";
 import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
 import { fetchProfileConfig } from "@/api/profiles";
+import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
+import type { CapabilityRule } from "@/types/flow";
 
 const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
@@ -260,6 +276,8 @@ const timeoutSec = ref(30);
 const pending = ref(false);
 const response = ref<RunFlowResponse | null>(null);
 const error = ref<string | null>(null);
+// 试运行临时附加策略（高级）；服务端永远 RunMode.DEBUG，此处只能 ALLOW / REDIRECT。
+const capabilityPolicy = ref<CapabilityRule[]>([]);
 const collapsed = reactive(new Set<string>());
 /** id of the currently open log drawer, or null when none is open. */
 const openLogsFor = ref<string | null>(null);
@@ -540,6 +558,7 @@ async function run() {
       timeout_sec: timeoutSec.value,
       profile: profileText.value.trim() || null,
       runtime_patch: runtimePatch,
+      capability_policy: capabilityPolicy.value as unknown as Array<Record<string, unknown>>,
     });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -613,6 +632,54 @@ async function run() {
   background: color-mix(in srgb, #f59e0b 18%, transparent);
   color: #92400e;
   border-color: color-mix(in srgb, #f59e0b 35%, transparent);
+}
+
+.badge.suppressed-inline {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #92400e;
+  border-color: color-mix(in srgb, #f59e0b 35%, transparent);
+}
+
+.cap-details {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.cap-sum {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.cap-sum:hover {
+  color: var(--accent);
+}
+
+.cap-details[open] .cap-sum {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.cap-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.cap-hint strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .chip {

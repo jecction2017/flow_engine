@@ -94,10 +94,21 @@ export type DebugNodeResponse =
   | { ok: true; result: Record<string, unknown> }
   | { ok: false; error: string; traceback?: string };
 
+/**
+ * 节点 / 用户脚本调试入口 —— 服务端硬编码 RunMode.DEBUG，副作用类 builtin
+ * 默认全部 SUPPRESS。``capabilityPolicy`` 仅作为 **白名单 / REDIRECT** 高级通道：
+ * 例如 `{builtin_name: "http_simple_get", action: "allow"}` 显式放行某个 builtin。
+ * 这里没有 ``runMode`` 选项是有意为之 —— 临时调试不应能切换到 production 模式。
+ */
+export type DebugNodeOptions = {
+  capabilityPolicy?: Record<string, unknown>[];
+};
+
 export async function debugNode(
   script: string,
   initialContext: Record<string, unknown> = {},
   profile?: string,
+  options: DebugNodeOptions = {},
 ): Promise<DebugNodeResponse> {
   const r = await fetch("/api/debug/node", {
     method: "POST",
@@ -106,6 +117,7 @@ export async function debugNode(
       script,
       initial_context: initialContext,
       profile: profile ?? null,
+      capability_policy: options.capabilityPolicy ?? [],
     }),
   });
   return r.json() as Promise<DebugNodeResponse>;

@@ -9,7 +9,7 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Any, Iterator
 
 from sqlalchemy import select
 
@@ -132,6 +132,40 @@ class GlobalProfileStore:
                 raise ProfileConfigError(f"Profile not found: {pid}")
             return pid
         return self.get_default_profile()
+
+    def get_system_capability_policy(self, profile_id: str) -> list[dict[str, Any]]:
+        """Read environment-level system CapabilityRule list (raw dicts).
+
+        Returns ``[]`` for unknown profiles (callers degrade to system defaults).
+        Raw dict shape matches ``CapabilityRule.model_dump()``; callers pass
+        them straight into ``CapabilityRule.model_validate``.
+        """
+        pid = validate_profile_id(profile_id)
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile.system_capability_policy)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            raw = s.execute(stmt).scalar_one_or_none()
+            return list(raw or [])
+
+    def set_system_capability_policy(
+        self,
+        profile_id: str,
+        policy: list[dict[str, Any]],
+    ) -> None:
+        pid = validate_profile_id(profile_id)
+        with db_session() as s:
+            stmt = (
+                select(FeEnvProfile)
+                .where(FeEnvProfile.profile_code == pid)
+                .where(FeEnvProfile.deleted_at.is_(None))
+            )
+            row = s.execute(stmt).scalar_one_or_none()
+            if row is None:
+                raise ProfileConfigError(f"Profile not found: {pid}")
+            row.system_capability_policy = list(policy or [])
 
     # DataDictStore / LookupStore 兼容接口（MySQL 后端无需创建目录）
     def delete_profile(self, profile_id: str) -> None:

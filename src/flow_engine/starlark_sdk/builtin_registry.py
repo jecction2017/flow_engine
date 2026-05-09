@@ -23,6 +23,10 @@ class PythonBuiltinSpec:
     signature: tuple[BuiltinArgSpec, ...] = field(default_factory=tuple)
     returns: str = "any"
     side_effects: str = "none"
+    # SUPPRESS 命中时由 _guard_builtin 直接返回的值；函数体不执行。
+    # ``side_effects == "none"`` 的 builtin 不会被检查 capability，本字段无意义。
+    # 含可变值（dict/list）时 _guard_builtin 会按调用做浅拷贝，避免被脚本污染共享实例。
+    suppress_result: Any = None
 
 
 @dataclass(frozen=True)

@@ -111,6 +111,20 @@
           <div v-else class="ctx-hint">{{ boundaryCountHint }}</div>
         </section>
 
+        <section v-if="node.type === 'task'" class="card">
+          <div class="sec-title">
+            <span>能力约束（capability_overrides）</span>
+            <InfoTip
+              wide
+              text="节点级 CapabilityRule 列表，优先级高于部署 / 系统默认。空列表 = 继承上层策略。常用于：把生产副作用 builtin 在某节点强制 SUPPRESS（演练）或 REDIRECT（沙箱化测试）。"
+            />
+          </div>
+          <CapabilityRulesEditor
+            :model-value="taskCapabilityOverrides"
+            @update:model-value="onCapabilityOverridesChange"
+          />
+        </section>
+
         <section v-if="node.type === 'loop'" class="card">
           <div class="sec-title"><span>循环</span></div>
           <div class="grid">
@@ -239,8 +253,10 @@ import type {
   LoopNode,
   TaskNode,
 } from "@/types/flow";
+import type { CapabilityRule } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
+import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import CodeEditor from "./CodeEditor.vue";
 import DebugPanel from "./DebugPanel.vue";
 import InfoTip from "./InfoTip.vue";
@@ -460,6 +476,23 @@ watch(boundaryText, (txt) => {
 function resetBoundaryText() {
   boundaryText.value = currentBoundarySerialized();
   boundaryErrors.value = [];
+}
+
+// ---------------------------------------------------------------------------
+// 节点级 CapabilityRule 覆盖（仅 task 节点）
+// 后端在 model_dump(exclude_none=True) 时会移除 null 字段；UI 维持 null=未设置。
+// ---------------------------------------------------------------------------
+
+const taskCapabilityOverrides = computed<CapabilityRule[]>(() => {
+  if (!node.value || node.value.type !== "task") return [];
+  return (node.value as TaskNode).capability_overrides ?? [];
+});
+
+function onCapabilityOverridesChange(rules: CapabilityRule[]) {
+  if (!node.value || node.value.type !== "task") return;
+  const t = node.value as TaskNode;
+  t.capability_overrides = rules.length === 0 ? null : rules;
+  commit();
 }
 
 function commit() {

@@ -25,7 +25,7 @@ from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.lookup.lookup_service import lookup_query_page
 from flow_engine.runner import assertions as assertions_mod
 from flow_engine.runner import test_persistence
-from flow_engine.runner.models import MockConfig, RunMode, RunOptions
+from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
 from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import profile_scope, store as profile_store
 from flow_engine.time_utils import utc_isoformat
@@ -179,11 +179,16 @@ async def run_test_batch(
     *,
     concurrency: int = 4,
     assertions: list[dict[str, Any]] | None = None,
+    capability_policy: list[dict[str, Any]] | None = None,
 ) -> int:
     """触发一次测试批次，立即创建批次行并并发运行；返回 ``batch_id``。
 
     每行 lookup namespace 数据被注入到 ``runtime.ctx.global_ns``（覆盖式合并）。
     每次运行写入一条 ``fe_flow_run``；批次结束更新 ``fe_flow_test_batch``。
+
+    ``capability_policy`` 透传到 ``RunOptions.deployment_capability_policy``，
+    优先级高于 RunMode.DEBUG 系统默认；空 / None 时仅生效系统默认（抑制
+    ``integration`` / ``db_write`` / ``mq_publish`` 类副作用）。
     """
     rows = await asyncio.to_thread(_read_test_rows, test_ns_code, profile_code)
     batch_id = await asyncio.to_thread(
@@ -205,6 +210,11 @@ async def run_test_batch(
     dictionary = resolved["resolved_dictionary"]
 
     sem = asyncio.Semaphore(max(1, int(concurrency)))
+    parsed_policy = [CapabilityRule.model_validate(r) for r in (capability_policy or [])]
+    profile_policy = await asyncio.to_thread(
+        lambda: profile_store().get_system_capability_policy(profile_code)
+    )
+    parsed_profile_policy = [CapabilityRule.model_validate(r) for r in profile_policy]
 
     async def one(row: dict[str, Any]) -> bool:
         async with sem:
@@ -218,6 +228,8 @@ async def run_test_batch(
                 mock_config=mock_config,
                 test_input=row,
                 assertions=assertions,
+                capability_policy=parsed_policy,
+                profile_system_policy=parsed_profile_policy,
             )
 
     results = await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
@@ -243,12 +255,15 @@ async def _run_single_test_case(
     test_input: dict[str, Any],
     context_mapping: dict[str, Any] | None = None,
     assertions: list[dict[str, Any]] | None = None,
+    capability_policy: list[CapabilityRule] | None = None,
+    profile_system_policy: list[CapabilityRule] | None = None,
 ) -> bool:
     flow = load_flow_from_dict(copy.deepcopy(flow_data))
     run_opts = RunOptions(
         mode=RunMode.DEBUG,
         mock_overrides=mock_config,
-        deployment_capability_policy=[],
+        deployment_capability_policy=list(capability_policy or []),
+        profile_system_capability_policy=list(profile_system_policy or []),
     )
     runtime = FlowRuntime(flow, dictionary=dictionary, run_opts=run_opts)
     row_clean = assertions_mod.strip_expect_keys(test_input)

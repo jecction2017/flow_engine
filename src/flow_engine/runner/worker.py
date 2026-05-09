@@ -39,7 +39,11 @@ from flow_engine.runner import deploy_persistence
 from flow_engine.runner.exceptions import RunnerConfigError
 from flow_engine.runner.models import CapabilityRule, RunMode, RunOptions
 from flow_engine.stores import data_dict
-from flow_engine.stores.profile_store import DEFAULT_PROFILE_ID, profile_scope
+from flow_engine.stores.profile_store import (
+    DEFAULT_PROFILE_ID,
+    profile_scope,
+    store as profile_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -531,14 +535,19 @@ class Worker:
             CapabilityRule.model_validate(r)
             for r in (deployment.get("capability_policy") or [])
         ]
+
+        profile_id = deployment.get("env_profile_code") or DEFAULT_PROFILE_ID
+        resolved = await asyncio.to_thread(data_dict.resolve, profile_id)
+        profile_policy_raw = await asyncio.to_thread(
+            lambda: profile_store().get_system_capability_policy(profile_id)
+        )
+        profile_rules = [CapabilityRule.model_validate(r) for r in profile_policy_raw]
         run_opts = RunOptions(
             mode=mode,
             mock_overrides={},
             deployment_capability_policy=rules,
+            profile_system_capability_policy=profile_rules,
         )
-
-        profile_id = deployment.get("env_profile_code") or DEFAULT_PROFILE_ID
-        resolved = await asyncio.to_thread(data_dict.resolve, profile_id)
         runtime = FlowRuntime(
             flow,
             dictionary=resolved["resolved_dictionary"],

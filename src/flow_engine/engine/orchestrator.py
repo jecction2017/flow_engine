@@ -314,6 +314,7 @@ class FlowRuntime:
             with run_mode_scope(
                 self._run_opts.mode,
                 self._run_opts.deployment_capability_policy,
+                self._run_opts.profile_system_capability_policy,
             ):
                 with dictionary_scope(self.dictionary):
                     return await self._run_scoped()

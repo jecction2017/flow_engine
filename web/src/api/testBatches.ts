@@ -57,6 +57,12 @@ export type CreateTestBatchBody = {
   context_mapping?: ContextMapping;
   concurrency?: number;
   assertions?: Array<Record<string, unknown>>;
+  /**
+   * 批次级 CapabilityRule。优先级高于 plan 级、profile 级、系统默认。
+   * 测试中心运行恒为 RunMode.DEBUG（副作用类 builtin 默认 SUPPRESS），
+   * 此处规则用于 **白名单 / REDIRECT 沙箱**（与调试入口同语义）。
+   */
+  capability_policy?: Array<Record<string, unknown>>;
 };
 
 export type CreateTestBatchResponse = {

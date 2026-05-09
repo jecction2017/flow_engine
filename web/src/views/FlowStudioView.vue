@@ -62,10 +62,10 @@
             type="button"
             class="btn accent"
             :disabled="!store.activeFlowId"
-            title="执行当前流程（需先保存）"
+            title="临时仿真执行当前流程：恒为 RunMode.DEBUG，副作用类 builtin（HTTP/DB/MQ）默认 SUPPRESS。真实生产请走部署。"
             @click="toggleRun"
           >
-            ▶ 运行流程
+            ▶ 试运行
           </button>
         </div>
         <div class="grp menu-wrap" ref="moreMenuRef">

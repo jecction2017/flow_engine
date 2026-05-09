@@ -26,19 +26,27 @@ from flow_engine.runner.models import (
 )
 
 # ---------------------------------------------------------------------------
-# 系统默认策略：debug/shadow 抑制写副作用，production 全部 allow
+# 系统默认策略：debug/shadow 抑制对外副作用 builtin，production 全部 allow。
+#
+# Category 命名约定（与 PythonBuiltinSpec.category 必须一致）：
+# - ``integration``  外部集成（HTTP / 第三方 API）。默认在 debug/shadow 下 SUPPRESS。
+# - ``db_write``     未来 DB 写 builtin 的占位类目。
+# - ``mq_publish``   未来 MQ 发布 builtin 的占位类目。
+# - ``dictionary`` / ``lookup`` / ``user`` / ``demo`` / ``system`` / ``runtime``
+#                    属于读类或本地无副作用类，默认 ALLOW。
+# 调整时需同步检查 ``python_builtin_impl.py`` 各 spec 的 category 是否在白名单。
 # ---------------------------------------------------------------------------
 
 _SYSTEM_DEFAULT_POLICY: dict[RunMode, list[CapabilityRule]] = {
     RunMode.DEBUG: [
         CapabilityRule(builtin_category="db_write", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="mq_publish", action=CapabilityAction.SUPPRESS),
-        CapabilityRule(builtin_category="external_api_write", action=CapabilityAction.SUPPRESS),
+        CapabilityRule(builtin_category="integration", action=CapabilityAction.SUPPRESS),
     ],
     RunMode.SHADOW: [
         CapabilityRule(builtin_category="db_write", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="mq_publish", action=CapabilityAction.SUPPRESS),
-        CapabilityRule(builtin_category="external_api_write", action=CapabilityAction.SUPPRESS),
+        CapabilityRule(builtin_category="integration", action=CapabilityAction.SUPPRESS),
     ],
     RunMode.PRODUCTION: [],
 }
@@ -74,14 +82,27 @@ _cap_ctx_var: ContextVar[_CapCtx] = ContextVar("_flow_engine_cap_ctx", default=_
 def run_mode_scope(
     mode: RunMode,
     deployment_rules: list[CapabilityRule] | None = None,
+    profile_system_rules: list[CapabilityRule] | None = None,
 ) -> Iterator[None]:
     """在 ``FlowRuntime.run()`` 入口处调用，建立 base_rules。
 
-    base_rules = deployment_rules ++ system_default_policy[mode]
-    顺序很重要：deployment_rules 优先级高于系统默认（在前面，先匹配）。
+    base_rules 顺序（高优先级 → 低优先级）：
+        deployment_rules ++ profile_system_rules ++ system_default_policy[mode]
+
+    - ``deployment_rules``：单次部署 / 试运行 / 测试批次显式传入。
+    - ``profile_system_rules``：环境级（``fe_env_profile.system_capability_policy``）
+      由运维在配置页面维护，与具体 deployment 解耦；适合环境性策略
+      （例如 sit 环境强制 SUPPRESS 真实集成）。
+    - ``system_default_policy``：进程内置硬编码 fallback。
+
+    顺序在前的列表先匹配 → 优先级更高。
     """
     sys_rules = system_default_policy(mode)
-    base = list(deployment_rules or []) + sys_rules
+    base = (
+        list(deployment_rules or [])
+        + list(profile_system_rules or [])
+        + sys_rules
+    )
     new_ctx = _CapCtx(mode=mode, base_rules=base, node_stack=[])
     token = _cap_ctx_var.set(new_ctx)
     try:

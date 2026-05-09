@@ -244,17 +244,30 @@
               </div>
             </details>
 
-            <details class="advanced">
-              <summary class="summary-with-tip">
-                断言 assertions（JSON 数组）
-                <InfoTip
-                  text="与运行结束时的 global_ns 对比。字段：id、op（eq/ne/contains/regex/json_match/starlark）、path（点路径）、expected；starlark 用 expr，可读 global_ns。测试集行可用 _expect: { path, equals }。"
-                  wide
-                  align-end
-                />
-              </summary>
-              <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
-            </details>
+          <details class="advanced">
+            <summary class="summary-with-tip">
+              断言 assertions（JSON 数组）
+              <InfoTip
+                text="与运行结束时的 global_ns 对比。字段：id、op（eq/ne/contains/regex/json_match/starlark）、path（点路径）、expected；starlark 用 expr，可读 global_ns。测试集行可用 _expect: { path, equals }。"
+                wide
+                align-end
+              />
+            </summary>
+            <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
+          </details>
+
+          <details class="advanced">
+            <summary class="summary-with-tip">
+              CapabilityPolicy（方案级，副作用白名单 / REDIRECT）
+              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              <InfoTip
+                text="测试中心运行恒为 RunMode.DEBUG，副作用类 builtin（HTTP / DB / MQ）默认 SUPPRESS。此处规则用于显式 ALLOW（已就绪沙箱）或 REDIRECT（引流到测试服）。批次创建时若未单独指定，将继承此值。"
+                wide
+                align-end
+              />
+            </summary>
+            <CapabilityRulesEditor v-model="planCapabilityPolicy" />
+          </details>
           </div>
 
           <div v-else>
@@ -493,6 +506,19 @@
             <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
           </details>
 
+          <details class="advanced">
+            <summary class="summary-with-tip">
+              CapabilityPolicy（方案级，副作用白名单 / REDIRECT）
+              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              <InfoTip
+                text="测试中心恒为 DEBUG 运行：副作用类 builtin 默认 SUPPRESS。此处规则用于沙箱白名单（action: allow）或引流（action: redirect, redirect_params: { url: ... }）。批次创建时若未单独指定将继承此值。"
+                wide
+                align-end
+              />
+            </summary>
+            <CapabilityRulesEditor v-model="planCapabilityPolicy" />
+          </details>
+
           <p v-if="formError" class="err">{{ formError }}</p>
           <div class="form-actions">
             <button type="button" class="btn ghost" @click="cancelCreate">取消</button>
@@ -506,7 +532,7 @@
         <section v-if="mode === 'create'" class="panel">
           <header class="panel-head">
             <span class="panel-title">新建批次</span>
-            <span class="muted small">每行 lookup 数据 → 一次 RunMode.DEBUG 流程运行</span>
+            <span class="muted small">每行 lookup 数据 → 一次 RunMode.DEBUG 流程试运行（副作用类默认 SUPPRESS）</span>
           </header>
           <div class="form-grid">
             <label class="field">
@@ -670,6 +696,19 @@
                 <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
               </label>
             </div>
+          </details>
+
+          <details class="advanced">
+            <summary class="summary-with-tip">
+              CapabilityPolicy（批次级，副作用白名单 / REDIRECT）
+              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              <InfoTip
+                text="临时批次永远以 RunMode.DEBUG 运行：副作用类 builtin 默认 SUPPRESS（不会触发真实生产副作用）。此处规则用于沙箱白名单（action: allow）或引流（action: redirect）。空 = 仅使用系统默认。"
+                wide
+                align-end
+              />
+            </summary>
+            <CapabilityRulesEditor v-model="formCapabilityPolicy" />
           </details>
 
           <p v-if="formError" class="err">{{ formError }}</p>
@@ -863,7 +902,8 @@ import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
 import InfoTip from "@/components/InfoTip.vue";
 import RunDetailPanel from "@/components/RunDetailPanel.vue";
-import type { FlowDocument, FlowNode } from "@/types/flow";
+import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
+import type { CapabilityRule, FlowDocument, FlowNode } from "@/types/flow";
 import { displayName as displayNodeName, nodeId as flowNodeLogicalId } from "@/types/flow";
 import { previewContextMapping } from "@/testCenter/mappingPreview";
 import {
@@ -961,6 +1001,11 @@ const planForm = reactive<{
   concurrency: 4,
   assertionsText: "[]",
 });
+
+// CapabilityRule 列表与方案 / 临时批次表单解耦存储 —— reactive 数组难以直接
+// 嵌套泛型；分离持有便于 v-model 双向绑定。两个表单不共享，新建/编辑切换会重置。
+const planCapabilityPolicy = ref<CapabilityRule[]>([]);
+const formCapabilityPolicy = ref<CapabilityRule[]>([]);
 
 const form = reactive<{
   flow_code: string;
@@ -1438,6 +1483,8 @@ function loadPlanEditorsFromDetail(detail: TestPlanDetail) {
   for (const k of Object.keys(contextMapping as any)) delete (contextMapping as any)[k];
   Object.assign(contextMapping as any, cm);
   planForm.assertionsText = JSON.stringify(detail.assertions ?? [], null, 2);
+  // capability_policy（计划级默认；空 = 系统 DEBUG 默认 SUPPRESS 所有副作用类）
+  planCapabilityPolicy.value = ((detail as any).capability_policy ?? []) as CapabilityRule[];
 }
 
 async function selectBatch(id: number) {
@@ -1508,6 +1555,7 @@ async function newBatch() {
   selectedPlanDetail.value = null;
   stopPolling();
   formError.value = "";
+  formCapabilityPolicy.value = [];
   if (flowOptions.value.length === 0) {
     try {
       const r = await fetchFlowList();
@@ -1578,6 +1626,7 @@ async function newPlan() {
   planForm.assertionsText = "[]";
   mockEntries.splice(0, mockEntries.length);
   (contextMapping as any).mode = "spread";
+  planCapabilityPolicy.value = [];
 }
 
 function cancelCreate() {
@@ -1628,6 +1677,9 @@ async function submitPlan() {
   }
 
   creating.value = true;
+  // ``capability_policy`` 为方案级默认；批次创建时若未显式覆盖则继承该值。
+  // 与 mock_config / context_mapping 一样属于"方案模板"语义。
+  const planCapPolicy = planCapabilityPolicy.value as unknown as Array<Record<string, unknown>>;
   try {
     if (planForm.id == null) {
       await createTestPlan({
@@ -1640,6 +1692,7 @@ async function submitPlan() {
         mock_config: mockResult.data,
         context_mapping: contextMapping as any,
         assertions,
+        capability_policy: planCapPolicy,
       });
     } else {
       await patchTestPlan(planForm.id, {
@@ -1652,6 +1705,7 @@ async function submitPlan() {
         mock_config: mockResult.data,
         context_mapping: contextMapping as any,
         assertions,
+        capability_policy: planCapPolicy,
       });
     }
     await refreshPlans();
@@ -1742,6 +1796,8 @@ async function submitBatch() {
     concurrency: form.concurrency,
     mock_config: mockResult.data,
     context_mapping: contextMapping as any,
+    // 批次级 capability_policy；空数组 = 测试中心系统默认（DEBUG → 全部 SUPPRESS）。
+    capability_policy: formCapabilityPolicy.value as unknown as Array<Record<string, unknown>>,
   };
   creating.value = true;
   try {
@@ -2186,6 +2242,18 @@ void refreshPlans();
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.badge.suppressed-inline {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #92400e;
 }
 
 .batch-summary {

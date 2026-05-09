@@ -326,6 +326,13 @@ class FeEnvProfile(_AuditCols, Base):
         server_default=text("0"),
         comment="是否默认环境：0=否 1=是，应用层保证全局唯一一行为 1",
     )
+    system_capability_policy: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        comment="环境级系统默认 CapabilityRule 列表 JSON；优先级低于 deployment_capability_policy，"
+                "高于 RunMode 硬编码默认。可为空 []",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1255,6 +1262,12 @@ class FeFlowTestPlan(_AuditCols, Base):
         MEDIUMTEXT,
         nullable=False,
         comment="断言规则 JSON 数组（与 mock_config 并列）",
+    )
+    capability_policy: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        comment="计划级 CapabilityRule 列表 JSON；批次创建时若未显式传入则继承该值。可为空 []",
     )
 
 

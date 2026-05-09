@@ -112,3 +112,7 @@ class RunOptions(BaseModel):
     mode: RunMode = RunMode.PRODUCTION
     mock_overrides: dict[str, MockConfig] = Field(default_factory=dict)
     deployment_capability_policy: list[CapabilityRule] = Field(default_factory=list)
+    # 环境级系统默认策略，从 ``fe_env_profile.system_capability_policy`` 读取。
+    # 优先级低于 deployment_capability_policy，高于 RunMode 硬编码默认。
+    # 由 API 层在 resolve profile 时填入；运行层不直接访问 DB。
+    profile_system_capability_policy: list[CapabilityRule] = Field(default_factory=list)

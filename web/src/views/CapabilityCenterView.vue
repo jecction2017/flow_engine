@@ -255,7 +255,12 @@
           :registry="registry"
         />
         <details class="dbg-details" open>
-          <summary class="dbg-sum">调试（上下文 JSON + 输出）</summary>
+          <summary class="dbg-sum">
+            调试（上下文 JSON + 输出）
+            <span class="badge suppressed" title="临时调试入口，副作用类 builtin 默认全部 SUPPRESS">
+              副作用已抑制
+            </span>
+          </summary>
           <div class="row dbg">
             <label class="lbl">运行 Profile</label>
             <select v-model="debugProfile" class="sel">
@@ -266,6 +271,16 @@
             <label class="lbl">初始上下文 JSON</label>
             <textarea v-model="ctxJson" class="area mono" rows="4" spellcheck="false" />
           </div>
+          <details class="cap-details">
+            <summary class="cap-sum">附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）</summary>
+            <div class="cap-hint">
+              用户脚本调试与单节点调试共享同一安全契约：副作用类 builtin
+              （HTTP / DB / MQ）默认 SUPPRESS。在此添加规则可显式
+              <strong>放行</strong>（action: allow）或
+              <strong>重定向到沙箱</strong>（redirect_params）。
+            </div>
+            <CapabilityRulesEditor v-model="debugCapabilityPolicy" />
+          </details>
           <div class="lbl">输出</div>
           <pre class="out mono">{{ debugOut }}</pre>
         </details>
@@ -290,6 +305,8 @@ import {
   type RegistryPythonFn,
 } from "@/api/starlark";
 import { fetchProfileConfig } from "@/api/profiles";
+import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
+import type { CapabilityRule } from "@/types/flow";
 import {
   filterPythonModuleGroups,
   formatPythonExampleCall,
@@ -324,6 +341,9 @@ const ctxJson = ref("{}");
 const debugOut = ref("// 在「用户脚本」分区点击「调试」");
 const profileOptions = ref<string[]>(["default"]);
 const debugProfile = ref("default");
+// 与节点调试一致：用户脚本调试也是临时仿真路径，run_mode 锁死 DEBUG，
+// capability_policy 仅作为白名单 / REDIRECT 高级通道。
+const debugCapabilityPolicy = ref<CapabilityRule[]>([]);
 
 const loading = ref(false);
 const saving = ref(false);
@@ -512,7 +532,9 @@ async function runDebug() {
   }
   pendingDebug.value = true;
   try {
-    const res = await debugNode(userScriptContent.value, ctx, debugProfile.value);
+    const res = await debugNode(userScriptContent.value, ctx, debugProfile.value, {
+      capabilityPolicy: debugCapabilityPolicy.value as unknown as Record<string, unknown>[],
+    });
     debugOut.value = JSON.stringify(res, null, 2);
   } catch (e) {
     debugOut.value = e instanceof Error ? e.message : String(e);
@@ -1132,6 +1154,59 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-details {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.cap-sum {
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.cap-sum:hover {
+  color: var(--accent);
+}
+
+.cap-details[open] .cap-sum {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.cap-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.cap-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.badge.suppressed {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #92400e;
 }
 
 .area {

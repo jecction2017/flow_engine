@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import threading
 from contextlib import contextmanager
@@ -69,29 +68,14 @@ def _globals_extended() -> sl.Globals:
     return sl.Globals.extended_by([sl.LibraryExtension.Json])
 
 
-def _http_request(url: str, method: str = "GET", body: str | None = None) -> dict[str, Any]:
-    """Controlled HTTP helper (optional); kept minimal for sandboxed demos."""
-    try:
-        import urllib.request
-
-        req = urllib.request.Request(url, method=method.upper(), data=body.encode() if body else None)
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            raw = resp.read().decode("utf-8", errors="replace")
-            try:
-                parsed: Any = json.loads(raw)
-            except json.JSONDecodeError:
-                parsed = raw
-            return {"status": resp.status, "body": parsed}
-    except Exception as exc:  # noqa: BLE001
-        return {"status": -1, "error": str(exc)}
-
-
 def _regex_match(pattern: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
 def _attach_builtins(mod: sl.Module) -> None:
-    mod.add_callable("http_request", _http_request)
+    # ``http_request`` is now registered through ``@register_builtin`` in
+    # ``python_builtin_impl`` so it goes through ``_guard_builtin`` (budget
+    # + capability). It is attached uniformly via ``_attach_sdk_python``.
     mod.add_callable("regex_match", _regex_match)
 
     def _jump(target: str) -> None:
@@ -131,15 +115,17 @@ def inject_resolve(mod: sl.Module, ctx: ContextStack) -> None:
 
 
 def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
-    if not expr:
-        return True
-    mod = sl.Module()
-    inject_resolve(mod, ctx)
-    glb = _globals_extended()
-    ast = sl.parse("cond.star", f"({expr})")
-    with cf_guard():
-        val = sl.eval(mod, ast, glb)
-    return bool(val)
+    """Delegate to the SDK runtime.
+
+    The SDK path attaches the full SDK builtin set (``dict_get``,
+    ``lookup_query``, ``log_*`` …), enables the AST cache, and applies the
+    same ``_guard_builtin`` capability/budget enforcement used for task
+    scripts. Keeping condition evaluation on a stripped-down path here
+    diverged from hooks / iterables and broke capability constraints.
+    """
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.eval_condition(expr, ctx)
 
 
 def run_starfile_script(
@@ -187,13 +173,25 @@ def eval_key_expr(
 def debug_task_script(
     script: str,
     variables: dict[str, Any] | None = None,
+    *,
+    run_mode: Any = None,
+    capability_policy: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Task-node debug entrypoint: bind top-level keys of ``variables``
-    directly as Starlark globals (no boundary mapping). Returns
-    ``(result, logs)``."""
+    directly as Starlark globals (no boundary mapping).
+
+    ``run_mode`` / ``capability_policy`` are forwarded to the SDK runtime
+    so HTTP debug endpoints can opt into a capability scope (e.g. DEBUG
+    suppresses ``integration`` writes by default). Returns ``(result, logs)``.
+    """
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
-    return sdk_runtime.debug_task_script(script, variables)
+    return sdk_runtime.debug_task_script(
+        script,
+        variables,
+        run_mode=run_mode,
+        capability_policy=capability_policy,
+    )
 
 
 def run_hook_script(
@@ -237,12 +235,6 @@ def _dig_key(obj: dict[str, Any], parts: list[str]) -> Any:
 # --- Process pool payload (pickle-friendly) ---
 
 
-def _attach_process_builtins(mod: sl.Module) -> None:
-    """Process workers must not raise flow-control exceptions into the parent memory space."""
-    mod.add_callable("http_request", _http_request)
-    mod.add_callable("regex_match", _regex_match)
-
-
 def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Executed inside a worker process; reconstructs minimal context from
     serialized inputs. Captures log entries and ships them back across the
@@ -255,35 +247,29 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
         dictionary:       dict[str, Any] (resolved data dictionary)
         run_mode:         str (RunMode value), optional, default 'production'
         effective_policy: list[dict] (CapabilityRule json), optional, default []
+
+    Implementation note:
+        Delegates to ``sdk_runtime.debug_task_script`` so the worker shares
+        the **same** evaluation pipeline as the main process: budget scope,
+        ``cf_guard`` (flow-control exception unwrap), file loader for
+        ``load()``, and ``_guard_builtin`` capability + budget wrapper. A
+        previous version attached builtins directly via ``add_callable``,
+        which silently bypassed the budget cap, capability policy, and
+        flow-control machinery.
     """
     from flow_engine.runner.mode_context import run_mode_scope
     from flow_engine.runner.models import CapabilityRule, RunMode
     from flow_engine.starlark_sdk import runtime as sdk_runtime
-    from flow_engine.starlark_sdk.python_builtin_impl import PYTHON_BUILTINS
     from flow_engine.stores.data_dict import dictionary_scope
 
     script = payload["script"]
-    flat = payload["flat_inputs"]
+    flat = dict(payload["flat_inputs"])
     run_mode = RunMode(payload.get("run_mode", RunMode.PRODUCTION.value))
     effective_policy = [
         CapabilityRule.model_validate(r) for r in payload.get("effective_policy", [])
     ]
 
-    mod = sl.Module()
-    for var, pyval in flat.items():
-        mod[var] = pyval
-    _attach_process_builtins(mod)
-    for name, fn in PYTHON_BUILTINS.items():
-        mod.add_callable(name, fn)
-    glb = _globals_extended()
-    ast = sl.parse("task.star", script)
     with run_mode_scope(run_mode, effective_policy):
         with dictionary_scope(payload.get("dictionary") or {}):
-            with sdk_runtime.log_scope("task") as coll:
-                val = starlark_to_python(sl.eval(mod, ast, glb))
-                logs = coll.as_dicts()
-    if val is None:
-        val = {}
-    if not isinstance(val, dict):
-        raise TypeError("task must return dict")
-    return {"result": val, "logs": logs}
+            result, logs = sdk_runtime.debug_task_script(script, flat)
+    return {"result": result, "logs": logs}

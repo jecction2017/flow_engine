@@ -13,6 +13,7 @@ from flow_engine.starlark_sdk.builtin_registry import (
     builtin_map,
     register_builtin,
 )
+from flow_engine.starlark_sdk.runtime import get_redirect_params
 
 
 @register_builtin(
@@ -45,6 +46,9 @@ def demo_add(a: int, b: int) -> int:
     return int(a) + int(b)
 
 
+_HTTP_SUPPRESSED_RESULT: dict[str, Any] = {"status": 0, "body": None, "_suppressed": True}
+
+
 @register_builtin(
     PythonBuiltinSpec(
         id="python://http/simple_get",
@@ -54,9 +58,16 @@ def demo_add(a: int, b: int) -> int:
         signature=(BuiltinArgSpec(name="url", type="str"),),
         returns="dict",
         side_effects="network",
+        # SUPPRESS 时返回结构与正常返回一致，避免脚本侧需要为 mock/调试单独写分支。
+        # ``_suppressed`` 标记供需要感知的脚本判断；多数场景可忽略，按 status==0 视为空响应。
+        suppress_result=_HTTP_SUPPRESSED_RESULT,
     )
 )
 def http_simple_get(url: str) -> dict[str, Any]:
+    # REDIRECT 时允许策略将真实请求改写到沙箱 / mock 服务器（``url`` 覆盖）。
+    redirect = get_redirect_params()
+    if "url" in redirect:
+        url = str(redirect["url"])
     try:
         import urllib.request
 
@@ -74,6 +85,47 @@ def http_simple_get(url: str) -> dict[str, Any]:
 
 @register_builtin(
     PythonBuiltinSpec(
+        id="python://http/request",
+        starlark_name="http_request",
+        category="integration",
+        summary="受控 HTTP 请求（GET/POST 等），返回 {status, body|error}",
+        signature=(
+            BuiltinArgSpec(name="url", type="str"),
+            BuiltinArgSpec(name="method", type="str", required=False),
+            BuiltinArgSpec(name="body", type="str", required=False),
+        ),
+        returns="dict",
+        side_effects="network",
+        suppress_result=_HTTP_SUPPRESSED_RESULT,
+    )
+)
+def http_request(url: str, method: str = "GET", body: str | None = None) -> dict[str, Any]:
+    redirect = get_redirect_params()
+    if "url" in redirect:
+        url = str(redirect["url"])
+    if "method" in redirect:
+        method = str(redirect["method"])
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            method=method.upper(),
+            data=body.encode() if body else None,
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed: Any = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = raw
+            return {"status": resp.status, "body": parsed}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": -1, "error": str(exc)}
+
+
+@register_builtin(
+    PythonBuiltinSpec(
         id="python://dict/get",
         starlark_name="dict_get",
         category="dictionary",
@@ -84,6 +136,7 @@ def http_simple_get(url: str) -> dict[str, Any]:
         ),
         returns="any",
         side_effects="disk",
+        suppress_result=None,
     )
 )
 def dict_get(path: str, default: Any = None) -> Any:
@@ -103,6 +156,7 @@ def dict_get(path: str, default: Any = None) -> Any:
         ),
         returns="list",
         side_effects="disk",
+        suppress_result=[],
     )
 )
 def lookup_query(namespace: str, filter: dict[str, Any] | None = None) -> list[dict[str, Any]]:  # noqa: A002
@@ -118,6 +172,7 @@ def lookup_query(namespace: str, filter: dict[str, Any] | None = None) -> list[d
         summary="列出 starlark_user 下用户 .star 相对路径",
         returns="list",
         side_effects="disk",
+        suppress_result=[],
     )
 )
 def user_script_list() -> list[str]:
@@ -235,3 +290,32 @@ def runtime_log_debug(*args: Any) -> None:
 
 # starlark_name -> callable
 PYTHON_BUILTINS: dict[str, Any] = builtin_map()
+
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://probe/side_effect",
+        starlark_name="side_effect_probe",
+        category="integration",  # 关键：用 integration，让 DEBUG 默认就会 SUPPRESS
+        summary="Side-effect probe builtin used for end-to-end capability testing.",
+        signature=(),
+        returns="dict",
+        side_effects="network",
+        suppress_result={"_suppressed": True, "called": False, "via": "suppress_result"},
+    )
+)
+def side_effect_probe(arg: str = "default") -> dict[str, Any]:
+    """
+    This builtin simulates a side-effectful call. It is intentionally in
+    integration category so RunMode.DEBUG will suppress by default.
+    REDIRECT params are read via get_redirect_params().
+    """
+    rp = get_redirect_params() or {}
+    # 这里故意不做真实网络/DB，只把“本来要做副作用”的信息返回给脚本用于断言
+    return {
+        "_suppressed": False,
+        "called": True,
+        "arg": arg,
+        "redirect": dict(rp),
+    }

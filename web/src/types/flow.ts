@@ -15,6 +15,25 @@ export interface Boundary {
   outputs: Record<string, string>;
 }
 
+/**
+ * Capability action — 与后端 ``CapabilityAction`` 枚举一致：
+ *   - allow:    放行
+ *   - suppress: 抑制（按 spec.suppress_result 返回，不真正执行副作用）
+ *   - redirect: 改写参数（具体 builtin 自行解释 redirect_params）
+ */
+export type CapabilityAction = "allow" | "suppress" | "redirect";
+
+/**
+ * 单条 CapabilityRule — 与后端 ``CapabilityRule`` Pydantic 模型一致。
+ * 命中规则：``builtin_name`` > ``builtin_category`` > 通配（两者均空）。
+ */
+export interface CapabilityRule {
+  builtin_category?: string | null;
+  builtin_name?: string | null;
+  action: CapabilityAction;
+  redirect_params?: Record<string, unknown>;
+}
+
 export interface TaskNode {
   type: "task";
   /** 逻辑主键：流程内唯一，字母开头 + 字母/数字/下划线。 */
@@ -26,6 +45,11 @@ export interface TaskNode {
   condition?: string | null;
   script: string;
   boundary: Boundary;
+  /**
+   * 节点级 CapabilityRule 覆盖。优先级高于 deployment_capability_policy
+   * 与系统默认；null / undefined / [] = 无覆盖。
+   */
+  capability_overrides?: CapabilityRule[] | null;
 }
 
 export type LoopCopyItem = "shared" | "shallow" | "deep";

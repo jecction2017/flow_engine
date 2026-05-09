@@ -37,18 +37,58 @@
     <div class="panel">
       <div class="field"><span>Profiles</span></div>
       <ul class="list">
-        <li v-for="p in profiles" :key="p" :class="{ active: p === defaultProfile }">
+        <li
+          v-for="p in profiles"
+          :key="p"
+          :class="{ active: p === defaultProfile, selected: p === policyProfile }"
+          @click="loadPolicyFor(p)"
+        >
           <span class="mono">{{ p }}</span>
           <span v-if="p === defaultProfile" class="tag">default</span>
+          <span v-if="p === policyProfile" class="tag tag-edit">编辑中</span>
         </li>
       </ul>
+    </div>
+
+    <div class="panel">
+      <div class="row sec-title">
+        <div>
+          <div class="title">系统能力策略</div>
+          <div class="subtitle">
+            环境级 CapabilityRule，优先级介于「部署/批次显式策略」与 RunMode 内置默认之间。
+            修改后对所有使用本环境的部署 / 试运行 / 测试批次 / 调试入口立即生效。
+          </div>
+        </div>
+        <div class="row">
+          <select v-model="policyProfile" class="inp mono" @change="loadPolicyFor(policyProfile)">
+            <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
+          </select>
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="savingPolicy || !policyProfile"
+            @click="savePolicy"
+          >
+            {{ savingPolicy ? "保存中…" : "保存策略" }}
+          </button>
+        </div>
+      </div>
+      <CapabilityRulesEditor v-model="policyRules" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { createProfile, fetchProfileConfig, saveDefaultProfile } from "@/api/profiles";
+import {
+  createProfile,
+  fetchProfileConfig,
+  fetchProfileSystemPolicy,
+  saveDefaultProfile,
+  saveProfileSystemPolicy,
+} from "@/api/profiles";
+import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
+import type { CapabilityRule } from "@/types/flow";
 
 const profiles = ref<string[]>(["default"]);
 const defaultProfile = ref("default");
@@ -58,6 +98,10 @@ const savingDefault = ref(false);
 const savingCreate = ref(false);
 const error = ref("");
 
+const policyProfile = ref<string>("");
+const policyRules = ref<CapabilityRule[]>([]);
+const savingPolicy = ref(false);
+
 async function reload() {
   error.value = "";
   loading.value = true;
@@ -65,10 +109,42 @@ async function reload() {
     const res = await fetchProfileConfig();
     profiles.value = res.profiles.length ? res.profiles : ["default"];
     defaultProfile.value = res.default_profile || profiles.value[0] || "default";
+    if (!policyProfile.value || !profiles.value.includes(policyProfile.value)) {
+      // 默认编辑当前默认 profile，避免空白页观感。
+      policyProfile.value = defaultProfile.value;
+      await loadPolicyFor(policyProfile.value);
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadPolicyFor(profile: string) {
+  if (!profile) return;
+  policyProfile.value = profile;
+  error.value = "";
+  try {
+    const res = await fetchProfileSystemPolicy(profile);
+    policyRules.value = (res.system_capability_policy || []) as unknown as CapabilityRule[];
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function savePolicy() {
+  if (!policyProfile.value) return;
+  savingPolicy.value = true;
+  error.value = "";
+  try {
+    const payload = policyRules.value.map((r) => ({ ...r })) as Record<string, unknown>[];
+    const res = await saveProfileSystemPolicy(policyProfile.value, payload);
+    policyRules.value = (res.system_capability_policy || []) as unknown as CapabilityRule[];
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    savingPolicy.value = false;
   }
 }
 
@@ -120,5 +196,11 @@ void reload();
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .list li { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #fff; }
 .list li.active { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
+.list li.selected { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); cursor: pointer; }
+.list li:not(.selected):hover { cursor: pointer; border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
 .tag { font-size: 10px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; color: var(--muted); }
+.tag-edit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.sec-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.sec-title .title { font-size: 13px; font-weight: 700; }
+.sec-title .subtitle { font-size: 11.5px; color: var(--muted); }
 </style>

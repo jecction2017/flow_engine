@@ -64,6 +64,11 @@ export type RunFlowRequest = {
   timeout_sec?: number;
   profile?: string | null;
   runtime_patch?: Record<string, unknown> | null;
+  /**
+   * 试运行附加的 CapabilityRule（高级）。服务端永远以 RunMode.DEBUG 运行，
+   * 副作用类 builtin 默认 SUPPRESS；此字段用于显式 ALLOW / REDIRECT 沙箱。
+   */
+  capability_policy?: Array<Record<string, unknown>>;
 };
 
 export type ResolvedModuleInfo = {

@@ -31,7 +31,7 @@ from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.runner import deploy_persistence, test_persistence
 from flow_engine.runner import test_runner
-from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode
+from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import (
     delete_rows,
@@ -89,6 +89,14 @@ class DebugNodeBody(BaseModel):
     script: str
     initial_context: dict[str, Any] = Field(default_factory=dict)
     profile: str | None = None
+    # /api/debug/node 是临时调试入口，``run_mode`` **始终** RunMode.DEBUG（服务端
+    # 锁死，不在 schema 暴露）。如此可避免开发者从调试按钮意外触发真实生产副作用。
+    # capability_policy 仅作为高级白名单 / REDIRECT 通道，例如把 ``http_simple_get``
+    # 显式 ALLOW 到沙箱地址。空列表 = 全部副作用类 builtin SUPPRESS。
+    capability_policy: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="高级覆盖规则；空=系统 DEBUG 默认（SUPPRESS 所有副作用类 builtin）",
+    )
 
 
 class PutUserScriptBody(BaseModel):
@@ -144,6 +152,13 @@ class RunFlowBody(BaseModel):
     timeout_sec: float = Field(default=30.0, ge=0.1, le=600.0)
     profile: str | None = None
     runtime_patch: dict[str, Any] | None = None
+    # /api/flows/{id}/run 是「试运行」入口（区别于 deployment 的 manual trigger），
+    # ``run_mode`` 服务端锁死为 RunMode.DEBUG —— 临时执行不应直接触发生产副作用。
+    # 真实生产请走部署路径（带审计、并发控制、调度、capability_policy 配置）。
+    capability_policy: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="高级覆盖规则；空=系统 DEBUG 默认（SUPPRESS 所有副作用类 builtin）",
+    )
 
 
 class CommitVersionBody(BaseModel):
@@ -224,6 +239,12 @@ class CreateTestBatchBody(BaseModel):
         default_factory=list,
         description="断言规则（与方案 assertions 同结构）；临时批次可内联传入",
     )
+    # 批次级 CapabilityRule，覆盖系统 DEBUG 默认；空列表=仅使用系统默认。
+    # 当从 plan 触发时，未显式传入则继承 plan 的 capability_policy。
+    capability_policy: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="测试批次级 CapabilityRule；优先级高于系统默认",
+    )
 
 
 class CreateTestPlanBody(BaseModel):
@@ -236,6 +257,10 @@ class CreateTestPlanBody(BaseModel):
     mock_config: dict[str, MockConfig] = Field(default_factory=dict)
     context_mapping: dict[str, Any] | None = None
     assertions: list[dict[str, Any]] = Field(default_factory=list)
+    capability_policy: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="测试方案默认 CapabilityRule；批次创建时若未显式传入则继承该值",
+    )
 
 
 class PatchTestPlanBody(BaseModel):
@@ -247,6 +272,7 @@ class PatchTestPlanBody(BaseModel):
     mock_config: dict[str, MockConfig] | None = None
     context_mapping: dict[str, Any] | None = None
     assertions: list[dict[str, Any]] | None = None
+    capability_policy: list[dict[str, Any]] | None = None
 
 
 class CopyTestPlanBody(BaseModel):
@@ -498,7 +524,24 @@ def create_app() -> FastAPI:
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-        rt = FlowRuntime(flow, dictionary=resolved["resolved_dictionary"])
+        try:
+            policy_rules = [
+                CapabilityRule.model_validate(r) for r in (body.capability_policy or [])
+            ]
+            profile_rules = [
+                CapabilityRule.model_validate(r)
+                for r in profile_store().get_system_capability_policy(profile_id)
+            ]
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"invalid capability policy: {e}") from e
+        # 试运行恒为 DEBUG —— 与单节点调试一致，避免临时点击触发真实生产副作用。
+        # 真实生产由 deployment 触发，自带审计 / 并发控制 / 调度。
+        run_opts = RunOptions(
+            mode=RunMode.DEBUG,
+            deployment_capability_policy=policy_rules,
+            profile_system_capability_policy=profile_rules,
+        )
+        rt = FlowRuntime(flow, dictionary=resolved["resolved_dictionary"], run_opts=run_opts)
         started = time.monotonic()
         timed_out = False
         try:
@@ -607,6 +650,45 @@ def create_app() -> FastAPI:
         except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "default_profile": pid}
+
+    @app.get("/api/profiles/{profile}/system-policy")
+    def get_profile_system_policy(profile: str) -> dict[str, Any]:
+        """Read environment-level system CapabilityRule list for ``profile``.
+
+        Used by 系统设置页 to show / edit the policy. Validation happens at
+        write time; reads return raw stored JSON so editing a malformed
+        legacy row is recoverable from the UI.
+        """
+        try:
+            pid = profile_store().resolve_profile(profile)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {
+            "profile": pid,
+            "system_capability_policy": profile_store().get_system_capability_policy(pid),
+        }
+
+    @app.put("/api/profiles/{profile}/system-policy")
+    def put_profile_system_policy(profile: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        rules_raw = body.get("system_capability_policy")
+        if not isinstance(rules_raw, list):
+            raise HTTPException(
+                status_code=400,
+                detail="system_capability_policy must be a list of rules",
+            )
+        # Validate each rule via Pydantic; reject malformed entries early
+        # so the persisted JSON can always be loaded back as CapabilityRule.
+        try:
+            rules = [CapabilityRule.model_validate(r) for r in rules_raw]
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"invalid rule: {e}") from e
+        normalized = [r.model_dump(mode="json") for r in rules]
+        profile_store().set_system_capability_policy(pid, normalized)
+        return {"ok": True, "profile": pid, "system_capability_policy": normalized}
 
     @app.get("/api/dict/modules")
     def list_dict_modules(layer: str = "base", profile: str | None = None) -> dict[str, Any]:
@@ -865,8 +947,20 @@ def create_app() -> FastAPI:
         try:
             profile = profile_store().resolve_profile(body.profile)
             resolved = data_dict.resolve(profile)
+            # 临时调试入口：永远 RunMode.DEBUG（系统默认 SUPPRESS 所有副作用类）。
+            # 能力栈优先级：body 显式策略 > profile 系统策略 > DEBUG 系统默认。
+            # body.capability_policy 只能"放宽"（ALLOW/REDIRECT 特定 builtin），
+            # 不能切换运行模式 —— 生产 effects 必须走 deployment 路径。
+            merged_policy = list(body.capability_policy or []) + list(
+                profile_store().get_system_capability_policy(profile)
+            )
             with profile_scope(profile), data_dict.dictionary_scope(resolved["resolved_dictionary"]):
-                result, logs = debug_task_script(body.script, body.initial_context or {})
+                result, logs = debug_task_script(
+                    body.script,
+                    body.initial_context or {},
+                    run_mode=RunMode.DEBUG,
+                    capability_policy=merged_policy,
+                )
             return JSONResponse(content={"ok": True, "result": result, "logs": logs})
         except Exception as e:  # noqa: BLE001
             return JSONResponse(
@@ -1042,6 +1136,7 @@ def create_app() -> FastAPI:
             "test_ns_code": row.test_ns_code,
             "profile_code": row.profile_code,
             "concurrency": int(row.concurrency),
+            "capability_policy": list(row.capability_policy or []),
             "updated_at": utc_isoformat(row.updated_at),
             "created_at": utc_isoformat(row.created_at),
         }
@@ -1078,6 +1173,7 @@ def create_app() -> FastAPI:
                 mock_config=mock_ser,
                 context_mapping=mapping_ser,
                 assertions=assertions_ser,
+                capability_policy=list(body.capability_policy or []),
             )
             s.add(row)
             s.flush()
@@ -1094,6 +1190,7 @@ def create_app() -> FastAPI:
                 "mock_config": json.loads(row.mock_config or "{}"),
                 "context_mapping": json.loads(row.context_mapping or "{}"),
                 "assertions": json.loads(getattr(row, "assertions", None) or "[]"),
+                "capability_policy": list(row.capability_policy or []),
             }
 
     @app.patch("/api/test-plans/{plan_id}")
@@ -1122,6 +1219,8 @@ def create_app() -> FastAPI:
                 row.context_mapping = json.dumps(body.context_mapping, ensure_ascii=False, default=str)
             if body.assertions is not None:
                 row.assertions = json.dumps(body.assertions, ensure_ascii=False, default=str)
+            if body.capability_policy is not None:
+                row.capability_policy = list(body.capability_policy)
             s.flush()
             return _serialize_test_plan(row)
 
@@ -1152,6 +1251,7 @@ def create_app() -> FastAPI:
                 "mock_config": json.loads(plan.mock_config or "{}"),
                 "context_mapping": json.loads(plan.context_mapping or "{}"),
                 "assertions": json.loads(getattr(plan, "assertions", None) or "[]"),
+                "capability_policy": list(plan.capability_policy or []),
             }
 
         res = await create_test_batch(
@@ -1165,6 +1265,7 @@ def create_app() -> FastAPI:
                 context_mapping=plan_data["context_mapping"],
                 concurrency=int(plan_data["concurrency"]),
                 assertions=list(plan_data.get("assertions") or []),
+                capability_policy=list(plan_data.get("capability_policy") or []),
             )
         )
 
@@ -1310,6 +1411,7 @@ def create_app() -> FastAPI:
                 mock_config=src.mock_config,
                 context_mapping=src.context_mapping,
                 assertions=getattr(src, "assertions", None) or "[]",
+                capability_policy=list(src.capability_policy or []),
             )
             s.add(row)
             s.flush()
@@ -1363,6 +1465,13 @@ def create_app() -> FastAPI:
             )
             return {"batch_id": batch_id, "status": "completed", "total_runs": 0}
 
+        try:
+            parsed_policy = [
+                CapabilityRule.model_validate(r) for r in (body.capability_policy or [])
+            ]
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"invalid capability_policy: {e}") from e
+
         async def _drive() -> None:
             try:
                 sem = asyncio.Semaphore(max(1, body.concurrency))
@@ -1381,6 +1490,7 @@ def create_app() -> FastAPI:
                             test_input=row,
                             context_mapping=body.context_mapping,
                             assertions=body.assertions or [],
+                            capability_policy=parsed_policy,
                         )
 
                 await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)

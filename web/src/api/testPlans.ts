@@ -40,6 +40,12 @@ export type CreateTestPlanBody = {
   mock_config?: Record<string, MockConfig>;
   context_mapping?: ContextMapping;
   assertions?: Array<Record<string, unknown>>;
+  /**
+   * 计划级默认 CapabilityRule。批次创建时若未显式传入，继承此值。
+   * 测试中心运行恒为 RunMode.DEBUG（副作用类 builtin 默认 SUPPRESS），
+   * 此处规则用于 **白名单 / REDIRECT 沙箱**（与调试入口同语义）。
+   */
+  capability_policy?: Array<Record<string, unknown>>;
 };
 
 export type PatchTestPlanBody = Partial<CreateTestPlanBody>;

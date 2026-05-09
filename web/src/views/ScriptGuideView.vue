@@ -1,19 +1,60 @@
 <template>
   <div class="guide">
+    <header class="topbar">
+      <div class="topbar-title">帮助文档</div>
+      <div class="tabs" role="tablist" aria-label="帮助文档分区">
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'script' }"
+          role="tab"
+          :aria-selected="activeTab === 'script'"
+          @click="activeTab = 'script'"
+        >
+          脚本帮助
+        </button>
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'capability' }"
+          role="tab"
+          :aria-selected="activeTab === 'capability'"
+          @click="activeTab = 'capability'"
+        >
+          副作用与能力约束
+        </button>
+      </div>
+    </header>
+
     <aside class="toc">
-      <div class="toc-title">脚本帮助</div>
-      <a href="#start" class="toc-link">快速开始</a>
-      <a href="#syntax" class="toc-link">基础语法</a>
-      <a href="#builtins" class="toc-link">内置能力调用</a>
-      <a href="#internal" class="toc-link">内置脚本 load</a>
-      <a href="#soc" class="toc-link">SOC 实战模板</a>
-      <a href="#editor" class="toc-link">编辑器使用</a>
-      <a href="#debug" class="toc-link">调试步骤</a>
-      <a href="#assertions" class="toc-link">测试中心断言</a>
-      <a href="#faq" class="toc-link">常见问题</a>
+      <div class="toc-title">{{ activeTab === "script" ? "脚本帮助" : "副作用与能力约束" }}</div>
+      <template v-if="activeTab === 'script'">
+        <a href="#start" class="toc-link">快速开始</a>
+        <a href="#syntax" class="toc-link">基础语法</a>
+        <a href="#builtins" class="toc-link">内置能力调用</a>
+        <a href="#internal" class="toc-link">内置脚本 load</a>
+        <a href="#soc" class="toc-link">SOC 实战模板</a>
+        <a href="#editor" class="toc-link">编辑器使用</a>
+        <a href="#debug" class="toc-link">调试步骤</a>
+        <a href="#assertions" class="toc-link">测试中心断言</a>
+        <a href="#faq" class="toc-link">常见问题</a>
+      </template>
+      <template v-else>
+        <a href="#cap-start" class="toc-link">总览</a>
+        <a href="#cap-what" class="toc-link">什么是副作用</a>
+        <a href="#cap-defaults" class="toc-link">默认行为（为何会被抑制）</a>
+        <a href="#cap-policy" class="toc-link">CapabilityPolicy 怎么写</a>
+        <a href="#cap-entrypoints" class="toc-link">各入口如何生效</a>
+        <a href="#cap-debug" class="toc-link">临时调试（脚本/节点/试运行）</a>
+        <a href="#cap-test" class="toc-link">测试中心（plan/batch）</a>
+        <a href="#cap-deploy" class="toc-link">部署（production）</a>
+        <a href="#cap-faq" class="toc-link">常见问题</a>
+      </template>
     </aside>
 
     <main class="content">
+      <!-- Tab 1: existing script guide -->
+      <template v-if="activeTab === 'script'">
       <section id="start" class="card">
         <h1>任务脚本用户手册</h1>
         <p class="muted">
@@ -155,11 +196,175 @@
         <h3>Q: internal 函数调用报未定义</h3>
         <p>A: 先写正确的 <code class="mono">load("internal://...", "...")</code> 再使用导出名。</p>
       </section>
+      </template>
+
+      <!-- Tab 2: side-effect builtins & capability policy -->
+      <template v-else>
+        <section id="cap-start" class="card">
+          <h1>副作用函数与能力约束（CapabilityPolicy）</h1>
+          <p class="muted">
+            这份文档解释：哪些 builtin 被视为“副作用”，为什么在临时调试/试运行/测试中会被默认抑制（SUPPRESS），以及如何用
+            <code class="mono">CapabilityPolicy</code> 做白名单（ALLOW）或重定向（REDIRECT）。
+          </p>
+          <div class="callout warn">
+            <strong>安全边界（重要）</strong>
+            <div class="muted">
+              用户脚本调试、节点调试、流程试运行、测试中心均属于“临时/受控执行”入口：服务端固定使用
+              <code class="mono">RunMode.DEBUG</code>，默认抑制所有副作用类 builtin（HTTP / DB / MQ 等）。
+              真实生产副作用必须走部署（deployment）。
+            </div>
+          </div>
+        </section>
+
+        <section id="cap-what" class="card">
+          <h2>1) 什么是“副作用 builtin”</h2>
+          <p>
+            “副作用”指调用会对外部系统产生影响，或对系统状态产生持久影响的行为。典型例子：
+          </p>
+          <ul>
+            <li><strong>外部调用</strong>：HTTP 请求、调用集成平台接口（integration）</li>
+            <li><strong>写入</strong>：写数据库（db_write）、发布 MQ（mq_publish）</li>
+            <li><strong>有风险读取</strong>：某些跨租户/跨环境读取（由策略决定是否需要约束）</li>
+          </ul>
+          <p class="muted">
+            具体哪些 builtin 属于副作用，由后端 builtin 规格字段 <code class="mono">side_effects</code> 标记；只有
+            <code class="mono">side_effects != "none"</code> 的 builtin 才会触发能力检查。
+          </p>
+        </section>
+
+        <section id="cap-defaults" class="card">
+          <h2>2) 默认行为：为何你在调试时“调用没生效”</h2>
+          <p>
+            在临时调试/试运行/测试中心，系统默认会对副作用 builtin 做 <code class="mono">SUPPRESS</code>：
+            调用被短路，函数体不会执行，直接返回一个“被抑制时的返回值”（由后端 builtin spec 定义）。
+          </p>
+          <div class="code-box">
+            <pre class="code mono">{{ sampleSuppressedOut }}</pre>
+            <button type="button" class="copy-btn" @click="copyCode(sampleSuppressedOut)">复制</button>
+          </div>
+          <p class="tip">
+            你会在输出里看到类似 <code class="mono">_suppressed: true</code> 的标记（不同 builtin 的字段可能略有差异）。
+            这是为了让脚本能“可测试地”处理被抑制的情况，而不是静默失败。
+          </p>
+        </section>
+
+        <section id="cap-policy" class="card">
+          <h2>3) CapabilityPolicy 怎么写（ALLOW / SUPPRESS / REDIRECT）</h2>
+          <p class="muted">
+            Policy 由若干条规则（CapabilityRule）组成，按优先级匹配：通常先匹配 <code class="mono">builtin_name</code>，再匹配
+            <code class="mono">builtin_category</code>，再落到默认规则。
+          </p>
+
+          <h3>3.1 规则结构</h3>
+          <div class="code-box">
+            <pre class="code mono">{{ sampleRuleShape }}</pre>
+            <button type="button" class="copy-btn" @click="copyCode(sampleRuleShape)">复制</button>
+          </div>
+
+          <h3>3.2 白名单（ALLOW）示例</h3>
+          <div class="code-box">
+            <pre class="code mono">{{ sampleRuleAllow }}</pre>
+            <button type="button" class="copy-btn" @click="copyCode(sampleRuleAllow)">复制</button>
+          </div>
+
+          <h3>3.3 重定向（REDIRECT）示例</h3>
+          <p class="muted">
+            REDIRECT 不会自动替你“改 URL”，它只是把 <code class="mono">redirect_params</code> 注入到 builtin 调用上下文；
+            builtin 实现如需重定向，应在函数体内读取这些参数并执行自定义逻辑。
+          </p>
+          <div class="code-box">
+            <pre class="code mono">{{ sampleRuleRedirect }}</pre>
+            <button type="button" class="copy-btn" @click="copyCode(sampleRuleRedirect)">复制</button>
+          </div>
+        </section>
+
+        <section id="cap-entrypoints" class="card">
+          <h2>4) 各入口如何生效（优先级与“为什么我这里能放行”）</h2>
+          <p>
+            能力策略最终是多层叠加结果。你可以把它理解成“从上到下覆盖”，越靠近调用现场优先级越高：
+          </p>
+          <ol>
+            <li><strong>节点级覆盖</strong>：节点配置的 <code class="mono">capability_overrides</code></li>
+            <li><strong>请求级覆盖</strong>：调试面板/试运行/测试中心临时附加的 <code class="mono">capability_policy</code></li>
+            <li><strong>部署级策略</strong>：deployment_capability_policy（部署运行时生效）</li>
+            <li><strong>环境系统策略</strong>：profile 的 <code class="mono">system_capability_policy</code></li>
+            <li><strong>模式默认</strong>：<code class="mono">RunMode</code> 的硬编码默认策略（DEBUG 默认 SUPPRESS 副作用）</li>
+          </ol>
+          <p class="muted">
+            说明：临时调试入口固定 <code class="mono">RunMode.DEBUG</code>，所以“模式默认策略”会始终提供一层安全兜底。
+            但你仍可通过上层的 request policy 做“精确放行/引流”。
+          </p>
+        </section>
+
+        <section id="cap-debug" class="card">
+          <h2>5) 临时调试（用户脚本调试 / 节点调试 / 流程试运行）</h2>
+          <p>
+            这三类入口都属于临时仿真执行：默认抑制副作用。你可以在页面里的 “附加 CapabilityPolicy（高级）” 折叠区：
+          </p>
+          <ul>
+            <li>添加 <code class="mono">ALLOW</code> 放行某个 builtin（建议仅指向沙箱/测试环境）</li>
+            <li>添加 <code class="mono">REDIRECT</code> 并提供 redirect_params，让 builtin 自行实现重定向</li>
+          </ul>
+          <div class="code-box">
+            <pre class="code mono">{{ sampleProbeScript }}</pre>
+            <button type="button" class="copy-btn" @click="copyCode(sampleProbeScript)">复制</button>
+          </div>
+        </section>
+
+        <section id="cap-test" class="card">
+          <h2>6) 测试中心（plan/batch）</h2>
+          <p>
+            测试中心运行同样固定为 <code class="mono">RunMode.DEBUG</code>，默认抑制副作用。你可以在：
+          </p>
+          <ul>
+            <li><strong>方案级</strong>：为 plan 设置默认 capability_policy（批次创建时可继承）</li>
+            <li><strong>批次级</strong>：为 batch 设置 capability_policy（优先级高于 plan）</li>
+          </ul>
+          <p class="muted">
+            建议做法：把“需要放行到沙箱”的规则固化到 plan，批次级只做临时变更或更严格限制。
+          </p>
+        </section>
+
+        <section id="cap-deploy" class="card">
+          <h2>7) 部署（production）</h2>
+          <p>
+            部署路径使用 <code class="mono">RunMode.PRODUCTION</code>，其默认策略通常更宽（允许 integration 等），并叠加：
+            deployment_capability_policy、profile 系统策略、节点覆盖等。
+          </p>
+          <div class="callout tip">
+            <strong>最佳实践</strong>
+            <div class="muted">
+              把“生产安全边界”写在策略里而不是写在脚本里：例如仅允许访问明确白名单域名，或对写入类 builtin 强制 REDIRECT 到网关。
+            </div>
+          </div>
+        </section>
+
+        <section id="cap-faq" class="card">
+          <h2>8) 常见问题</h2>
+          <h3>Q: 为什么调试时 http_simple_get 返回 status=0？</h3>
+          <p class="muted">
+            这是 SUPPRESS 命中后的“抑制返回值”。调试入口固定 DEBUG，所以默认策略会抑制 integration 类副作用 builtin。
+            如需联调沙箱，可在 “附加 CapabilityPolicy” 中加 ALLOW/REDIRECT。
+          </p>
+          <h3>Q: REDIRECT 会自动替我改 URL 吗？</h3>
+          <p class="muted">
+            不会。REDIRECT 只是把参数传给 builtin（通过 redirect_params 上下文）。是否重定向、怎么重定向由 builtin 具体实现决定。
+          </p>
+          <h3>Q: 我能在调试入口切到 production 吗？</h3>
+          <p class="muted">
+            不能。临时调试入口服务端锁死 DEBUG，这是为了避免误触发真实生产副作用。生产行为请走部署路径。
+          </p>
+        </section>
+      </template>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref } from "vue";
+
+const activeTab = ref<"script" | "capability">("script");
+
 const sampleStart = `{"ok": True, "msg": "hello"}`;
 
 const sampleSyntax = `sev = "HIGH"
@@ -247,6 +452,43 @@ const sampleRowExpect = `{
   "_expect.equals": 2
 }`;
 
+// --------------------------
+// Capability / side effects docs samples
+// --------------------------
+
+const sampleSuppressedOut = `# 示例：当副作用 builtin 被 SUPPRESS
+{
+  "status": 0,
+  "body": null,
+  "_suppressed": true
+}`;
+
+const sampleRuleShape = `{
+  "builtin_category": "integration",     // 可选：按类目匹配
+  "builtin_name": "http_simple_get",     // 可选：按 builtin 精确匹配（优先级更高）
+  "action": "suppress|allow|redirect",   // 必填
+  "redirect_params": { "url": "..." }    // 仅 redirect 时需要
+}`;
+
+const sampleRuleAllow = `[
+  { "builtin_name": "http_simple_get", "action": "allow" }
+]`;
+
+const sampleRuleRedirect = `[
+  {
+    "builtin_name": "http_simple_get",
+    "action": "redirect",
+    "redirect_params": { "url": "https://sandbox.example/api" }
+  }
+]`;
+
+const sampleProbeScript = `# 任意任务脚本 / 用户脚本里都可以这样写：
+r = http_simple_get("https://prod.example/api/ping")
+{"probe": r}
+
+# 在临时调试入口默认会被抑制（SUPPRESS），输出里会有 _suppressed=true
+# 如需联调沙箱：在页面「附加 CapabilityPolicy」里加 allow 或 redirect`;
+
 async function copyCode(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -262,6 +504,50 @@ async function copyCode(text: string) {
   grid-template-columns: 220px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+}
+
+.topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.topbar-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 80%, var(--surface));
+}
+
+.tab.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .toc {
@@ -331,6 +617,28 @@ li {
 
 .tip {
   color: var(--success);
+}
+
+.callout {
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  margin-top: 10px;
+}
+
+.callout.warn {
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 35%, transparent);
+}
+
+.callout.tip {
+  background: color-mix(in srgb, #10b981 10%, transparent);
+  border-color: color-mix(in srgb, #10b981 30%, transparent);
+}
+
+.callout strong {
+  display: block;
+  margin-bottom: 6px;
 }
 
 .code {

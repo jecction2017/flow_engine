@@ -7,6 +7,13 @@
           wide
           text="每个节点拥有独立的调试上下文。顶层 key 会直接绑定为 Starlark 全局变量（不走边界映射），仅前端保存，不写回流程定义。"
         />
+        <span class="badge suppressed" title="临时调试入口，副作用类 builtin（HTTP/DB/MQ）默认全部 SUPPRESS，不会触发真实生产副作用">
+          副作用已抑制
+          <InfoTip
+            wide
+            text="节点调试是临时仿真路径，永远以 RunMode.DEBUG 运行：副作用类 builtin（http_simple_get / http_request 等 integration / db_write / mq_publish 类目）默认 SUPPRESS。如需放行或重定向到沙箱，使用下方「附加 CapabilityPolicy」。"
+          />
+        </span>
       </div>
       <button type="button" class="btn" :disabled="pending" @click="run">
         {{ pending ? "请求中…" : "▶ 调试" }}
@@ -34,6 +41,19 @@
     <div class="ctx-hint" :class="{ err: !ctxValid }">
       {{ ctxValid ? ctxHint : "JSON 无法解析，调试时会被视为空对象" }}
     </div>
+
+    <details class="cap-details">
+      <summary class="cap-summary">
+        附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）
+      </summary>
+      <div class="cap-hint">
+        默认 SUPPRESS 所有副作用类 builtin。在此添加规则可以
+        <strong>显式放行</strong>（action: allow）或
+        <strong>重定向到沙箱</strong>（action: redirect, redirect_params: { url: ... }）。
+        无法切换到生产模式 —— 这是设计上的安全边界。
+      </div>
+      <CapabilityRulesEditor v-model="capabilityPolicy" />
+    </details>
 
     <div class="lbl row">
       <span class="lbl-row">响应</span>
@@ -64,7 +84,8 @@
 import { computed, ref, watch, onMounted } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
-import type { TaskNode } from "@/types/flow";
+import type { CapabilityRule, TaskNode } from "@/types/flow";
+import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import InfoTip from "./InfoTip.vue";
 import { fetchProfileConfig } from "@/api/profiles";
 
@@ -81,6 +102,9 @@ const logs = ref<LogEntry[]>([]);
 const profileOptions = ref<string[]>(["default"]);
 const profileText = ref("default");
 const defaultProfile = ref("default");
+// 节点调试不再暴露 run_mode：服务端永远按 DEBUG 处理。
+// capability_policy 只能"放宽"（ALLOW/REDIRECT），无法切到 production。
+const capabilityPolicy = ref<CapabilityRule[]>([]);
 
 const task = computed(() => {
   // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
@@ -153,6 +177,12 @@ async function run() {
     script: task.value.script,
     initial_context: parsedCtx.value.ok ? parsedCtx.value.value : {},
     profile: profileText.value,
+    // 节点级 capability_overrides + 调试面板手动添加的策略；服务端在 DEBUG 系统默认
+    // 之上叠加这两层（前者来自流程定义，后者来自调试者临时白名单）。
+    capability_policy: [
+      ...(task.value.capability_overrides ?? []),
+      ...capabilityPolicy.value,
+    ],
   };
 
   try {
@@ -323,6 +353,62 @@ onMounted(async () => {
 
 .ctx-hint.err {
   color: #b91c1c;
+}
+
+.cap-details {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.cap-summary {
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.cap-summary:hover {
+  color: var(--accent);
+}
+
+.cap-details[open] .cap-summary {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.cap-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.cap-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.badge.suppressed {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #92400e;
+  margin-left: 6px;
+}
+
+.badge.suppressed :deep(.info-tip) {
+  color: #92400e;
 }
 
 .area.invalid {
