@@ -326,12 +326,15 @@ class FeEnvProfile(_AuditCols, Base):
         server_default=text("0"),
         comment="是否默认环境：0=否 1=是，应用层保证全局唯一一行为 1",
     )
-    system_capability_policy: Mapped[list[dict[str, Any]]] = mapped_column(
+    # JSON shape (recommended): {"debug": [...], "shadow": [...], "production": [...]}
+    # Backward compatible: a legacy list[rule] may be stored; server normalizes on write.
+    system_capability_policy: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
-        default=list,
-        comment="环境级系统默认 CapabilityRule 列表 JSON；优先级低于 deployment_capability_policy，"
-                "高于 RunMode 硬编码默认。可为空 []",
+        default=dict,
+        comment="环境级系统 CapabilityPolicy JSON：按 run_mode 分组（debug/shadow/production）"
+                "存 CapabilityRule 列表；优先级低于 deployment_capability_policy，"
+                "高于 RunMode 硬编码默认。可为空 {} 或各列表为空。",
     )
 
 

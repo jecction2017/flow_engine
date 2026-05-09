@@ -212,7 +212,7 @@ async def run_test_batch(
     sem = asyncio.Semaphore(max(1, int(concurrency)))
     parsed_policy = [CapabilityRule.model_validate(r) for r in (capability_policy or [])]
     profile_policy = await asyncio.to_thread(
-        lambda: profile_store().get_system_capability_policy(profile_code)
+        lambda: profile_store().get_system_capability_policy(profile_code, run_mode=RunMode.DEBUG.value)
     )
     parsed_profile_policy = [CapabilityRule.model_validate(r) for r in profile_policy]
 

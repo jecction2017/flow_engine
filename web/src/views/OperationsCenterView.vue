@@ -401,7 +401,7 @@
             </div>
 
         <details class="advanced">
-          <summary>capability_policy（高级）</summary>
+          <summary>部署附加策略（本部署，JSON）</summary>
           <div class="preset-row">
             <button type="button" class="btn small ghost" @click="applyCapabilityPreset('allow_all')">全部允许</button>
             <button type="button" class="btn small ghost" @click="applyCapabilityPreset('suppress_writes')">压制写操作</button>

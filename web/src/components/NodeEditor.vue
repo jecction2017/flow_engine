@@ -113,10 +113,10 @@
 
         <section v-if="node.type === 'task'" class="card">
           <div class="sec-title">
-            <span>能力约束（capability_overrides）</span>
+            <span>节点能力策略（仅此节点）</span>
             <InfoTip
               wide
-              text="节点级 CapabilityRule 列表，优先级高于部署 / 系统默认。空列表 = 继承上层策略。常用于：把生产副作用 builtin 在某节点强制 SUPPRESS（演练）或 REDIRECT（沙箱化测试）。"
+              text="写入流程定义，仅对本任务节点生效；优先级高于「环境能力策略」与部署/测试时的附加策略。空 = 不额外覆盖。常用于演练时抑制某节点的 HTTP/写库，或把调用重定向到沙箱（REDIRECT + redirect_params）。技术字段名：capability_overrides。"
             />
           </div>
           <CapabilityRulesEditor

@@ -62,7 +62,7 @@
             type="button"
             class="btn accent"
             :disabled="!store.activeFlowId"
-            title="临时仿真执行当前流程：恒为 RunMode.DEBUG，副作用类 builtin（HTTP/DB/MQ）默认 SUPPRESS。真实生产请走部署。"
+            title="临时仿真执行当前流程：固定调试模式，HTTP/写库/发消息等副作用默认抑制。正式生产请创建部署。"
             @click="toggleRun"
           >
             ▶ 试运行

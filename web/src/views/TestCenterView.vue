@@ -258,10 +258,10 @@
 
           <details class="advanced">
             <summary class="summary-with-tip">
-              CapabilityPolicy（方案级，副作用白名单 / REDIRECT）
-              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              测试方案 · 默认附加策略
+              <span class="badge suppressed-inline" title="测试运行固定为调试模式">调试模式</span>
               <InfoTip
-                text="测试中心运行恒为 RunMode.DEBUG，副作用类 builtin（HTTP / DB / MQ）默认 SUPPRESS。此处规则用于显式 ALLOW（已就绪沙箱）或 REDIRECT（引流到测试服）。批次创建时若未单独指定，将继承此值。"
+                text="本方案下新建测试批次时，若未单独填写批次策略，则默认附带此处规则。测试运行固定为调试模式，副作用类内置函数默认抑制；此处用于本方案统一的放行或重定向（如沙箱）。"
                 wide
                 align-end
               />
@@ -508,10 +508,10 @@
 
           <details class="advanced">
             <summary class="summary-with-tip">
-              CapabilityPolicy（方案级，副作用白名单 / REDIRECT）
-              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              测试方案 · 默认附加策略
+              <span class="badge suppressed-inline" title="测试运行固定为调试模式">调试模式</span>
               <InfoTip
-                text="测试中心恒为 DEBUG 运行：副作用类 builtin 默认 SUPPRESS。此处规则用于沙箱白名单（action: allow）或引流（action: redirect, redirect_params: { url: ... }）。批次创建时若未单独指定将继承此值。"
+                text="保存方案时一并保存；新建批次未单独配置时继承。测试固定调试模式，副作用默认抑制；此处为方案级统一的放行或重定向规则。"
                 wide
                 align-end
               />
@@ -532,7 +532,7 @@
         <section v-if="mode === 'create'" class="panel">
           <header class="panel-head">
             <span class="panel-title">新建批次</span>
-            <span class="muted small">每行 lookup 数据 → 一次 RunMode.DEBUG 流程试运行（副作用类默认 SUPPRESS）</span>
+            <span class="muted small">每行 lookup 数据 → 一次调试模式流程试运行（副作用类内置函数默认抑制）</span>
           </header>
           <div class="form-grid">
             <label class="field">
@@ -700,10 +700,10 @@
 
           <details class="advanced">
             <summary class="summary-with-tip">
-              CapabilityPolicy（批次级，副作用白名单 / REDIRECT）
-              <span class="badge suppressed-inline" title="测试运行恒为 RunMode.DEBUG">DEBUG</span>
+              测试批次 · 附加策略
+              <span class="badge suppressed-inline" title="测试运行固定为调试模式">调试模式</span>
               <InfoTip
-                text="临时批次永远以 RunMode.DEBUG 运行：副作用类 builtin 默认 SUPPRESS（不会触发真实生产副作用）。此处规则用于沙箱白名单（action: allow）或引流（action: redirect）。空 = 仅使用系统默认。"
+                text="仅本批次生效，优先级高于「测试方案 · 默认附加策略」。空表示本批次不再额外附加（仍受环境能力策略与内置默认约束）。"
                 wide
                 align-end
               />

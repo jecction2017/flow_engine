@@ -31,6 +31,7 @@ from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.runner import deploy_persistence, test_persistence
 from flow_engine.runner import test_runner
+from flow_engine.runner.mode_context import system_default_policy
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import (
@@ -336,6 +337,24 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     # -----------------------------------------------------------------------
+    # Capabilities (policy transparency)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/capabilities/system-default-policy")
+    def capabilities_system_default_policy() -> dict[str, Any]:
+        """Expose hard-coded system default CapabilityRule list per RunMode.
+
+        Note this endpoint returns **only** the built-in defaults (a snapshot of
+        `_SYSTEM_DEFAULT_POLICY`). It does not include profile/deployment/node
+        overrides, which are layered at runtime.
+        """
+        return {
+            "debug": [r.model_dump() for r in system_default_policy(RunMode.DEBUG)],
+            "shadow": [r.model_dump() for r in system_default_policy(RunMode.SHADOW)],
+            "production": [r.model_dump() for r in system_default_policy(RunMode.PRODUCTION)],
+        }
+
+    # -----------------------------------------------------------------------
     # Flow list / CRUD  (backward-compatible surface)
     # -----------------------------------------------------------------------
 
@@ -530,7 +549,7 @@ def create_app() -> FastAPI:
             ]
             profile_rules = [
                 CapabilityRule.model_validate(r)
-                for r in profile_store().get_system_capability_policy(profile_id)
+                for r in profile_store().get_system_capability_policy(profile_id, run_mode=RunMode.DEBUG.value)
             ]
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"invalid capability policy: {e}") from e
@@ -653,7 +672,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/profiles/{profile}/system-policy")
     def get_profile_system_policy(profile: str) -> dict[str, Any]:
-        """Read environment-level system CapabilityRule list for ``profile``.
+        """Read environment-level system CapabilityPolicy for ``profile``.
 
         Used by 系统设置页 to show / edit the policy. Validation happens at
         write time; reads return raw stored JSON so editing a malformed
@@ -665,7 +684,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e)) from e
         return {
             "profile": pid,
-            "system_capability_policy": profile_store().get_system_capability_policy(pid),
+            "system_capability_policy": profile_store().get_system_capability_policy_map(pid),
         }
 
     @app.put("/api/profiles/{profile}/system-policy")
@@ -674,21 +693,31 @@ def create_app() -> FastAPI:
             pid = profile_store().resolve_profile(profile)
         except ProfileConfigError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
-        rules_raw = body.get("system_capability_policy")
-        if not isinstance(rules_raw, list):
-            raise HTTPException(
-                status_code=400,
-                detail="system_capability_policy must be a list of rules",
-            )
-        # Validate each rule via Pydantic; reject malformed entries early
-        # so the persisted JSON can always be loaded back as CapabilityRule.
-        try:
-            rules = [CapabilityRule.model_validate(r) for r in rules_raw]
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"invalid rule: {e}") from e
-        normalized = [r.model_dump(mode="json") for r in rules]
-        profile_store().set_system_capability_policy(pid, normalized)
-        return {"ok": True, "profile": pid, "system_capability_policy": normalized}
+        raw = body.get("system_capability_policy")
+        # Backward compatible: accept list[rule] or {"debug": [...], "shadow": [...], "production": [...]}
+        if isinstance(raw, list):
+            raw_map = {"debug": raw, "shadow": raw, "production": raw}
+        elif isinstance(raw, dict):
+            raw_map = raw
+        else:
+            raise HTTPException(status_code=400, detail="system_capability_policy must be a list or a {debug,shadow,production} map")
+
+        def _validate_list(x: Any) -> list[dict[str, Any]]:
+            if not isinstance(x, list):
+                return []
+            try:
+                rules = [CapabilityRule.model_validate(r) for r in x]
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid rule: {e}") from e
+            return [r.model_dump(mode="json") for r in rules]
+
+        normalized_map = {
+            "debug": _validate_list(raw_map.get("debug")),
+            "shadow": _validate_list(raw_map.get("shadow")),
+            "production": _validate_list(raw_map.get("production")),
+        }
+        profile_store().set_system_capability_policy(pid, normalized_map)
+        return {"ok": True, "profile": pid, "system_capability_policy": normalized_map}
 
     @app.get("/api/dict/modules")
     def list_dict_modules(layer: str = "base", profile: str | None = None) -> dict[str, Any]:
@@ -952,7 +981,7 @@ def create_app() -> FastAPI:
             # body.capability_policy 只能"放宽"（ALLOW/REDIRECT 特定 builtin），
             # 不能切换运行模式 —— 生产 effects 必须走 deployment 路径。
             merged_policy = list(body.capability_policy or []) + list(
-                profile_store().get_system_capability_policy(profile)
+                profile_store().get_system_capability_policy(profile, run_mode=RunMode.DEBUG.value)
             )
             with profile_scope(profile), data_dict.dictionary_scope(resolved["resolved_dictionary"]):
                 result, logs = debug_task_script(

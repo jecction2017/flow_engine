@@ -539,7 +539,7 @@ class Worker:
         profile_id = deployment.get("env_profile_code") or DEFAULT_PROFILE_ID
         resolved = await asyncio.to_thread(data_dict.resolve, profile_id)
         profile_policy_raw = await asyncio.to_thread(
-            lambda: profile_store().get_system_capability_policy(profile_id)
+            lambda: profile_store().get_system_capability_policy(profile_id, run_mode=mode.value)
         )
         profile_rules = [CapabilityRule.model_validate(r) for r in profile_policy_raw]
         run_opts = RunOptions(

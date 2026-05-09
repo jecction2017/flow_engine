@@ -133,12 +133,14 @@ class GlobalProfileStore:
             return pid
         return self.get_default_profile()
 
-    def get_system_capability_policy(self, profile_id: str) -> list[dict[str, Any]]:
-        """Read environment-level system CapabilityRule list (raw dicts).
+    def get_system_capability_policy_map(self, profile_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Read environment-level system CapabilityPolicy map (raw dicts).
 
-        Returns ``[]`` for unknown profiles (callers degrade to system defaults).
-        Raw dict shape matches ``CapabilityRule.model_dump()``; callers pass
-        them straight into ``CapabilityRule.model_validate``.
+        Preferred JSON shape:
+          {"debug":[rule...], "shadow":[rule...], "production":[rule...]}
+
+        Backward compatible: legacy rows may store a plain list[rule]. In that
+        case, we treat it as a single shared policy applied to all modes.
         """
         pid = validate_profile_id(profile_id)
         with db_session() as s:
@@ -148,12 +150,48 @@ class GlobalProfileStore:
                 .where(FeEnvProfile.deleted_at.is_(None))
             )
             raw = s.execute(stmt).scalar_one_or_none()
-            return list(raw or [])
+
+            if raw is None:
+                return {"debug": [], "shadow": [], "production": []}
+
+            # legacy list[rule]
+            if isinstance(raw, list):
+                lst = list(raw or [])
+                return {"debug": lst, "shadow": lst, "production": lst}
+
+            # map shape
+            if isinstance(raw, dict):
+                def _as_list(x: Any) -> list[dict[str, Any]]:
+                    return list(x or []) if isinstance(x, list) else []
+
+                return {
+                    "debug": _as_list(raw.get("debug")),
+                    "shadow": _as_list(raw.get("shadow")),
+                    "production": _as_list(raw.get("production")),
+                }
+
+            return {"debug": [], "shadow": [], "production": []}
+
+    def get_system_capability_policy(
+        self, profile_id: str, *, run_mode: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Compatibility helper: return the list for a given run_mode.
+
+        run_mode: "debug" | "shadow" | "production" (case-insensitive). Unknown
+        values fall back to "production".
+        """
+        m = (run_mode or "production").strip().lower()
+        mp = self.get_system_capability_policy_map(profile_id)
+        if m == "debug":
+            return list(mp["debug"])
+        if m == "shadow":
+            return list(mp["shadow"])
+        return list(mp["production"])
 
     def set_system_capability_policy(
         self,
         profile_id: str,
-        policy: list[dict[str, Any]],
+        policy: dict[str, list[dict[str, Any]]] | list[dict[str, Any]],
     ) -> None:
         pid = validate_profile_id(profile_id)
         with db_session() as s:
@@ -165,7 +203,16 @@ class GlobalProfileStore:
             row = s.execute(stmt).scalar_one_or_none()
             if row is None:
                 raise ProfileConfigError(f"Profile not found: {pid}")
-            row.system_capability_policy = list(policy or [])
+            # Normalize to map shape on write.
+            if isinstance(policy, list):
+                lst = list(policy or [])
+                row.system_capability_policy = {"debug": lst, "shadow": lst, "production": lst}
+            else:
+                row.system_capability_policy = {
+                    "debug": list((policy or {}).get("debug") or []),
+                    "shadow": list((policy or {}).get("shadow") or []),
+                    "production": list((policy or {}).get("production") or []),
+                }
 
     # DataDictStore / LookupStore 兼容接口（MySQL 后端无需创建目录）
     def delete_profile(self, profile_id: str) -> None:

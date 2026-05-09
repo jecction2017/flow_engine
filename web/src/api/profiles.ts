@@ -48,8 +48,23 @@ export async function saveDefaultProfile(defaultProfile: string): Promise<void> 
 export type ProfileSystemPolicyResponse = {
   profile: string;
   /** 与 ``CapabilityRule.model_dump()`` 同形 — 后端做 Pydantic 校验。 */
-  system_capability_policy: Record<string, unknown>[];
+  system_capability_policy: Record<string, unknown>;
 };
+
+export type SystemDefaultCapabilityPolicyResponse = {
+  debug: Record<string, unknown>[];
+  shadow: Record<string, unknown>[];
+  production: Record<string, unknown>[];
+};
+
+export async function fetchSystemDefaultCapabilityPolicy(): Promise<SystemDefaultCapabilityPolicyResponse> {
+  const r = await fetch("/api/capabilities/system-default-policy");
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `system default policy: ${r.status}`);
+  }
+  return r.json() as Promise<SystemDefaultCapabilityPolicyResponse>;
+}
 
 export async function fetchProfileSystemPolicy(
   profile: string,
@@ -64,7 +79,7 @@ export async function fetchProfileSystemPolicy(
 
 export async function saveProfileSystemPolicy(
   profile: string,
-  policy: Record<string, unknown>[],
+  policy: Record<string, unknown>,
 ): Promise<ProfileSystemPolicyResponse> {
   const r = await fetch(`/api/profiles/${encodeURIComponent(profile)}/system-policy`, {
     method: "PUT",

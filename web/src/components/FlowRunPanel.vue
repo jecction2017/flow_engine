@@ -3,7 +3,7 @@
     <header class="bar">
       <div class="title">
         <span>流程试运行</span>
-        <span class="badge suppressed-inline" title="试运行恒为 RunMode.DEBUG，副作用类 builtin 默认 SUPPRESS，不会触发真实生产副作用">
+        <span class="badge suppressed-inline" title="试运行固定为调试模式，副作用类内置函数默认抑制，不会触发真实生产副作用">
           副作用已抑制
         </span>
         <span v-if="response" class="badge" :class="stateClass(response.state)">{{ response.state }}</span>
@@ -42,13 +42,10 @@
         <div class="lbl">runtime_patch（JSON，可留空）</div>
         <textarea v-model="runtimePatchText" class="area mono" rows="7" spellcheck="false" placeholder="{ }" />
         <details class="cap-details">
-          <summary class="cap-sum">附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）</summary>
+          <summary class="cap-sum">本次附加策略（可选，仅本次试运行）</summary>
           <div class="cap-hint">
-            试运行恒以 RunMode.DEBUG 运行，副作用类 builtin（HTTP / DB / MQ）
-            默认 SUPPRESS。此处规则用于
-            <strong>显式放行</strong>（action: allow）或
-            <strong>重定向到沙箱</strong>（redirect_params）。
-            真实生产请走 deployment 路径。
+            试运行固定为调试模式，副作用类内置函数默认抑制。此处仅对<strong>这一次试运行请求</strong>追加规则，可放行或填写重定向参数（由具体内置函数使用）。
+            节点上的「节点能力策略」在流程里已持久化；此处为临时叠加。正式生产运行请创建部署。
           </div>
           <CapabilityRulesEditor v-model="capabilityPolicy" />
         </details>

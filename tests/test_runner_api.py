@@ -123,6 +123,64 @@ def test_list_deployments_root_only_hides_legacy_children(client: TestClient) ->
     assert n_all >= len(ids) + 1
 
 
+def test_get_system_default_capability_policy(client: TestClient) -> None:
+    r = client.get("/api/capabilities/system-default-policy")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert set(data.keys()) == {"debug", "shadow", "production"}
+
+    for mode in ("debug", "shadow"):
+        rules = data[mode]
+        cats = {r.get("builtin_category") for r in rules}
+        actions = {r.get("action") for r in rules}
+        assert {"integration", "db_write", "mq_publish"}.issubset(cats)
+        assert actions == {"suppress"}
+
+    assert data["production"] == []
+
+
+def test_profile_system_policy_roundtrip_per_mode(client: TestClient) -> None:
+    # write per-mode map
+    put = client.put(
+        "/api/profiles/default/system-policy",
+        json={
+            "system_capability_policy": {
+                "debug": [{"builtin_category": "integration", "builtin_name": None, "action": "suppress", "redirect_params": {}}],
+                "shadow": [],
+                "production": [{"builtin_category": "integration", "builtin_name": None, "action": "allow", "redirect_params": {}}],
+            }
+        },
+    )
+    assert put.status_code == 200, put.text
+    body = put.json()
+    assert body["ok"] is True
+    assert set(body["system_capability_policy"].keys()) == {"debug", "shadow", "production"}
+
+    get = client.get("/api/profiles/default/system-policy")
+    assert get.status_code == 200, get.text
+    got = get.json()["system_capability_policy"]
+    assert set(got.keys()) == {"debug", "shadow", "production"}
+    assert got["debug"][0]["action"] == "suppress"
+    assert got["production"][0]["action"] == "allow"
+
+
+def test_profile_system_policy_backward_compatible_list(client: TestClient) -> None:
+    # legacy shape: list[rule] is accepted and normalized to all modes
+    put = client.put(
+        "/api/profiles/default/system-policy",
+        json={
+            "system_capability_policy": [
+                {"builtin_category": "integration", "builtin_name": None, "action": "suppress", "redirect_params": {}}
+            ]
+        },
+    )
+    assert put.status_code == 200, put.text
+    got = put.json()["system_capability_policy"]
+    assert got["debug"][0]["action"] == "suppress"
+    assert got["shadow"][0]["action"] == "suppress"
+    assert got["production"][0]["action"] == "suppress"
+
+
 def test_create_cron_requires_cron_expr(client: TestClient) -> None:
     ver = _commit_flow(client)
     r = client.post(

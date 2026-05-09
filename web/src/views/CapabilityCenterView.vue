@@ -272,12 +272,9 @@
             <textarea v-model="ctxJson" class="area mono" rows="4" spellcheck="false" />
           </div>
           <details class="cap-details">
-            <summary class="cap-sum">附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）</summary>
+            <summary class="cap-sum">本次附加策略（可选，仅本次脚本调试）</summary>
             <div class="cap-hint">
-              用户脚本调试与单节点调试共享同一安全契约：副作用类 builtin
-              （HTTP / DB / MQ）默认 SUPPRESS。在此添加规则可显式
-              <strong>放行</strong>（action: allow）或
-              <strong>重定向到沙箱</strong>（redirect_params）。
+              与 Flow Studio 节点调试相同：固定调试模式，副作用默认抑制。此处规则仅作用于<strong>当前这次调试</strong>，可放行或配置重定向参数（由具体内置函数识别）。
             </div>
             <CapabilityRulesEditor v-model="debugCapabilityPolicy" />
           </details>

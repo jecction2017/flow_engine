@@ -11,7 +11,7 @@
           副作用已抑制
           <InfoTip
             wide
-            text="节点调试是临时仿真路径，永远以 RunMode.DEBUG 运行：副作用类 builtin（http_simple_get / http_request 等 integration / db_write / mq_publish 类目）默认 SUPPRESS。如需放行或重定向到沙箱，使用下方「附加 CapabilityPolicy」。"
+            text="节点调试是临时仿真路径，固定为调试模式：带副作用的内置函数（如 HTTP、写库、发消息等）默认会被安全抑制。若需联调沙箱，可在下方「本次附加策略」中放行或配置重定向参数。"
           />
         </span>
       </div>
@@ -43,14 +43,12 @@
     </div>
 
     <details class="cap-details">
-      <summary class="cap-summary">
-        附加 CapabilityPolicy（高级 — 白名单 / REDIRECT 沙箱）
-      </summary>
+      <summary class="cap-summary">本次附加策略（可选，仅本次调试）</summary>
       <div class="cap-hint">
-        默认 SUPPRESS 所有副作用类 builtin。在此添加规则可以
-        <strong>显式放行</strong>（action: allow）或
-        <strong>重定向到沙箱</strong>（action: redirect, redirect_params: { url: ... }）。
-        无法切换到生产模式 —— 这是设计上的安全边界。
+        仅作用于当前这次调试请求，不写回流程。在默认「抑制副作用」之上，可
+        <strong>显式放行</strong>（allow）或
+        <strong>指定重定向参数</strong>（redirect + redirect_params，由具体内置函数识别）。
+        与节点上配置的「节点能力策略」会一并发送；仍无法切换为生产运行模式。
       </div>
       <CapabilityRulesEditor v-model="capabilityPolicy" />
     </details>

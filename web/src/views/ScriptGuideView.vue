@@ -21,13 +21,13 @@
           :aria-selected="activeTab === 'capability'"
           @click="activeTab = 'capability'"
         >
-          副作用与能力约束
+          能力策略说明
         </button>
       </div>
     </header>
 
     <aside class="toc">
-      <div class="toc-title">{{ activeTab === "script" ? "脚本帮助" : "副作用与能力约束" }}</div>
+      <div class="toc-title">{{ activeTab === "script" ? "脚本帮助" : "能力策略说明" }}</div>
       <template v-if="activeTab === 'script'">
         <a href="#start" class="toc-link">快速开始</a>
         <a href="#syntax" class="toc-link">基础语法</a>
@@ -43,11 +43,11 @@
         <a href="#cap-start" class="toc-link">总览</a>
         <a href="#cap-what" class="toc-link">什么是副作用</a>
         <a href="#cap-defaults" class="toc-link">默认行为（为何会被抑制）</a>
-        <a href="#cap-policy" class="toc-link">CapabilityPolicy 怎么写</a>
-        <a href="#cap-entrypoints" class="toc-link">各入口如何生效</a>
+        <a href="#cap-policy" class="toc-link">规则 JSON 怎么写</a>
+        <a href="#cap-entrypoints" class="toc-link">各层优先级</a>
         <a href="#cap-debug" class="toc-link">临时调试（脚本/节点/试运行）</a>
-        <a href="#cap-test" class="toc-link">测试中心（plan/batch）</a>
-        <a href="#cap-deploy" class="toc-link">部署（production）</a>
+        <a href="#cap-test" class="toc-link">测试中心（方案/批次）</a>
+        <a href="#cap-deploy" class="toc-link">部署（生产等）</a>
         <a href="#cap-faq" class="toc-link">常见问题</a>
       </template>
     </aside>
@@ -201,17 +201,26 @@
       <!-- Tab 2: side-effect builtins & capability policy -->
       <template v-else>
         <section id="cap-start" class="card">
-          <h1>副作用函数与能力约束（CapabilityPolicy）</h1>
+          <h1>能力策略与副作用说明</h1>
           <p class="muted">
-            这份文档解释：哪些 builtin 被视为“副作用”，为什么在临时调试/试运行/测试中会被默认抑制（SUPPRESS），以及如何用
-            <code class="mono">CapabilityPolicy</code> 做白名单（ALLOW）或重定向（REDIRECT）。
+            说明哪些内置函数属于「副作用」、为何在调试/试运行/测试里常被抑制，以及如何通过<strong>规则列表</strong>（各页面的 JSON，技术字段名多为
+            <code class="mono">capability_policy</code> 或节点上的 <code class="mono">capability_overrides</code>）做放行（allow）或重定向（redirect）。
           </p>
+          <div class="callout tip">
+            <strong>界面上的分层名称（对照用）</strong>
+            <ul class="muted tight">
+              <li><strong>环境能力策略</strong>：环境（Profile）配置，按 debug / shadow / production 分别保存；字段 <code class="mono">system_capability_policy</code>。</li>
+              <li><strong>部署附加策略</strong>：创建部署时填写，仅该部署运行生效；请求体字段 <code class="mono">capability_policy</code>。</li>
+              <li><strong>本次附加策略</strong>：节点调试、流程试运行、用户脚本调试等折叠区——只影响<strong>当前这一次</strong>请求，不写回流程。</li>
+              <li><strong>测试方案 · 默认附加策略</strong> / <strong>测试批次 · 附加策略</strong>：测试中心；批次可覆盖方案默认。</li>
+              <li><strong>节点能力策略（仅此节点）</strong>：写在流程节点上，随版本发布；字段 <code class="mono">capability_overrides</code>。</li>
+            </ul>
+          </div>
           <div class="callout warn">
             <strong>安全边界（重要）</strong>
             <div class="muted">
-              用户脚本调试、节点调试、流程试运行、测试中心均属于“临时/受控执行”入口：服务端固定使用
-              <code class="mono">RunMode.DEBUG</code>，默认抑制所有副作用类 builtin（HTTP / DB / MQ 等）。
-              真实生产副作用必须走部署（deployment）。
+              用户脚本调试、节点调试、流程试运行、测试中心均属于「临时 / 受控执行」入口：服务端固定为<strong>调试模式</strong>（
+              <code class="mono">RunMode.DEBUG</code>），默认抑制副作用类内置函数。真实生产行为须通过<strong>部署</strong>启动。
             </div>
           </div>
         </section>
@@ -249,10 +258,10 @@
         </section>
 
         <section id="cap-policy" class="card">
-          <h2>3) CapabilityPolicy 怎么写（ALLOW / SUPPRESS / REDIRECT）</h2>
+          <h2>3) 规则 JSON 怎么写（allow / suppress / redirect）</h2>
           <p class="muted">
-            Policy 由若干条规则（CapabilityRule）组成，按优先级匹配：通常先匹配 <code class="mono">builtin_name</code>，再匹配
-            <code class="mono">builtin_category</code>，再落到默认规则。
+            一条策略由若干条规则（CapabilityRule）组成。匹配时通常先看 <code class="mono">builtin_name</code>，再看
+            <code class="mono">builtin_category</code>，再落到更泛的默认规则。
           </p>
 
           <h3>3.1 规则结构</h3>
@@ -279,27 +288,25 @@
         </section>
 
         <section id="cap-entrypoints" class="card">
-          <h2>4) 各入口如何生效（优先级与“为什么我这里能放行”）</h2>
+          <h2>4) 各层如何叠加（优先级）</h2>
           <p>
-            能力策略最终是多层叠加结果。你可以把它理解成“从上到下覆盖”，越靠近调用现场优先级越高：
+            运行时合并顺序（高 → 低）如下；越靠前越先命中匹配：
           </p>
           <ol>
-            <li><strong>节点级覆盖</strong>：节点配置的 <code class="mono">capability_overrides</code></li>
-            <li><strong>请求级覆盖</strong>：调试面板/试运行/测试中心临时附加的 <code class="mono">capability_policy</code></li>
-            <li><strong>部署级策略</strong>：deployment_capability_policy（部署运行时生效）</li>
-            <li><strong>环境系统策略</strong>：profile 的 <code class="mono">system_capability_policy</code></li>
-            <li><strong>模式默认</strong>：<code class="mono">RunMode</code> 的硬编码默认策略（DEBUG 默认 SUPPRESS 副作用）</li>
+            <li><strong>节点能力策略</strong>：节点字段 <code class="mono">capability_overrides</code>（界面：节点编辑器「节点能力策略」）。</li>
+            <li><strong>本次运行附加</strong>：同一次执行里传入的规则列表。技术名在运行选项中为 <code class="mono">deployment_capability_policy</code>，来源包括：创建部署时的「部署附加策略」、试运行的「本次附加策略」、调试与测试请求里的 <code class="mono">capability_policy</code> 等（各入口名称不同，语义相同）。</li>
+            <li><strong>环境能力策略</strong>：当前 Profile 下、对应当前 <code class="mono">RunMode</code> 的 <code class="mono">system_capability_policy</code>。</li>
+            <li><strong>运行模式内置默认</strong>：进程内与 <code class="mono">RunMode</code> 绑定的兜底规则（调试模式会默认抑制副作用类内置函数）。</li>
           </ol>
           <p class="muted">
-            说明：临时调试入口固定 <code class="mono">RunMode.DEBUG</code>，所以“模式默认策略”会始终提供一层安全兜底。
-            但你仍可通过上层的 request policy 做“精确放行/引流”。
+            因此：在调试/试运行里展开的「本次附加策略」与创建部署时的「部署附加策略」处于<strong>同一优先级层</strong>，都高于环境能力策略；节点上的策略又高于它们。
           </p>
         </section>
 
         <section id="cap-debug" class="card">
-          <h2>5) 临时调试（用户脚本调试 / 节点调试 / 流程试运行）</h2>
+          <h2>5) 临时调试（用户脚本 / 节点 / 流程试运行）</h2>
           <p>
-            这三类入口都属于临时仿真执行：默认抑制副作用。你可以在页面里的 “附加 CapabilityPolicy（高级）” 折叠区：
+            上述入口均为临时执行：默认抑制副作用。在对应页面的「本次附加策略」折叠区可追加规则：
           </p>
           <ul>
             <li>添加 <code class="mono">ALLOW</code> 放行某个 builtin（建议仅指向沙箱/测试环境）</li>
@@ -312,24 +319,23 @@
         </section>
 
         <section id="cap-test" class="card">
-          <h2>6) 测试中心（plan/batch）</h2>
+          <h2>6) 测试中心（方案 / 批次）</h2>
           <p>
-            测试中心运行同样固定为 <code class="mono">RunMode.DEBUG</code>，默认抑制副作用。你可以在：
+            测试运行固定为调试模式，默认抑制副作用。界面名称：
           </p>
           <ul>
-            <li><strong>方案级</strong>：为 plan 设置默认 capability_policy（批次创建时可继承）</li>
-            <li><strong>批次级</strong>：为 batch 设置 capability_policy（优先级高于 plan）</li>
+            <li><strong>测试方案 · 默认附加策略</strong>：保存到方案；新建批次未单独配置时继承。</li>
+            <li><strong>测试批次 · 附加策略</strong>：仅该批次；覆盖方案默认。</li>
           </ul>
           <p class="muted">
-            建议做法：把“需要放行到沙箱”的规则固化到 plan，批次级只做临时变更或更严格限制。
+            建议：与沙箱联调相关的通用规则放在方案默认；批次里只做临时加减。
           </p>
         </section>
 
         <section id="cap-deploy" class="card">
-          <h2>7) 部署（production）</h2>
+          <h2>7) 部署（生产 / 预发等）</h2>
           <p>
-            部署路径使用 <code class="mono">RunMode.PRODUCTION</code>，其默认策略通常更宽（允许 integration 等），并叠加：
-            deployment_capability_policy、profile 系统策略、节点覆盖等。
+            部署使用所选 <code class="mono">RunMode</code>（如 production / shadow）。创建部署时的「部署附加策略」与节点、环境能力策略、模式默认按第 4 节顺序合并。
           </p>
           <div class="callout tip">
             <strong>最佳实践</strong>
@@ -343,8 +349,8 @@
           <h2>8) 常见问题</h2>
           <h3>Q: 为什么调试时 http_simple_get 返回 status=0？</h3>
           <p class="muted">
-            这是 SUPPRESS 命中后的“抑制返回值”。调试入口固定 DEBUG，所以默认策略会抑制 integration 类副作用 builtin。
-            如需联调沙箱，可在 “附加 CapabilityPolicy” 中加 ALLOW/REDIRECT。
+            多为命中 suppress 后的占位返回值。调试入口固定为调试模式，integration 等副作用类内置函数默认会被抑制。
+            联调沙箱请在「本次附加策略」或节点「节点能力策略」中配置 allow / redirect。
           </p>
           <h3>Q: REDIRECT 会自动替我改 URL 吗？</h3>
           <p class="muted">
@@ -487,7 +493,7 @@ r = http_simple_get("https://prod.example/api/ping")
 {"probe": r}
 
 # 在临时调试入口默认会被抑制（SUPPRESS），输出里会有 _suppressed=true
-# 如需联调沙箱：在页面「附加 CapabilityPolicy」里加 allow 或 redirect`;
+# 如需联调沙箱：在页面「本次附加策略」里加 allow 或 redirect`;
 
 async function copyCode(text: string) {
   try {
@@ -639,6 +645,15 @@ li {
 .callout strong {
   display: block;
   margin-bottom: 6px;
+}
+
+ul.tight {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+}
+
+ul.tight li {
+  margin: 4px 0;
 }
 
 .code {
