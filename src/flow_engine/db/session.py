@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import threading
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,20 @@ from flow_engine.db.config import get_database_url
 # 全局单例 Engine（懒初始化），避免每次 db_session() 重建连接池
 _engine: Engine | None = None
 _sqlite_lock = threading.RLock()
+
+
+def _install_mysql_utc_timezone(engine: Engine) -> None:
+    """Force MySQL session timestamps to UTC for server-side defaults."""
+    if engine.dialect.name != "mysql":
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_utc_timezone(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("SET time_zone = '+00:00'")
+        finally:
+            cursor.close()
 
 
 def get_engine(*, echo: bool = False) -> Engine:
@@ -29,6 +43,7 @@ def get_engine(*, echo: bool = False) -> Engine:
             pool_pre_ping=True,
             pool_recycle=3600,
         )
+        _install_mysql_utc_timezone(_engine)
     return _engine
 
 

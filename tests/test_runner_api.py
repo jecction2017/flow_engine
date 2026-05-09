@@ -66,11 +66,13 @@ def test_create_and_list_deployment(client: TestClient) -> None:
     dep = r.json()
     assert dep["status"] == "pending"
     assert dep["schedule_type"] == "once"
+    assert dep["created_at"].endswith("Z")
 
     r = client.get("/api/deployments")
     assert r.status_code == 200
     rows = r.json()["deployments"]
     assert any(d["id"] == dep["id"] for d in rows)
+    assert next(d for d in rows if d["id"] == dep["id"])["created_at"].endswith("Z")
 
 
 def test_list_deployments_root_only_hides_legacy_children(client: TestClient) -> None:

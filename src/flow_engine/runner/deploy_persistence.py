@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from flow_engine.db.models import FeDeployRun
 from flow_engine.db.session import db_session
+from flow_engine.time_utils import utc_isoformat
 
 if TYPE_CHECKING:
     from flow_engine.engine.orchestrator import FlowRunResult, NodeRunInfo
@@ -214,8 +215,8 @@ def list_deploy_runs(
                 "trigger_type": r.trigger_type,
                 "status": r.status,
                 "worker_id": r.worker_id,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "started_at": utc_isoformat(r.started_at),
+                "finished_at": utc_isoformat(r.finished_at),
                 "iteration_count": r.iteration_count,
                 "error": r.error,
             }
@@ -245,8 +246,8 @@ def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:
             "trigger_type": row.trigger_type,
             "trigger_context": row.trigger_context,
             "status": row.status,
-            "started_at": row.started_at.isoformat() if row.started_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "started_at": utc_isoformat(row.started_at),
+            "finished_at": utc_isoformat(row.finished_at),
             "iteration_count": row.iteration_count,
             "node_runs": _safe_json_load(row.node_runs),
             "node_stats": _safe_json_load(row.node_stats),
@@ -286,7 +287,7 @@ def _aggregate_node_stats(runs: "list[NodeRunInfo]") -> dict[str, Any]:
         out_per_node[node_id] = rec
     return {
         "per_node": out_per_node,
-        "last_updated_at": datetime.now(timezone.utc).isoformat(),
+        "last_updated_at": utc_isoformat(datetime.now(timezone.utc)),
     }
 
 

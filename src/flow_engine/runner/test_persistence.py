@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from flow_engine.db.models import FeTestRun
 from flow_engine.db.session import db_session
+from flow_engine.time_utils import utc_isoformat
 
 
 def _derive_case_key(trigger_context: Any) -> str:
@@ -150,8 +151,8 @@ def list_test_runs(
                 "mode": r.mode,
                 "status": r.status,
                 "worker_id": r.worker_id,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "started_at": utc_isoformat(r.started_at),
+                "finished_at": utc_isoformat(r.finished_at),
                 "case_index": int(r.case_index or 0) or None,
                 "case_key": r.case_key or None,
                 "verdict": (ev or {}).get("verdict") if ev else None,
@@ -178,8 +179,8 @@ def get_test_run_detail(run_id: int) -> dict[str, Any] | None:
             "case_index": int(row.case_index or 0) or None,
             "trigger_context": row.trigger_context,
             "status": row.status,
-            "started_at": row.started_at.isoformat() if row.started_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "started_at": utc_isoformat(row.started_at),
+            "finished_at": utc_isoformat(row.finished_at),
             "node_runs": _safe_json_load(row.node_runs),
             "flow_logs": _safe_json_load(row.flow_logs),
             "global_ns": _safe_json_load(row.global_ns),

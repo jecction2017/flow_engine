@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from flow_engine.db.models import FeFlowRun
 from flow_engine.db.session import db_session
+from flow_engine.time_utils import utc_isoformat
 
 if TYPE_CHECKING:
     from flow_engine.engine.models import FlowState
@@ -387,8 +388,8 @@ def list_flow_runs(
                 "mode": r.mode,
                 "status": r.status,
                 "worker_id": r.worker_id,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "started_at": utc_isoformat(r.started_at),
+                "finished_at": utc_isoformat(r.finished_at),
                 "iteration_count": r.iteration_count,
                 "error": r.error,
             }
@@ -436,8 +437,8 @@ def get_flow_run_detail(run_id: int) -> dict[str, Any] | None:
             "mode": row.mode,
             "trigger_context": row.trigger_context,
             "status": row.status,
-            "started_at": row.started_at.isoformat() if row.started_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "started_at": utc_isoformat(row.started_at),
+            "finished_at": utc_isoformat(row.finished_at),
             "iteration_count": row.iteration_count,
             "node_runs": node_runs,
             "node_stats": node_stats,
@@ -478,7 +479,7 @@ def _aggregate_node_stats(runs: "list[NodeRunInfo]") -> dict[str, Any]:
         out_per_node[node_id] = rec
     return {
         "per_node": out_per_node,
-        "last_updated_at": datetime.now(timezone.utc).isoformat(),
+        "last_updated_at": utc_isoformat(datetime.now(timezone.utc)),
     }
 
 

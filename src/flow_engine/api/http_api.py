@@ -54,6 +54,7 @@ from flow_engine.stores.profile_store import (
     store as profile_store,
 )
 from flow_engine.stores.version_store import FlowVersionRegistry, validate_flow_id
+from flow_engine.time_utils import utc_isoformat
 
 
 def _load_dotenv() -> None:
@@ -897,8 +898,8 @@ def create_app() -> FastAPI:
             "status_detail": getattr(row, "status_detail", None),
             "env_profile_code": row.env_profile_code,
             "parent_deployment_id": row.parent_deployment_id,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "created_at": utc_isoformat(row.created_at),
+            "updated_at": utc_isoformat(row.updated_at),
         }
 
     @app.post("/api/deployments")
@@ -969,9 +970,7 @@ def create_app() -> FastAPI:
                     "id": a.id,
                     "worker_id": a.worker_id,
                     "role": a.role,
-                    "lease_expires_at": a.lease_expires_at.isoformat()
-                    if a.lease_expires_at
-                    else None,
+                    "lease_expires_at": utc_isoformat(a.lease_expires_at),
                 }
                 for a in s.execute(assn_stmt).scalars().all()
             ]
@@ -1022,9 +1021,7 @@ def create_app() -> FastAPI:
                         "host": w.host,
                         "pid": w.pid,
                         "status": w.status,
-                        "last_heartbeat": w.last_heartbeat.isoformat()
-                        if w.last_heartbeat
-                        else None,
+                        "last_heartbeat": utc_isoformat(w.last_heartbeat),
                         "capabilities": w.capabilities,
                         "assigned_deployments": by_worker.get(w.worker_id, []),
                     }
@@ -1045,8 +1042,8 @@ def create_app() -> FastAPI:
             "test_ns_code": row.test_ns_code,
             "profile_code": row.profile_code,
             "concurrency": int(row.concurrency),
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": utc_isoformat(row.updated_at),
+            "created_at": utc_isoformat(row.created_at),
         }
 
     @app.get("/api/test-plans")
@@ -1180,7 +1177,7 @@ def create_app() -> FastAPI:
             plan_snapshot={
                 "plan": plan_data,
                 "resolved": res.get("resolved") or {},
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": utc_isoformat(datetime.now(timezone.utc)),
             },
         )
         return res
@@ -1254,8 +1251,8 @@ def create_app() -> FastAPI:
                         "total_runs": int(batch.total_runs),
                         "completed_runs": int(batch.completed_runs),
                         "error_runs": int(batch.error_runs),
-                        "started_at": batch.started_at.isoformat() if batch.started_at else None,
-                        "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+                        "started_at": utc_isoformat(batch.started_at),
+                        "finished_at": utc_isoformat(batch.finished_at),
                         "elapsed_ms": _elapsed_ms(batch),
                         "snapshot": {
                             "created_at": snapshot.get("created_at"),

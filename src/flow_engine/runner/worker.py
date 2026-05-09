@@ -19,7 +19,7 @@ import os
 import socket
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -66,7 +66,7 @@ RESIDENT_STATS_INTERVAL_S = float(os.environ.get("FLOW_WORKER_RESIDENT_STATS_S",
 # ---------------------------------------------------------------------------
 
 
-def _register_worker(worker_id: str, capabilities: dict[str, Any]) -> int:
+def _register_worker(worker_id: str, capabilities: dict[str, Any], *, force: bool = False) -> int:
     now = datetime.now(timezone.utc)
     host = socket.gethostname()
     pid = os.getpid()
@@ -87,6 +87,19 @@ def _register_worker(worker_id: str, capabilities: dict[str, Any]) -> int:
             s.add(row)
             s.flush()
             return int(row.id)
+        # Prevent accidental duplicate processes using the same worker_id.
+        # If an existing active row has a fresh heartbeat, treat it as already running.
+        if not force and existing.deleted_at is None and existing.status == "active":
+            cutoff = now - timedelta(seconds=DEAD_THRESHOLD_S)
+            last = existing.last_heartbeat
+            if last is not None and last.tzinfo is None:
+                # MySQL may return naive datetimes; treat as UTC.
+                last = last.replace(tzinfo=timezone.utc)
+            if last is not None and last > cutoff:
+                raise RuntimeError(
+                    f"worker_id already active: {worker_id} "
+                    f"(host={existing.host} pid={existing.pid} last_heartbeat={existing.last_heartbeat.isoformat()})"
+                )
         existing.host = host
         existing.pid = pid
         existing.status = "active"
@@ -214,7 +227,11 @@ class Worker:
         worker_id: str | None = None,
         max_concurrent_flows: int = 8,
     ) -> None:
-        self.worker_id = worker_id or str(uuid.uuid4())
+        # Default to a stable id so restarts don't create endless worker rows.
+        # Override via CLI `--worker-id` or env `FLOW_WORKER_ID` when needed
+        # (e.g. multiple workers on one host).
+        stable_default = os.environ.get("FLOW_WORKER_ID") or socket.gethostname()
+        self.worker_id = (worker_id or stable_default).strip() or socket.gethostname()
         self.capabilities = {"max_concurrent_flows": int(max_concurrent_flows)}
         self._assignments: dict[int, asyncio.Task[Any]] = {}
         self._stop_evt = asyncio.Event()
@@ -227,7 +244,7 @@ class Worker:
         if self._started:
             return
         self._started = True
-        await asyncio.to_thread(_register_worker, self.worker_id, self.capabilities)
+        await asyncio.to_thread(_register_worker, self.worker_id, self.capabilities, force=getattr(self, "_force_register", False))
         logger.info("worker started worker_id=%s", self.worker_id)
         self._tasks.append(asyncio.create_task(self._heartbeat_loop()))
         self._tasks.append(asyncio.create_task(self._poll_assignments()))
@@ -552,8 +569,15 @@ class Worker:
 # ---------------------------------------------------------------------------
 
 
-async def main_async(*, max_concurrent_flows: int = 8) -> None:
-    worker = Worker(max_concurrent_flows=max_concurrent_flows)
+async def main_async(
+    *,
+    max_concurrent_flows: int = 8,
+    worker_id: str | None = None,
+    force: bool = False,
+) -> None:
+    worker = Worker(worker_id=worker_id, max_concurrent_flows=max_concurrent_flows)
+    # internal flag consumed by Worker.start -> _register_worker
+    worker._force_register = bool(force)  # type: ignore[attr-defined]
     loop = asyncio.get_running_loop()
     stop_evt = worker._stop_evt  # noqa: SLF001
 
@@ -584,15 +608,34 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     p_start = sub.add_parser("start", help="start a worker process")
     p_start.add_argument(
+        "--worker-id",
+        type=str,
+        default=os.environ.get("FLOW_WORKER_ID", ""),
+        help="Stable worker id (default: FLOW_WORKER_ID or hostname). "
+        "Set explicitly when running multiple workers on one host.",
+    )
+    p_start.add_argument(
         "--max-concurrent-flows",
         type=int,
         default=int(os.environ.get("FLOW_WORKER_MAX_CONCURRENT", "8")),
+    )
+    p_start.add_argument(
+        "--force",
+        action="store_true",
+        help="Force start even if the same worker_id appears active (not recommended).",
     )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.cmd == "start":
-        asyncio.run(main_async(max_concurrent_flows=args.max_concurrent_flows))
+        wid = (getattr(args, "worker_id", "") or "").strip() or None
+        asyncio.run(
+            main_async(
+                max_concurrent_flows=args.max_concurrent_flows,
+                worker_id=wid,
+                force=bool(getattr(args, "force", False)),
+            )
+        )
         return 0
     return 2
 

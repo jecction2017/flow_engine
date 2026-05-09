@@ -476,10 +476,6 @@
                 <div class="kv"><div class="k">schedule_type</div><div class="v mono">{{ selectedDeployment.schedule_type }}</div></div>
                 <div class="kv"><div class="k">env_profile</div><div class="v mono">{{ selectedDeployment.env_profile_code || "—" }}</div></div>
                 <div class="kv">
-                  <div class="k">status_detail</div>
-                  <div class="v mono">{{ selectedDeployment.status_detail ? JSON.stringify(selectedDeployment.status_detail) : "—" }}</div>
-                </div>
-                <div class="kv">
                   <div class="k">worker_targeting</div>
                   <div class="v mono">
                     <template v-if="selectedDeployment.worker_targeting?.mode === 'pin'">
@@ -493,6 +489,48 @@
                     </template>
                   </div>
                 </div>
+              </div>
+
+              <div v-if="selectedDeployment.status_detail" class="side-section" style="margin-top:12px;">
+                <div class="lbl">异常诊断</div>
+                <div class="diag">
+                  <div class="diag-row">
+                    <div class="diag-k">原因</div>
+                    <div class="diag-v">
+                      <span class="tag small" :class="statusTag(selectedDeployment.status)">
+                        {{ statusDetailReasonLabel(selectedDeployment.status_detail) }}
+                      </span>
+                      <span v-if="statusDetailMessage(selectedDeployment.status_detail)" class="muted small" style="margin-left:8px;">
+                        {{ statusDetailMessage(selectedDeployment.status_detail) }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="diag-row" v-if="statusDetailWhen(selectedDeployment.status_detail)">
+                    <div class="diag-k">时间</div>
+                    <div class="diag-v mono">{{ formatTs(statusDetailWhen(selectedDeployment.status_detail)) }}</div>
+                  </div>
+                  <div class="diag-row" v-if="statusDetailWorker(selectedDeployment.status_detail)">
+                    <div class="diag-k">worker</div>
+                    <div class="diag-v mono">{{ statusDetailWorker(selectedDeployment.status_detail) }}</div>
+                  </div>
+                  <div class="diag-row" v-if="statusDetailPool(selectedDeployment.status_detail)?.length">
+                    <div class="diag-k">pool</div>
+                    <div class="diag-v mono">{{ statusDetailPool(selectedDeployment.status_detail)!.join(", ") }}</div>
+                  </div>
+                  <div class="diag-row" v-if="statusDetailActiveCount(selectedDeployment.status_detail) != null">
+                    <div class="diag-k">active_workers</div>
+                    <div class="diag-v mono">{{ statusDetailActiveCount(selectedDeployment.status_detail) }}</div>
+                  </div>
+                  <div class="diag-row" v-if="statusDetailQueuedFailed(selectedDeployment.status_detail) != null">
+                    <div class="diag-k">queued_failed</div>
+                    <div class="diag-v mono">{{ statusDetailQueuedFailed(selectedDeployment.status_detail) }}</div>
+                  </div>
+                </div>
+
+                <details class="diag-raw">
+                  <summary class="muted small">原始 JSON</summary>
+                  <pre class="cfg mono" style="margin-top:8px;">{{ JSON.stringify(selectedDeployment.status_detail, null, 2) }}</pre>
+                </details>
               </div>
 
               <div class="side-section" style="margin-top:12px;">
@@ -1492,6 +1530,46 @@ function formatRelative(iso: string | null): string {
   return formatTs(iso);
 }
 
+function statusDetailReasonLabel(detail: any): string {
+  const reason = String(detail?.reason || "").trim();
+  if (reason === "no_eligible_worker") return "无可用工作节点";
+  if (reason === "pin_worker_offline") return "绑定节点离线";
+  return reason || "异常";
+}
+
+function statusDetailMessage(detail: any): string {
+  const msg = detail?.message;
+  return typeof msg === "string" ? msg : "";
+}
+
+function statusDetailWhen(detail: any): string | null {
+  const ts = detail?.ts;
+  return typeof ts === "string" ? ts : null;
+}
+
+function statusDetailWorker(detail: any): string | null {
+  const w = detail?.worker_id;
+  return typeof w === "string" && w ? w : null;
+}
+
+function statusDetailQueuedFailed(detail: any): number | null {
+  const n = detail?.queued_failed;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
+function statusDetailActiveCount(detail: any): number | null {
+  const n = detail?.active_worker_count;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
+function statusDetailPool(detail: any): string[] | null {
+  const t = detail?.targeting;
+  if (t && typeof t === "object" && t.mode === "pool" && Array.isArray(t.worker_ids)) {
+    return t.worker_ids.map((x: any) => String(x)).filter((x: string) => x);
+  }
+  return null;
+}
+
 void switchTab("deployments");
 // Ensure the deployments workbench opens on overview by default.
 if (tab.value === "deployments") openDeployOverview();
@@ -1566,6 +1644,43 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 6px;
   margin: 8px 0;
+}
+
+.diag {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.diag-row {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.diag-row:last-child {
+  border-bottom: none;
+}
+
+.diag-k {
+  width: 120px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.diag-v {
+  flex: 1;
+  min-width: 0;
+}
+
+.diag-raw {
+  margin-top: 10px;
+}
+
+.diag-raw summary {
+  cursor: pointer;
 }
 
 .confirm-mask {

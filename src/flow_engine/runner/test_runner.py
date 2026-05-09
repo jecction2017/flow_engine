@@ -28,6 +28,7 @@ from flow_engine.runner import test_persistence
 from flow_engine.runner.models import MockConfig, RunMode, RunOptions
 from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import profile_scope, store as profile_store
+from flow_engine.time_utils import utc_isoformat
 
 logger = logging.getLogger(__name__)
 
@@ -335,8 +336,8 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
             "total_runs": row.total_runs,
             "completed_runs": row.completed_runs,
             "error_runs": row.error_runs,
-            "started_at": row.started_at.isoformat() if row.started_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "started_at": utc_isoformat(row.started_at),
+            "finished_at": utc_isoformat(row.finished_at),
             "plan": plan_brief,
         }
         try:
