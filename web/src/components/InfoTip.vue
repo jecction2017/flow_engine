@@ -5,10 +5,10 @@
     tabindex="0"
     role="button"
     :aria-label="text"
-    @mouseenter="open"
-    @mouseleave="close"
-    @focus="open"
-    @blur="close"
+    @mouseenter="onMouseEnter"
+    @mouseleave="onMouseLeave"
+    @focus="onFocus"
+    @blur="onBlur"
   >
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.4" />
@@ -44,9 +44,14 @@ const props = defineProps<{
 
 const anchorEl = ref<HTMLElement | null>(null);
 const shown = ref(false);
-const lastOpenAt = ref(0);
 const bubbleStyles = ref<Record<string, string>>({});
 const placement = ref<"top" | "bottom">("bottom");
+
+// 显示状态由"哪些输入源处于激活"派生而来。hover 与 keyboard-focus 是
+// 两条独立通道：任一激活则显示，全部失活则隐藏。这样不会出现 open/close
+// 互相竞争的 race，因此也不需要时间窗护栏。
+type Source = "hover" | "focus";
+const sources = new Set<Source>();
 
 const maxWidthCss = computed(() => (props.wide ? "min(320px, calc(100vw - 24px))" : "min(240px, calc(100vw - 24px))"));
 
@@ -96,23 +101,73 @@ function computeBubbleStyles(anchor: HTMLElement): Record<string, string> {
 function updatePosition() {
   if (!shown.value || !anchorEl.value) return;
   if (!document.body.contains(anchorEl.value)) {
-    shown.value = false;
+    // anchor 已经被父组件卸载/隐藏：强制清空所有通道，避免悬空 tooltip。
+    reset();
     return;
   }
   bubbleStyles.value = computeBubbleStyles(anchorEl.value);
 }
 
-function open() {
-  if (!anchorEl.value) return;
-  shown.value = true;
-  lastOpenAt.value = Date.now();
-  updatePosition();
+function sync() {
+  const next = sources.size > 0;
+  if (next === shown.value) return;
+  shown.value = next;
+  if (next) updatePosition();
 }
 
-function close() {
-  // Avoid flicker when focus and mouseleave race.
-  if (Date.now() - lastOpenAt.value < 30) return;
-  shown.value = false;
+function activate(source: Source) {
+  if (sources.has(source)) return;
+  sources.add(source);
+  sync();
+}
+
+function deactivate(source: Source) {
+  if (!sources.has(source)) return;
+  sources.delete(source);
+  sync();
+}
+
+function reset() {
+  if (sources.size === 0 && !shown.value) return;
+  sources.clear();
+  sync();
+}
+
+function onMouseEnter() {
+  activate("hover");
+}
+
+function onMouseLeave() {
+  deactivate("hover");
+}
+
+function onFocus(event: FocusEvent) {
+  // 仅把"键盘聚焦"算作打开来源：鼠标点击带来的隐式 focus 不会命中
+  // :focus-visible，所以点击图标后再移开鼠标，浮窗会随 mouseleave 立刻消失，
+  // 不会因为图标仍处于 focus 状态而被"钉住"。
+  const target = event.target as HTMLElement | null;
+  let keyboard = true;
+  try {
+    if (target && typeof target.matches === "function") {
+      keyboard = target.matches(":focus-visible");
+    }
+  } catch {
+    keyboard = true;
+  }
+  if (keyboard) activate("focus");
+}
+
+function onBlur() {
+  deactivate("focus");
+}
+
+function onWindowBlur() {
+  // 窗口/标签失焦或被隐藏时，浏览器不一定派发 mouseleave，主动清空避免卡住。
+  reset();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState !== "visible") reset();
 }
 
 watch(shown, (v) => {
@@ -122,11 +177,15 @@ watch(shown, (v) => {
 onMounted(() => {
   window.addEventListener("resize", updatePosition);
   window.addEventListener("scroll", updatePosition, true);
+  window.addEventListener("blur", onWindowBlur);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", updatePosition);
   window.removeEventListener("scroll", updatePosition, true);
+  window.removeEventListener("blur", onWindowBlur);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 </script>
 
