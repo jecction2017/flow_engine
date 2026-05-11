@@ -613,6 +613,18 @@ class FeFlowDeployment(_AuditCols, Base):
         nullable=True,
         comment="已废弃：历史数据可能为旧版 cron 克隆子部署；新代码勿写入",
     )
+    observability: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        comment=(
+            "可观测策略 JSON，结构："
+            '{"log_level":"ERROR","span_retention_days":3,"span_nodes":{'
+            '"__default__":{"rate":1.0},'
+            '"<node_id>":{"rate":0.05,"always_on_failure":true,"scope_key":"$.alert.id"}}}; '
+            "空 {} 等价于全部 __default__ 配置，log_level=ERROR"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +758,8 @@ class FeDeployRun(_AuditCols, Base):
     """部署运行实例（Execution / Instance）。
 
     与测试运行完全隔离：只用于部署/调度产生的运行实例。
+    可观测数据已下沉到 ``fe_run_span`` / ``fe_node_metric``；本表仅保留运行
+    生命周期与计数指针，避免 MEDIUMTEXT blob 进入主表。
     """
 
     __tablename__ = "fe_deploy_run"
@@ -823,35 +837,20 @@ class FeDeployRun(_AuditCols, Base):
         nullable=True,
         comment="结束时间；运行中为 NULL",
     )
-    iteration_count: Mapped[int | None] = mapped_column(
-        INTEGER(unsigned=True),
+    span_count: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
         nullable=True,
-        comment="resident 累计迭代次数；非 resident 为 NULL",
+        comment="本次运行内观察到的 Span 总数（含未采样）；详情见 fe_run_span",
     )
-    node_runs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
+    sampled_span_count: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
         nullable=True,
-        comment="非 resident：list[NodeRunInfo.to_dict()] 的 JSON",
-    )
-    node_stats: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="resident：节点级聚合统计 JSON",
-    )
-    flow_logs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="flow-level hook 日志 JSON",
-    )
-    global_ns: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="运行结束时的 global_ns JSON（已去除 dictionary），用于诊断输出",
+        comment="实际写入 fe_run_span 的 Span 数（采样后）",
     )
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
-        comment="失败 / 终止时的错误信息",
+        comment="失败 / 终止时的错误信息（不再保存 flow_logs / global_ns / node blob）",
     )
 
 
@@ -943,25 +942,10 @@ class FeTestRun(_AuditCols, Base):
         nullable=True,
         comment="结束时间；运行中为 NULL",
     )
-    node_runs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="测试用例：list[NodeRunInfo.to_dict()] 的 JSON",
-    )
-    flow_logs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="flow-level hook 日志 JSON",
-    )
-    global_ns: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="运行结束时的 global_ns JSON（已去除 dictionary），用于测试输出/诊断",
-    )
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
-        comment="失败 / 终止时的错误信息",
+        comment="失败 / 终止时的错误信息（详细执行记录见 fe_run_span）",
     )
     evaluation: Mapped[dict[str, Any] | None] = mapped_column(
         JSON,
@@ -971,133 +955,8 @@ class FeTestRun(_AuditCols, Base):
 
 
 # ---------------------------------------------------------------------------
-# fe_flow_run  流程运行记录表
+# fe_flow_run  (REMOVED) — 历史 legacy 表，统一迁移至 fe_deploy_run / fe_test_run
 # ---------------------------------------------------------------------------
-
-
-class FeFlowRun(_AuditCols, Base):
-    """单次流程运行记录。
-
-    ⚠ Legacy table: this model is kept temporarily for backward compatibility.
-    New code should write to `fe_deploy_run` (deploy domain) or `fe_test_run` (test domain).
-
-    deployment_id 与 test_batch_id 互斥（生产 vs 测试）：
-        生产运行（once/cron/resident）：deployment_id 非空，test_batch_id 为空
-        测试运行：                       test_batch_id 非空，deployment_id 为空
-
-    node_runs 与 node_stats 互斥：
-        once/cron/test → node_runs（list[NodeRunInfo.to_dict()] 序列化）
-        resident       → node_stats（聚合统计 JSON），同时 iteration_count 累计
-    """
-
-    __tablename__ = "fe_flow_run"
-    __table_args__ = (
-        Index("idx_fe_flow_run_deployment_id", "deployment_id"),
-        Index("idx_fe_flow_run_test_batch_id", "test_batch_id"),
-        Index(
-            "idx_fe_flow_run_flow_code_started_at",
-            "flow_code",
-            "started_at",
-        ),
-        {**_FE_TABLE_OPTS, "comment": "流程运行记录表"},
-    )
-
-    id: Mapped[int] = mapped_column(
-        BIGINT(unsigned=True),
-        primary_key=True,
-        autoincrement=True,
-        comment="自增主键",
-    )
-    deployment_id: Mapped[int | None] = mapped_column(
-        BIGINT(unsigned=True),
-        nullable=True,
-        comment="生产运行关联 fe_flow_deployment.id；测试运行为 NULL",
-    )
-    test_batch_id: Mapped[int | None] = mapped_column(
-        BIGINT(unsigned=True),
-        nullable=True,
-        comment="测试运行关联 fe_flow_test_batch.id；生产运行为 NULL",
-    )
-    worker_id: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-        comment="执行 worker 的 worker_id；测试可为空",
-    )
-    flow_code: Mapped[str] = mapped_column(
-        String(128),
-        nullable=False,
-        server_default=text("''"),
-        comment="流程业务码",
-    )
-    ver_no: Mapped[int] = mapped_column(
-        INTEGER(unsigned=True),
-        nullable=False,
-        comment="流程版本号",
-    )
-    mode: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-        server_default=text("'production'"),
-        comment="RunMode：debug / shadow / production",
-    )
-    trigger_context: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON,
-        nullable=True,
-        comment="触发时的初始 context；resident 流程为 NULL",
-    )
-    status: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-        server_default=text("'running'"),
-        comment="状态：running / completed / failed / terminated",
-    )
-    started_at: Mapped[datetime] = mapped_column(
-        MySQLDateTime(fsp=3),
-        nullable=False,
-        default=_utcnow,
-        server_default=text("CURRENT_TIMESTAMP(3)"),
-        comment="开始时间",
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        MySQLDateTime(fsp=3),
-        nullable=True,
-        comment="结束时间；运行中为 NULL",
-    )
-    iteration_count: Mapped[int | None] = mapped_column(
-        INTEGER(unsigned=True),
-        nullable=True,
-        comment="resident 累计迭代次数；非 resident 为 NULL",
-    )
-    node_runs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="非 resident：list[NodeRunInfo.to_dict()] 的 JSON",
-    )
-    node_stats: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="resident：节点级聚合统计 JSON",
-    )
-    flow_logs: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="flow-level hook 日志 JSON",
-    )
-    global_ns: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="运行结束时的 global_ns JSON（已去除 dictionary），用于测试/诊断输出",
-    )
-    error: Mapped[str | None] = mapped_column(
-        MEDIUMTEXT,
-        nullable=True,
-        comment="失败 / 终止时的错误信息",
-    )
-    evaluation: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON,
-        nullable=True,
-        comment="测试断言评估结果：verdict / rules 等（JSON）",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1357,4 +1216,295 @@ class FeUserScript(_AuditCols, Base):
         MEDIUMTEXT,
         nullable=False,
         comment="Starlark 源码，单文件 50-200 行",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_run_span  通用执行 Span（覆盖 deploy/test 域）
+# ---------------------------------------------------------------------------
+
+
+class FeRunSpan(_AuditCols, Base):
+    """统一的执行 Span 表，承载所有可观测的「执行单元」。
+
+    Span 是 OpenTelemetry 风格的执行边界记录：
+      - node_type=flow_root:  once/cron/test 顶层运行
+      - node_type=task:       TaskNode 执行（默认不采，仅按配置开启）
+      - node_type=loop_iter:  LoopNode 单次迭代
+      - node_type=subflow:    SubflowNode 单次调用
+
+    通过 ``parent_span_id`` 形成树（嵌套循环 / 嵌套子流程自然支持）。
+    多循环场景由 ``node_id`` 区分，无需新表。
+
+    `deploy_run_id` / `test_run_id` 二选一非空：
+
+      - 部署运行（once / cron / resident）→ deploy_run_id 非空
+      - 测试运行 → test_run_id 非空
+
+    JSON 字段语义：
+
+      child_spans  直接子节点摘要（不递归），列表元素：
+                   {node_id, node_name, duration_ms, status, error?}
+      logs         Span 期间收集到的日志条目（按级别过滤），列表元素：
+                   {level, msg, source, t_ms}
+      attributes   用户自定义 KV（业务标签 / 链路追踪 ID 等扩展点）
+    """
+
+    __tablename__ = "fe_run_span"
+    __table_args__ = (
+        # 按节点翻页（结果列表的主索引）
+        Index(
+            "idx_fe_run_span_deploy_run_node_started",
+            "deploy_run_id",
+            "node_id",
+            "started_at",
+        ),
+        # 失败定位
+        Index(
+            "idx_fe_run_span_deploy_run_status_started",
+            "deploy_run_id",
+            "status",
+            "started_at",
+        ),
+        # 测试域查询
+        Index(
+            "idx_fe_run_span_test_run_node_started",
+            "test_run_id",
+            "node_id",
+            "started_at",
+        ),
+        # 按业务键检索（scope_key 前缀索引 64 字符足够区分百万级告警 ID）
+        Index(
+            "idx_fe_run_span_scope_key_started",
+            "scope_key",
+            "started_at",
+        ),
+        # 父子树导航
+        Index("idx_fe_run_span_parent", "parent_span_id"),
+        # 跨 run 统计
+        Index(
+            "idx_fe_run_span_flow_code_started",
+            "flow_code",
+            "started_at",
+        ),
+        {**_FE_TABLE_OPTS, "comment": "通用执行 Span 表（可观测中枢）"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    deploy_run_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="部署运行 ID（fe_deploy_run.id）；测试运行为 NULL",
+    )
+    test_run_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="测试运行 ID（fe_test_run.id）；部署运行为 NULL",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="流程业务码（冗余，便于跨 run 检索）",
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="产生 Span 的节点 id；flow_root 使用 '__flow_root__'",
+    )
+    node_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text("'task'"),
+        comment="Span 类型：flow_root / task / loop_iter / subflow",
+    )
+    span_seq: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="(run_id, node_id) 内单调递增序号，便于按发生顺序排序",
+    )
+    parent_span_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="父 Span id（嵌套循环 / 嵌套子流程）；顶层为 NULL",
+    )
+    scope_key: Mapped[str] = mapped_column(
+        String(512),
+        nullable=False,
+        server_default=text("''"),
+        comment="业务键（由 observability.span_nodes.<id>.scope_key 配置提取，可为空）",
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=False,
+        default=_utcnow,
+        comment="Span 开始时间",
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=True,
+        comment="Span 结束时间；未完成时为 NULL（异常落库才出现）",
+    )
+    duration_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="Span 耗时（毫秒），冗余字段便于查询",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'running'"),
+        comment="状态：success / failed / skipped / running",
+    )
+    error: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="失败原因（仅 status=failed 时有意义）",
+    )
+    child_spans: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="直接子节点摘要 JSON 列表：[{node_id, node_name, duration_ms, status, error?}]",
+    )
+    logs: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Span 内日志条目 JSON 列表：[{level, msg, source, t_ms}]",
+    )
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="用户自定义 KV 扩展点 JSON",
+    )
+    sampled: Mapped[int] = mapped_column(
+        TINYINT(1),
+        nullable=False,
+        server_default=text("1"),
+        comment="1=主动采样命中；0=always_on_failure 触发回补",
+    )
+
+
+# ---------------------------------------------------------------------------
+# fe_node_metric  节点级时序聚合（5 分钟桶）
+# ---------------------------------------------------------------------------
+
+
+class FeNodeMetric(_AuditCols, Base):
+    """节点级时序聚合表。
+
+    与 ``fe_run_span`` 互补：Metric 是「始终在线」的聚合视图（永久保留），
+    Span 是「按需采样」的执行快照（短期保留）。每个 (deploy_run_id, node_id,
+    bucket_at) 唯一一行，由 Worker 后台 ``_obs_flush_loop`` 周期性 UPSERT。
+
+    百分位由 backend 在内存中（循环缓冲 tail-1000）计算后写入；新 bucket
+    出现时上一个桶被 finalize。
+    """
+
+    __tablename__ = "fe_node_metric"
+    __table_args__ = (
+        UniqueConstraint(
+            "deploy_run_id",
+            "node_id",
+            "bucket_at",
+            name="uk_fe_node_metric_run_node_bucket",
+        ),
+        # 跨 run 长期趋势（flow_code, node_id）
+        Index(
+            "idx_fe_node_metric_flow_node_bucket",
+            "flow_code",
+            "node_id",
+            "bucket_at",
+        ),
+        {**_FE_TABLE_OPTS, "comment": "节点级时序聚合表（5 分钟桶）"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    deploy_run_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        comment="关联 fe_deploy_run.id",
+    )
+    flow_code: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="流程业务码（冗余，便于跨 run 长期趋势）",
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("''"),
+        comment="节点 id（flow_root 时为 '__flow_root__'）",
+    )
+    bucket_at: Mapped[datetime] = mapped_column(
+        MySQLDateTime(fsp=3),
+        nullable=False,
+        comment="5 分钟时间桶起点（向下取整 UTC）",
+    )
+    span_count: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="桶内 Span 数量",
+    )
+    success_count: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="成功数",
+    )
+    failed_count: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="失败数",
+    )
+    skipped_count: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="跳过数",
+    )
+    total_ms: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        server_default=text("0"),
+        comment="耗时累加（仅 success/failed 计入，便于计算 avg）",
+    )
+    p50_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="P50（tail-1000 样本）",
+    )
+    p95_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="P95",
+    )
+    p99_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="P99",
+    )
+    max_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="桶内最大耗时",
+    )
+    min_ms: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=True,
+        comment="桶内最小耗时",
     )

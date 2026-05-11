@@ -30,7 +30,7 @@ from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeSta
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
 from flow_engine.runner import deploy_persistence, test_persistence
-from flow_engine.runner import test_runner
+from flow_engine.runner import metric_persistence, span_persistence, test_runner
 from flow_engine.runner.mode_context import system_default_policy
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
 from flow_engine.lookup.lookup_import import rows_from_bytes
@@ -572,7 +572,7 @@ def create_app() -> FastAPI:
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if timed_out or res is None:
-            partial_runs = [r.to_dict() for r in sorted(rt._node_runs.values(), key=lambda r: r.order)]
+            partial_runs = [r.to_dict() for r in sorted(rt._node_runs.values(), key=lambda r: r.order)]  # noqa: SLF001
             partial_state = {
                 k: v.value if isinstance(v, NodeState) else str(v) for k, v in rt.node_state.items()
             }
@@ -582,8 +582,10 @@ def create_app() -> FastAPI:
                 "message": f"Run exceeded {body.timeout_sec}s",
                 "elapsed_ms": elapsed_ms,
                 "node_state": partial_state,
+                # Ad-hoc试运行未挂 backend，沿用内存中的 node_runs / flow_logs；
+                # 仅作前端立即反馈用途，不进入持久化。
                 "node_runs": partial_runs,
-                "flow_logs": list(rt._flow_logs),
+                "flow_logs": list(rt._flow_logs),  # noqa: SLF001
                 "global_ns": {},
                 "resolved_profile": resolved["resolved_profile"],
                 "resolved_modules": resolved["resolved_modules"],
@@ -599,6 +601,7 @@ def create_app() -> FastAPI:
             "message": res.message,
             "elapsed_ms": elapsed_ms,
             "node_state": node_state,
+            # 试运行结果直接返回——不写 DB，前端用于调试。
             "node_runs": [r.to_dict() for r in res.node_runs],
             "flow_logs": list(res.flow_logs),
             "global_ns": ns,
@@ -1608,6 +1611,111 @@ def create_app() -> FastAPI:
         if info is None:
             raise HTTPException(status_code=404, detail="run not found")
         return info
+
+    # -----------------------------------------------------------------------
+    # Observability: Spans (sampled execution snapshots)
+    # -----------------------------------------------------------------------
+
+    def _parse_iso(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"invalid ISO 8601 timestamp: {value}"
+            ) from e
+
+    @app.get("/api/deploy-runs/{run_id}/spans")
+    def list_deploy_run_spans(
+        run_id: int,
+        node_id: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        scope_key: str | None = Query(default=None),
+        started_after: str | None = Query(default=None),
+        started_before: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> dict[str, Any]:
+        return span_persistence.list_spans(
+            deploy_run_id=run_id,
+            node_id=node_id,
+            status=status,
+            scope_key=scope_key,
+            started_after=_parse_iso(started_after),
+            started_before=_parse_iso(started_before),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/test-runs/{run_id}/spans")
+    def list_test_run_spans(
+        run_id: int,
+        node_id: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        scope_key: str | None = Query(default=None),
+        started_after: str | None = Query(default=None),
+        started_before: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> dict[str, Any]:
+        return span_persistence.list_spans(
+            test_run_id=run_id,
+            node_id=node_id,
+            status=status,
+            scope_key=scope_key,
+            started_after=_parse_iso(started_after),
+            started_before=_parse_iso(started_before),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/spans/{span_id}")
+    def get_span_detail(span_id: int) -> dict[str, Any]:
+        info = span_persistence.get_span(span_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="span not found")
+        return info
+
+    @app.get("/api/spans/{span_id}/children")
+    def get_span_children(
+        span_id: int,
+        limit: int = Query(default=200, ge=1, le=1000),
+    ) -> dict[str, Any]:
+        return {
+            "parent_span_id": span_id,
+            "items": span_persistence.get_span_children(span_id, limit=limit),
+        }
+
+    # -----------------------------------------------------------------------
+    # Observability: Metrics (always-on time-series aggregates)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/deploy-runs/{run_id}/metrics")
+    def get_deploy_run_metrics(
+        run_id: int,
+        node_id: str | None = Query(default=None),
+        from_: str | None = Query(default=None, alias="from"),
+        to: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        return metric_persistence.query_metric_buckets(
+            deploy_run_id=run_id,
+            node_id=node_id,
+            bucket_from=_parse_iso(from_),
+            bucket_to=_parse_iso(to),
+        )
+
+    @app.get("/api/deploy-runs/{run_id}/metrics/summary")
+    def get_deploy_run_metrics_summary(
+        run_id: int,
+        node_id: str | None = Query(default=None),
+        window_minutes: int = Query(default=60, ge=1, le=1440),
+    ) -> dict[str, Any]:
+        return metric_persistence.query_metric_summary(
+            deploy_run_id=run_id,
+            node_id=node_id,
+            window_minutes=window_minutes,
+        )
 
     return app
 

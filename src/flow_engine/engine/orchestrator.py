@@ -7,9 +7,10 @@ import copy
 import logging
 import time
 from concurrent.futures import Future as ConcurrentFuture
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 import starlark as sl
@@ -35,6 +36,14 @@ from flow_engine.engine.models import (
     StrategyMode,
     SubflowNode,
     TaskNode,
+)
+from flow_engine.engine.observability import (
+    SPAN_UNSAMPLED,
+    LogEntry,
+    MetricPoint,
+    NullBackend,
+    ObservabilityBackend,
+    SpanRecord,
 )
 from flow_engine.engine.resources import (
     GlobalConcurrencyGate,
@@ -69,6 +78,15 @@ from flow_engine.stores.data_dict import dictionary_scope, tree_copy
 logger = logging.getLogger(__name__)
 
 _MAX_JUMPS_PER_SCOPE = 1024
+
+# Current open-span handle for THIS asyncio task. Concurrent loop iterations
+# each run in their own task and therefore see an isolated value via the
+# automatic ``contextvars.copy_context()`` performed by ``asyncio.create_task``.
+# ``SPAN_UNSAMPLED`` is the "no open span" sentinel — backends already accept
+# it as a no-op.
+_current_span_handle: ContextVar[int] = ContextVar(
+    "flow_engine_current_span", default=SPAN_UNSAMPLED
+)
 
 
 def _strategy_mode(st: ExecutionStrategy) -> StrategyMode:
@@ -179,7 +197,19 @@ class FlowRunResult:
 
 
 class FlowRuntime:
-    """Runs a compiled `FlowDefinition`."""
+    """Runs a compiled `FlowDefinition`.
+
+    Observability is plugged via :attr:`obs` (a
+    :class:`~flow_engine.engine.observability.ObservabilityBackend`). The
+    default :class:`NullBackend` makes the engine zero-cost when no
+    backend is attached; the Worker injects a real one for production
+    runs. The orchestrator never touches DB directly — it only emits
+    span / metric / log signals to the backend.
+
+    ``flow_code`` is purely informational for emitted records; pass the
+    business code from the caller. Defaults to an empty string when
+    running a free-floating compiled flow (e.g. unit tests).
+    """
 
     def __init__(
         self,
@@ -187,6 +217,8 @@ class FlowRuntime:
         *,
         dictionary: dict[str, Any] | None = None,
         run_opts: RunOptions | None = None,
+        obs: ObservabilityBackend | None = None,
+        flow_code: str = "",
     ) -> None:
         self.flow = flow
         self.ctx = ContextStack()
@@ -205,6 +237,8 @@ class FlowRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cancel_dereg: Any = None
         self._run_opts: RunOptions = run_opts or RunOptions()
+        self.obs: ObservabilityBackend = obs or NullBackend()
+        self.flow_code: str = flow_code or ""
 
     def _nid(self, m: FlowMember) -> str:
         # id 是节点唯一逻辑主键；模型层已保证非空，此处无需回落 name。
@@ -285,6 +319,279 @@ class FlowRuntime:
         for e in entries:
             self._flow_logs.append(dict(e))
 
+    # ------------------------------------------------------------------
+    # Observability helpers
+    # ------------------------------------------------------------------
+
+    def _run_ref(self) -> Any:
+        """Resolve the run reference the backend will stamp onto spans.
+
+        The Worker sets ``self._obs_run_ref`` before invoking :meth:`run`.
+        Tests / ad-hoc debug runs leave it absent — in that case the
+        backend is a NullBackend so the value is never read.
+        """
+        return getattr(self, "_obs_run_ref", None)
+
+    def _open_span(
+        self,
+        node_id: str,
+        node_type: str,
+        *,
+        scope_key: str = "",
+    ) -> int:
+        """Open a span via the backend.
+
+        The parent span is read from the per-task ContextVar so concurrent
+        loop iterations naturally see only their own ancestor chain.
+        Callers that want to push this span as the new parent should use
+        :meth:`_push_span` (returns a token) and :meth:`_pop_span` to
+        unwind, exactly like a regular ``Stack`` but isolated per task.
+
+        Returns :data:`SPAN_UNSAMPLED` when no run_ref is attached or the
+        backend's sampling policy declines.
+        """
+        ref = self._run_ref()
+        if ref is None or not self.obs.should_span(node_id, node_type):
+            return SPAN_UNSAMPLED
+        cur = _current_span_handle.get()
+        parent = None if cur == SPAN_UNSAMPLED else cur
+        record = SpanRecord(
+            run_ref=ref,
+            flow_code=self.flow_code,
+            node_id=node_id,
+            node_type=node_type,
+            started_at=datetime.now(timezone.utc),
+            scope_key=scope_key,
+            parent_span_id=parent,
+        )
+        return self.obs.open_span(record)
+
+    @staticmethod
+    def _push_span(handle: int) -> Any:
+        """Mark ``handle`` as the current parent for child spans on this task."""
+        return _current_span_handle.set(handle)
+
+    @staticmethod
+    def _pop_span(token: Any) -> None:
+        if token is not None:
+            _current_span_handle.reset(token)
+
+    def _close_span(
+        self,
+        handle: int,
+        *,
+        status: str,
+        error: str | None = None,
+        child_spans: list[dict[str, Any]] | None = None,
+        logs: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if handle == SPAN_UNSAMPLED:
+            return
+        self.obs.close_span(
+            handle,
+            status=status,
+            error=error,
+            finished_at=datetime.now(timezone.utc),
+            child_spans=child_spans,
+            logs=logs,
+        )
+
+    def _extract_scope_key(
+        self,
+        node_id: str,
+        item: Any,
+        parent_ctx: ContextStack,
+        iter_ctx: ContextStack | None,
+    ) -> str:
+        """Ask the backend to resolve the configured scope_key.
+
+        Wraps a small ``get_path`` callable so the backend can evaluate
+        ``$.foo.bar`` against the most-specific context available (the
+        iteration's fork when present, else the parent's). The current
+        loop item is exposed as ``$.item`` for convenience.
+        """
+        if self._run_ref() is None:
+            return ""
+
+        def get_path(path_parts: list[str]) -> Any:
+            if not path_parts:
+                return item
+            head, *rest = path_parts
+            if head == "item":
+                from flow_engine.engine.observability import resolve_path
+
+                return resolve_path(item, rest)
+            target_ctx = iter_ctx or parent_ctx
+            try:
+                root = target_ctx.global_ns
+            except AttributeError:
+                return None
+            from flow_engine.engine.observability import resolve_path
+
+            return resolve_path(root, path_parts)
+
+        try:
+            return self.obs.extract_scope_key(node_id, item, get_path)
+        except Exception:  # noqa: BLE001
+            logger.debug("scope_key extraction failed for node %s", node_id, exc_info=True)
+            return ""
+
+    def _finalize_iteration_span(
+        self,
+        handle: int,
+        token: Any,
+        status: str,
+        error: str | None,
+        node_id: str,
+        start_monotonic: float,
+        child_ids: list[str],
+        pre_snap: dict[str, int],
+        log_base: int | None = None,
+    ) -> None:
+        """Common epilogue for both sequential and concurrent loop iterations.
+
+        ``log_base`` lets us capture only the logs emitted *during* this
+        iteration (on_iteration_start + on_iteration_end hook output);
+        the alternative — passing all of ``info.logs`` — would
+        duplicate every previous iteration's logs into every span and
+        grow unboundedly inside resident loops.
+
+        Pass ``log_base=None`` (default) to skip iteration logs
+        entirely — used for concurrent iterations because their
+        appends to ``info.logs`` interleave across sibling tasks and
+        a length-based diff cannot disentangle them.
+        """
+        if token is not None:
+            self._pop_span(token)
+        if handle != SPAN_UNSAMPLED:
+            iter_logs = (
+                None if log_base is None else self._diff_node_logs(node_id, log_base)
+            )
+            self._close_span(
+                handle,
+                status=status,
+                error=error,
+                child_spans=self._build_child_spans(child_ids, pre_snap),
+                logs=iter_logs,
+            )
+        elapsed_ms = max(0, int((time.monotonic() - start_monotonic) * 1000))
+        self._emit_metric(node_id, elapsed_ms, status)
+
+    def _emit_metric(self, node_id: str, duration_ms: int, status: str) -> None:
+        ref = self._run_ref()
+        if ref is None:
+            return
+        deploy_run_id = getattr(ref, "deploy_run_id", None)
+        if deploy_run_id is None:
+            # Test runs intentionally skip metric pipeline; spans alone
+            # carry enough info for batch comparison.
+            return
+        self.obs.emit_metric(
+            MetricPoint(
+                deploy_run_id=int(deploy_run_id),
+                flow_code=self.flow_code,
+                node_id=node_id,
+                at=datetime.now(timezone.utc),
+                duration_ms=int(duration_ms),
+                status=status,
+            )
+        )
+
+    @staticmethod
+    def _final_status_from_state(state: NodeState) -> str:
+        if state == NodeState.SUCCESS:
+            return "success"
+        if state == NodeState.FAILED:
+            return "failed"
+        if state == NodeState.SKIPPED:
+            return "skipped"
+        return "running"
+
+    def _build_child_spans(self, child_ids: list[str], snap: dict[str, int]) -> list[dict[str, Any]]:
+        """Diff ``transitions`` lengths to derive a per-child summary.
+
+        Pre-snap holds ``len(transitions)`` for each direct child id at
+        the moment the parent span opened. After the body runs we walk
+        any new transitions to determine each child's status / duration
+        for THIS span (vs whatever an earlier iteration may have done).
+        """
+        out: list[dict[str, Any]] = []
+        for cid in child_ids:
+            info = self._node_runs.get(cid)
+            if info is None:
+                continue
+            base = snap.get(cid, 0)
+            new = info.transitions[base:]
+            if not new:
+                continue
+            final = new[-1].get("state", "")
+            started_ms: int | None = None
+            finished_ms: int | None = None
+            for tr in new:
+                st = tr.get("state")
+                t = tr.get("t_ms")
+                if started_ms is None and st in (
+                    NodeState.STAGING.value,
+                    NodeState.DISPATCHED.value,
+                    NodeState.RUNNING.value,
+                ):
+                    started_ms = int(t) if t is not None else None
+                if st in (
+                    NodeState.SUCCESS.value,
+                    NodeState.FAILED.value,
+                    NodeState.SKIPPED.value,
+                ):
+                    finished_ms = int(t) if t is not None else None
+            dur: int | None = None
+            if started_ms is not None and finished_ms is not None:
+                dur = max(0, finished_ms - started_ms)
+            out.append(
+                {
+                    "node_id": cid,
+                    "duration_ms": dur,
+                    "status": final,
+                }
+            )
+        return out
+
+    def _snapshot_transitions(self, child_ids: list[str]) -> dict[str, int]:
+        return {
+            cid: len(self._node_runs[cid].transitions)
+            for cid in child_ids
+            if cid in self._node_runs
+        }
+
+    def _snapshot_log_count(self, node_id: str) -> int:
+        """Capture the current length of a node's log list.
+
+        Used together with :meth:`_diff_node_logs` to extract the logs
+        emitted during a single execution slice. Necessary because
+        ``NodeRunInfo.logs`` is shared across all iterations of a node
+        inside a loop — passing the full list to each span would
+        duplicate every prior iteration's logs and grow unboundedly.
+        """
+        info = self._node_runs.get(node_id)
+        if info is None:
+            return 0
+        return len(info.logs)
+
+    def _diff_node_logs(self, node_id: str, base: int) -> list[dict[str, Any]] | None:
+        info = self._node_runs.get(node_id)
+        if info is None:
+            return None
+        if base <= 0 and len(info.logs) == 0:
+            return None
+        new = info.logs[base:]
+        if not new:
+            return None
+        # Defensive copy so the backend's filtering can't mutate the
+        # canonical run-info list.
+        return [dict(e) for e in new]
+
+    @staticmethod
+    def _direct_child_ids(members: list[FlowMember]) -> list[str]:
+        return [m.id for m in members]
+
     def _apply_outputs_safe(self, ctx: ContextStack, result: dict[str, Any], outputs: dict[str, str]) -> None:
         # `ContextStack.set_path` is internally locked; this helper exists so
         # that call sites read clearly and so we can group the boundary write
@@ -328,6 +635,21 @@ class FlowRuntime:
                 self._cancel_dereg = None
 
     async def _run_scoped(self) -> FlowRunResult:
+        # Open a top-level flow_root span so once/cron/test runs get a
+        # single tree root with all top-level nodes as child_spans.
+        # resident runs spawn many root-spans (one per top-level loop
+        # iteration); the backend decides via should_span.
+        top_ids = self._direct_child_ids(self.flow.nodes)
+        flow_root_handle = self._open_span("__flow_root__", "flow_root")
+        span_token = (
+            self._push_span(flow_root_handle)
+            if flow_root_handle != SPAN_UNSAMPLED
+            else None
+        )
+        top_snap = self._snapshot_transitions(top_ids)
+        flow_start = time.monotonic()
+        final_status = "success"
+        final_error: str | None = None
         try:
             if self.flow.hooks and self.flow.hooks.on_start:
                 self._append_flow_logs(
@@ -345,12 +667,15 @@ class FlowRuntime:
             return self._result(None)
         except TerminateInterrupt:
             self.flow_state = FlowState.TERMINATED
+            final_status = "skipped"  # treated as graceful exit, not failure
             return self._result("terminated")
         except JumpTarget as j:
             # A jump escaped every enclosing scope -> treat as failure rather
             # than leaking a control-flow exception to the caller.
             self.flow_state = FlowState.FAILED
             msg = f"Unresolved jump target: {j.target!r}"
+            final_status = "failed"
+            final_error = msg
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -363,6 +688,8 @@ class FlowRuntime:
             return self._result(msg)
         except FlowEngineError as e:
             self.flow_state = FlowState.FAILED
+            final_status = "failed"
+            final_error = str(e)
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -376,6 +703,8 @@ class FlowRuntime:
         except Exception as e:  # noqa: BLE001
             logger.exception("Flow failed")
             self.flow_state = FlowState.FAILED
+            final_status = "failed"
+            final_error = str(e)
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -386,6 +715,22 @@ class FlowRuntime:
                     )
                 )
             return self._result(str(e))
+        finally:
+            # Close out flow_root span + emit one flow-level metric. We
+            # do this in `finally` so that crashes still produce a
+            # recoverable Span row instead of leaving an open record.
+            if span_token is not None:
+                self._pop_span(span_token)
+            if flow_root_handle != SPAN_UNSAMPLED:
+                self._close_span(
+                    flow_root_handle,
+                    status=final_status,
+                    error=final_error,
+                    child_spans=self._build_child_spans(top_ids, top_snap),
+                    logs=list(self._flow_logs),
+                )
+            elapsed_ms = max(0, int((time.monotonic() - flow_start) * 1000))
+            self._emit_metric("__flow_root__", elapsed_ms, final_status)
     async def _run_members(
         self,
         members: list[FlowMember],
@@ -627,41 +972,99 @@ class FlowRuntime:
         st = self._strategy_for(node)
 
         if await_result:
+            task_span = self._open_span(nid, "task")
+            span_token = (
+                self._push_span(task_span) if task_span != SPAN_UNSAMPLED else None
+            )
+            task_start = time.monotonic()
+            log_base = self._snapshot_log_count(nid)
+            metric_status = "success"
+            close_status = "success"
+            close_error: str | None = None
             try:
-                result = await self._run_with_retries(node, ctx, st)
-            except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
-                # A sync-mode task that invokes a flow-control builtin
-                # (flow_continue / flow_break / flow_terminate / flow_jump)
-                # intentionally opts out of producing output. Without this
-                # handler the node would stay RUNNING because `_mark(RUNNING)`
-                # was already written on entry and no terminal transition
-                # follows. Mark SKIPPED so observers see a clean finish while
-                # the exception still propagates to the enclosing scope.
-                self._mark(nid, NodeState.SKIPPED)
-                raise
-            self._apply_outputs_safe(ctx, result, node.boundary.outputs)
-            self._mark(nid, NodeState.SUCCESS)
+                try:
+                    result = await self._run_with_retries(node, ctx, st)
+                except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
+                    # A sync-mode task that invokes a flow-control builtin
+                    # (flow_continue / flow_break / flow_terminate / flow_jump)
+                    # intentionally opts out of producing output. Without this
+                    # handler the node would stay RUNNING because `_mark(RUNNING)`
+                    # was already written on entry and no terminal transition
+                    # follows. Mark SKIPPED so observers see a clean finish while
+                    # the exception still propagates to the enclosing scope.
+                    self._mark(nid, NodeState.SKIPPED)
+                    metric_status = "skipped"
+                    close_status = "skipped"
+                    raise
+                except BaseException as e:  # noqa: BLE001
+                    metric_status = "failed"
+                    close_status = "failed"
+                    close_error = str(e)
+                    raise
+                self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                self._mark(nid, NodeState.SUCCESS)
+            finally:
+                # Span/metric emission MUST happen in finally so that
+                # control-flow interrupts and errors are still observed.
+                if span_token is not None:
+                    self._pop_span(span_token)
+                if task_span != SPAN_UNSAMPLED:
+                    self._close_span(
+                        task_span,
+                        status=close_status,
+                        error=close_error,
+                        logs=self._diff_node_logs(nid, log_base),
+                    )
+                elapsed_ms = max(0, int((time.monotonic() - task_start) * 1000))
+                self._emit_metric(nid, elapsed_ms, metric_status)
             return
 
         loop = asyncio.get_running_loop()
 
         async def bg() -> None:
             self._mark(nid, NodeState.RUNNING)
+            task_span = self._open_span(nid, "task")
+            span_token = (
+                self._push_span(task_span) if task_span != SPAN_UNSAMPLED else None
+            )
+            task_start = time.monotonic()
+            log_base = self._snapshot_log_count(nid)
+            metric_status = "success"
+            close_status = "success"
+            close_error: str | None = None
             try:
-                result = await self._run_with_retries(node, ctx, st)
-            except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
-                # Surface control-flow from background tasks at the next
-                # barrier. We DO mark FAILED here so that observers can
-                # distinguish "still in flight" from "control-flow aborted".
-                self._mark(nid, NodeState.FAILED)
-                raise
-            except BaseException:
-                # `_run_with_retries` already transitioned to FAILED before
-                # re-raising; kept explicit in case the contract changes.
-                self._mark(nid, NodeState.FAILED)
-                raise
-            self._apply_outputs_safe(ctx, result, node.boundary.outputs)
-            self._mark(nid, NodeState.SUCCESS)
+                try:
+                    result = await self._run_with_retries(node, ctx, st)
+                except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
+                    # Surface control-flow from background tasks at the next
+                    # barrier. We DO mark FAILED here so that observers can
+                    # distinguish "still in flight" from "control-flow aborted".
+                    self._mark(nid, NodeState.FAILED)
+                    metric_status = "failed"
+                    close_status = "failed"
+                    raise
+                except BaseException as e:  # noqa: BLE001
+                    # `_run_with_retries` already transitioned to FAILED before
+                    # re-raising; kept explicit in case the contract changes.
+                    self._mark(nid, NodeState.FAILED)
+                    metric_status = "failed"
+                    close_status = "failed"
+                    close_error = str(e)
+                    raise
+                self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                self._mark(nid, NodeState.SUCCESS)
+            finally:
+                if span_token is not None:
+                    self._pop_span(span_token)
+                if task_span != SPAN_UNSAMPLED:
+                    self._close_span(
+                        task_span,
+                        status=close_status,
+                        error=close_error,
+                        logs=self._diff_node_logs(nid, log_base),
+                    )
+                elapsed_ms = max(0, int((time.monotonic() - task_start) * 1000))
+                self._emit_metric(nid, elapsed_ms, metric_status)
 
         tracker.create_task(loop, bg())
 
@@ -967,13 +1370,32 @@ class FlowRuntime:
         its own forked stack and we still collect after the iteration.
         Otherwise we reuse the parent ctx directly, which preserves the
         original semantics exercised by every existing test/example.
+
+        Each iteration produces one ``loop_iter`` span (subject to backend
+        sampling) and one metric point. ``child_spans`` is computed via the
+        ``_node_runs.transitions`` diff-snapshot — accurate here because
+        sequential iterations don't interleave.
         """
         nid = self._nid(node)
+        child_ids = self._direct_child_ids(node.children)
         for it in items:
+            iter_ctx_for_extract = ctx if isolation != "fork" else None
+            scope_key = self._extract_scope_key(nid, it, ctx, iter_ctx_for_extract)
+            iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
+            iter_span_token = (
+                self._push_span(iter_span) if iter_span != SPAN_UNSAMPLED else None
+            )
+            iter_start = time.monotonic()
+            iter_pre_snap = self._snapshot_transitions(child_ids)
+            iter_log_base = self._snapshot_log_count(nid)
+            iter_status = "success"
+            iter_error: str | None = None
+
             if isolation == "fork":
                 iter_ctx = ctx.fork(clone_global=True)
                 iter_tracker = TaskTracker(parent=None)
                 frame = ContextFrame(node_id=nid, alias=node.alias, loop_item=it, loop_alias=node.alias)
+                stop_loop = False
                 with self._pushed_frame(iter_ctx, frame):
                     try:
                         if hooks and hooks.on_iteration_start:
@@ -991,15 +1413,20 @@ class FlowRuntime:
                                 node.children, iter_ctx, iter_tracker, parent_id=nid
                             )
                         except ContinueInterrupt:
-                            continue
+                            iter_status = "skipped"
                         except BreakInterrupt:
-                            # No partial collect on break.
-                            break
-                        # Collect while the iteration frame is still pushed so
-                        # ``from_path`` can reference the loop alias (``$.it.*``);
-                        # on continue/break/error we skip (no partial results).
-                        if collect is not None:
-                            self._collect_iteration_result(iter_ctx, ctx, collect)
+                            iter_status = "skipped"
+                            stop_loop = True
+                        except Exception as e:  # noqa: BLE001
+                            iter_status = "failed"
+                            iter_error = str(e)
+                            raise
+                        else:
+                            # Collect while the iteration frame is still pushed so
+                            # ``from_path`` can reference the loop alias (``$.it.*``);
+                            # on continue/break/error we skip (no partial results).
+                            if collect is not None:
+                                self._collect_iteration_result(iter_ctx, ctx, collect)
                     finally:
                         try:
                             await iter_tracker.wait_all()
@@ -1017,10 +1444,24 @@ class FlowRuntime:
                                     )
                                 except Exception:  # noqa: BLE001
                                     logger.exception("on_iteration_end hook failed")
+                        self._finalize_iteration_span(
+                            iter_span,
+                            iter_span_token,
+                            iter_status,
+                            iter_error,
+                            nid,
+                            iter_start,
+                            child_ids,
+                            iter_pre_snap,
+                            log_base=iter_log_base,
+                        )
+                if stop_loop:
+                    break
                 continue
 
             iter_tracker = TaskTracker(parent=tracker)
             frame = ContextFrame(node_id=nid, alias=node.alias, loop_item=it, loop_alias=node.alias)
+            stop_loop = False
             with self._pushed_frame(ctx, frame):
                 try:
                     if hooks and hooks.on_iteration_start:
@@ -1038,13 +1479,19 @@ class FlowRuntime:
                             node.children, ctx, iter_tracker, parent_id=nid
                         )
                     except ContinueInterrupt:
-                        continue
+                        iter_status = "skipped"
                     except BreakInterrupt:
-                        break
-                    # Same rationale as the fork branch: the alias frame must
-                    # still be live for ``$.alias.*`` lookups to succeed.
-                    if collect is not None:
-                        self._collect_iteration_result(ctx, ctx, collect)
+                        iter_status = "skipped"
+                        stop_loop = True
+                    except Exception as e:  # noqa: BLE001
+                        iter_status = "failed"
+                        iter_error = str(e)
+                        raise
+                    else:
+                        # Same rationale as the fork branch: the alias frame must
+                        # still be live for ``$.alias.*`` lookups to succeed.
+                        if collect is not None:
+                            self._collect_iteration_result(ctx, ctx, collect)
                 finally:
                     try:
                         await iter_tracker.wait_all()
@@ -1062,6 +1509,19 @@ class FlowRuntime:
                                 )
                             except Exception:  # noqa: BLE001
                                 logger.exception("on_iteration_end hook failed")
+                    self._finalize_iteration_span(
+                        iter_span,
+                        iter_span_token,
+                        iter_status,
+                        iter_error,
+                        nid,
+                        iter_start,
+                        child_ids,
+                        iter_pre_snap,
+                        log_base=iter_log_base,
+                    )
+            if stop_loop:
+                break
 
     async def _run_loop_concurrent(
         self,
@@ -1098,6 +1558,21 @@ class FlowRuntime:
                 if stop_requested["flag"]:
                     return
                 iter_ctx = ctx.fork(clone_global=(isolation == "fork"))
+                # Each concurrent iteration runs in its own task and thus
+                # owns its own copy of the _current_span_handle ContextVar.
+                scope_key = self._extract_scope_key(nid, raw_item, ctx, iter_ctx)
+                iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
+                iter_span_token = (
+                    self._push_span(iter_span) if iter_span != SPAN_UNSAMPLED else None
+                )
+                iter_start = time.monotonic()
+                iter_status = "success"
+                iter_error: str | None = None
+                # child_spans diff-snapshot is unreliable for concurrent
+                # iterations (transitions interleave across siblings), so
+                # we deliberately skip per-child detail and report only
+                # iteration-level totals. Users wanting per-child spans
+                # should lower concurrency to 1.
                 iter_tracker = TaskTracker(parent=None)
                 frame = ContextFrame(
                     node_id=nid,
@@ -1122,10 +1597,16 @@ class FlowRuntime:
                                 node.children, iter_ctx, iter_tracker, parent_id=nid
                             )
                         except ContinueInterrupt:
+                            iter_status = "skipped"
                             return
                         except BreakInterrupt:
+                            iter_status = "skipped"
                             stop_requested["flag"] = True
                             return
+                        except Exception as e:  # noqa: BLE001
+                            iter_status = "failed"
+                            iter_error = str(e)
+                            raise
                         # Must collect while the alias frame is still pushed so
                         # ``from_path`` of form ``$.alias.*`` can resolve; skip
                         # on continue/break/error (no partial results).
@@ -1148,6 +1629,18 @@ class FlowRuntime:
                                     )
                                 except Exception:  # noqa: BLE001
                                     logger.exception("on_iteration_end hook failed")
+                        # Close span / emit metric. No child_spans under
+                        # concurrent mode (see comment above).
+                        self._finalize_iteration_span(
+                            iter_span,
+                            iter_span_token,
+                            iter_status,
+                            iter_error,
+                            nid,
+                            iter_start,
+                            child_ids=[],
+                            pre_snap={},
+                        )
 
         coros = [one(i, it) for i, it in enumerate(items)]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -1178,22 +1671,51 @@ class FlowRuntime:
                 nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
             )
 
+        sub_span = self._open_span(nid, "subflow")
+        span_token = (
+            self._push_span(sub_span) if sub_span != SPAN_UNSAMPLED else None
+        )
+        sub_start = time.monotonic()
+        child_ids = self._direct_child_ids(node.children)
+        pre_snap = self._snapshot_transitions(child_ids)
+        log_base = self._snapshot_log_count(nid)
+        close_status = "success"
+        close_error: str | None = None
+
         sub_tracker = TaskTracker(parent=tracker)
         frame = ContextFrame(node_id=nid, alias=node.alias)
-        with self._pushed_frame(ctx, frame):
-            try:
-                await self._run_members(node.children, ctx, sub_tracker, parent_id=nid)
-            finally:
-                # Drain isolated child tracker BEFORE popping the frame so that
-                # background tasks' outputs still resolve against this subflow.
-                await sub_tracker.wait_all()
+        try:
+            with self._pushed_frame(ctx, frame):
+                try:
+                    await self._run_members(node.children, ctx, sub_tracker, parent_id=nid)
+                except BaseException as e:  # noqa: BLE001
+                    close_status = "failed"
+                    close_error = str(e)
+                    raise
+                finally:
+                    # Drain isolated child tracker BEFORE popping the frame so that
+                    # background tasks' outputs still resolve against this subflow.
+                    await sub_tracker.wait_all()
 
-        if hooks and hooks.post_exec:
-            try:
-                self._append_node_logs(
-                    nid, run_hook_script(hooks.post_exec, ctx, source="post_exec")
+            if hooks and hooks.post_exec:
+                try:
+                    self._append_node_logs(
+                        nid, run_hook_script(hooks.post_exec, ctx, source="post_exec")
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("subflow post_exec hook failed")
+
+            self._mark(nid, NodeState.SUCCESS)
+        finally:
+            if span_token is not None:
+                self._pop_span(span_token)
+            if sub_span != SPAN_UNSAMPLED:
+                self._close_span(
+                    sub_span,
+                    status=close_status,
+                    error=close_error,
+                    child_spans=self._build_child_spans(child_ids, pre_snap),
+                    logs=self._diff_node_logs(nid, log_base),
                 )
-            except Exception:  # noqa: BLE001
-                logger.exception("subflow post_exec hook failed")
-
-        self._mark(nid, NodeState.SUCCESS)
+            elapsed_ms = max(0, int((time.monotonic() - sub_start) * 1000))
+            self._emit_metric(nid, elapsed_ms, close_status)

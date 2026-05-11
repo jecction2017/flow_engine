@@ -1,4 +1,9 @@
-"""Persist test executions into ``fe_test_run`` (Test Center domain)."""
+"""Persist test executions into ``fe_test_run`` (Test Center domain).
+
+Run-detail blobs (``node_runs`` / ``flow_logs`` / ``global_ns``) have been
+removed — the detail lives in ``fe_run_span`` keyed by ``test_run_id``.
+This module is now lifecycle + listing only.
+"""
 
 from __future__ import annotations
 
@@ -69,31 +74,17 @@ def complete_test_run(
     run_id: int,
     *,
     status: str,
-    node_runs: list[dict[str, Any]] | None,
-    flow_logs: list[dict[str, Any]] | None,
-    global_ns: dict[str, Any] | None,
     error: str | None,
 ) -> None:
-    payload: dict[str, Any] = {
-        "status": status,
-        "finished_at": datetime.now(timezone.utc),
-    }
-    if node_runs is not None:
-        payload["node_runs"] = json.dumps(node_runs, ensure_ascii=False, default=str)
-    if flow_logs is not None:
-        payload["flow_logs"] = json.dumps(flow_logs, ensure_ascii=False, default=str)
-    if global_ns is not None:
-        ns = dict(global_ns)
-        ns.pop("dictionary", None)
-        payload["global_ns"] = json.dumps(ns, ensure_ascii=False, default=str)
-    if error:
-        payload["error"] = error
+    """Finalize a test run. Detailed execution data is in ``fe_run_span``."""
     with db_session() as s:
         row = s.get(FeTestRun, int(run_id))
         if row is None:
             return
-        for k, v in payload.items():
-            setattr(row, k, v)
+        row.status = status
+        row.finished_at = datetime.now(timezone.utc)
+        if error:
+            row.error = error
 
 
 def fail_test_run(run_id: int, error: str) -> None:
@@ -181,21 +172,9 @@ def get_test_run_detail(run_id: int) -> dict[str, Any] | None:
             "status": row.status,
             "started_at": utc_isoformat(row.started_at),
             "finished_at": utc_isoformat(row.finished_at),
-            "node_runs": _safe_json_load(row.node_runs),
-            "flow_logs": _safe_json_load(row.flow_logs),
-            "global_ns": _safe_json_load(row.global_ns),
             "error": row.error,
             "evaluation": evaluation,
         }
-
-
-def _safe_json_load(value: str | None) -> Any:
-    if value is None or value == "":
-        return None
-    try:
-        return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return value
 
 
 def summarize_batch_runs(test_batch_id: int, *, failure_limit: int = 10) -> dict[str, Any]:
@@ -286,4 +265,3 @@ def compare_test_batches(left_batch_id: int, right_batch_id: int) -> dict[str, A
         sl, sr = _brief(l), _brief(r)
         cases.append({"case_key": k, "left": sl, "right": sr, "changed": sl != sr})
     return {"left_batch_id": int(left_batch_id), "right_batch_id": int(right_batch_id), "cases": cases}
-

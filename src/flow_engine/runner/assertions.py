@@ -96,7 +96,7 @@ def evaluate_assertions(
     global_ns: dict[str, Any],
     rules: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return a structured evaluation payload for persistence on ``FeFlowRun.evaluation``."""
+    """Return a structured evaluation payload for persistence on ``FeTestRun.evaluation``."""
     if flow_state != FlowState.COMPLETED:
         return {
             "verdict": "fail",

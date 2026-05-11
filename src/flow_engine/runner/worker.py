@@ -34,10 +34,12 @@ from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import FlowState
+from flow_engine.engine.observability import RunRef
 from flow_engine.engine.orchestrator import FlowRuntime
-from flow_engine.runner import deploy_persistence
+from flow_engine.runner import deploy_persistence, span_persistence
 from flow_engine.runner.exceptions import RunnerConfigError
 from flow_engine.runner.models import CapabilityRule, RunMode, RunOptions
+from flow_engine.runner.obs_backend import AsyncBufferedDBBackend, parse_obs_config
 from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import (
     DEFAULT_PROFILE_ID,
@@ -62,7 +64,8 @@ _load_dotenv()
 HEARTBEAT_INTERVAL_S = float(os.environ.get("FLOW_WORKER_HEARTBEAT_S", "10"))
 ASSIGNMENT_POLL_INTERVAL_S = float(os.environ.get("FLOW_WORKER_POLL_S", "2"))
 DEAD_THRESHOLD_S = float(os.environ.get("FLOW_WORKER_DEAD_THRESHOLD_S", "30"))
-RESIDENT_STATS_INTERVAL_S = float(os.environ.get("FLOW_WORKER_RESIDENT_STATS_S", "60"))
+# Periodic purge of expired span rows (per-deployment retention is honoured).
+SPAN_PURGE_INTERVAL_S = float(os.environ.get("FLOW_WORKER_SPAN_PURGE_S", "3600"))
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +174,21 @@ def _read_deployment(deployment_id: int) -> dict[str, Any] | None:
             "status": row.status,
             "env_profile_code": row.env_profile_code,
             "parent_deployment_id": row.parent_deployment_id,
+            "observability": row.observability or {},
         }
+
+
+def _list_all_observability() -> list[tuple[int, dict[str, Any]]]:
+    """Return (deployment_id, observability_config) for purging.
+
+    Loaded directly inside the purge loop so policy edits are picked up
+    without restarting the worker.
+    """
+    with db_session() as s:
+        stmt = select(FeFlowDeployment.id, FeFlowDeployment.observability).where(
+            FeFlowDeployment.deleted_at.is_(None)
+        )
+        return [(int(dep_id), obs or {}) for dep_id, obs in s.execute(stmt).all()]
 
 
 def _read_flow_body(flow_code: str, ver_no: int) -> dict[str, Any]:
@@ -252,6 +269,12 @@ class Worker:
         logger.info("worker started worker_id=%s", self.worker_id)
         self._tasks.append(asyncio.create_task(self._heartbeat_loop()))
         self._tasks.append(asyncio.create_task(self._poll_assignments()))
+        # Single worker process is sufficient for span purging — the
+        # operation is idempotent (delete-by-date), and only one of the
+        # cluster's workers running it is enough. Using a simple
+        # always-on loop is operationally cheaper than coordinator
+        # election for this background sweeper.
+        self._tasks.append(asyncio.create_task(self._purge_loop()))
 
     async def stop(self) -> None:
         self._stop_evt.set()
@@ -327,6 +350,72 @@ class Worker:
         except asyncio.CancelledError:
             return
 
+    async def _purge_loop(self) -> None:
+        """Periodically drop expired rows from ``fe_run_span``.
+
+        Reads per-deployment ``observability.span_retention_days`` and
+        applies the smallest configured value (defensive default = 3
+        days) as the global purge horizon. Per-deployment retention is
+        honoured because the purge is keyed by ``deploy_run_id``.
+        """
+        try:
+            while not self._stop_evt.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._stop_evt.wait(), timeout=SPAN_PURGE_INTERVAL_S
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    items = await asyncio.to_thread(_list_all_observability)
+                except Exception:  # noqa: BLE001
+                    logger.exception("obs config load failed for purge loop")
+                    continue
+                # Group deployments by retention so we only run a small
+                # number of purge passes per cycle.
+                from flow_engine.db.models import FeDeployRun  # local to avoid circular cost
+                from sqlalchemy import select as _select
+
+                # Build {retention_days: [deployment_ids...]}
+                buckets: dict[int, list[int]] = {}
+                for dep_id, raw in items:
+                    cfg = parse_obs_config(raw or {})
+                    buckets.setdefault(cfg.span_retention_days, []).append(dep_id)
+
+                for retention, dep_ids in buckets.items():
+                    if not dep_ids:
+                        continue
+                    # Find the deploy_run rows whose deployment lives in
+                    # this retention bucket so we can purge per run.
+                    try:
+                        def _fetch_run_ids() -> list[int]:
+                            with db_session() as s:
+                                stmt = _select(FeDeployRun.id).where(
+                                    FeDeployRun.deployment_id.in_(dep_ids)
+                                )
+                                return [int(x) for x in s.execute(stmt).scalars().all()]
+
+                        run_ids = await asyncio.to_thread(_fetch_run_ids)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("purge loop: list runs failed")
+                        continue
+                    for rid in run_ids:
+                        try:
+                            await asyncio.to_thread(
+                                span_persistence.purge_old_spans,
+                                retention_days=int(retention),
+                                deploy_run_id=int(rid),
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "purge_old_spans failed run_id=%s retention=%s",
+                                rid,
+                                retention,
+                            )
+        except asyncio.CancelledError:
+            return
+
     # ---------------- deployment dispatch ----------------
 
     def _start_assignment(self, deployment_id: int, info: dict[str, Any]) -> None:
@@ -378,6 +467,7 @@ class Worker:
         deployment_id = int(deployment["id"])
         st = str(deployment.get("schedule_type") or "once")
         run_id: int | None = None
+        backend: AsyncBufferedDBBackend | None = None
         try:
             if st == "cron":
                 run_id = await asyncio.to_thread(
@@ -391,29 +481,48 @@ class Worker:
                         deployment_id,
                     )
                     return
-                run_id, runtime, profile_id = await self._prepare_runtime(
+                run_id, runtime, profile_id, backend = await self._prepare_runtime(
                     deployment,
                     trigger_context=None,
                     existing_run_id=run_id,
                 )
             else:
-                run_id, runtime, profile_id = await self._prepare_runtime(
+                run_id, runtime, profile_id, backend = await self._prepare_runtime(
                     deployment, trigger_context=None
                 )
-            with profile_scope(profile_id):
-                result = await runtime.run()
+            await backend.start()
+            try:
+                with profile_scope(profile_id):
+                    result = await runtime.run()
+            finally:
+                # Drain (and stop) the obs backend BEFORE marking the
+                # run complete so the UI sees consistent counters.
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    logger.exception("obs backend drain failed run_id=%s", run_id)
             await asyncio.to_thread(
-                    deploy_persistence.complete_deploy_run, run_id, result, is_resident=False
+                deploy_persistence.complete_deploy_run, run_id, result
             )
             if st == "once":
                 final = "stopped" if result.state == FlowState.COMPLETED else "failed"
                 await asyncio.to_thread(_set_deployment_status, deployment_id, final)
         except asyncio.CancelledError:
+            if backend is not None:
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    pass
             if run_id is not None:
                 await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
             raise
         except Exception as e:  # noqa: BLE001
             logger.exception("once/cron run failed deployment_id=%s", deployment_id)
+            if backend is not None:
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    pass
             if run_id is not None:
                 await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
             if st == "once":
@@ -428,41 +537,43 @@ class Worker:
 
         while not self._stop_evt.is_set():
             run_id: int | None = None
-            stats_task: asyncio.Task[Any] | None = None
+            backend: AsyncBufferedDBBackend | None = None
             try:
-                run_id, runtime, profile_id = await self._prepare_runtime(
+                run_id, runtime, profile_id, backend = await self._prepare_runtime(
                     deployment, trigger_context=None
                 )
-                stats_task = asyncio.create_task(
-                    self._resident_stats_loop(run_id, runtime)
-                )
-                with profile_scope(profile_id):
-                    result = await runtime.run()
-                # Stop the stats loop and persist a final aggregate
-                stats_task.cancel()
+                await backend.start()
                 try:
-                    await stats_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                    with profile_scope(profile_id):
+                        result = await runtime.run()
+                finally:
+                    try:
+                        await backend.drain()
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "obs backend drain failed run_id=%s", run_id
+                        )
                 await asyncio.to_thread(
-                    deploy_persistence.complete_deploy_run, run_id, result, is_resident=True
+                    deploy_persistence.complete_deploy_run, run_id, result
                 )
                 # resident 流程正常退出（用户主动 terminate）：标记 stopped 并退出循环。
                 await asyncio.to_thread(_set_deployment_status, deployment_id, "stopped")
                 return
             except asyncio.CancelledError:
-                if stats_task and not stats_task.done():
-                    stats_task.cancel()
+                if backend is not None:
+                    try:
+                        await backend.drain()
+                    except Exception:  # noqa: BLE001
+                        pass
                 if run_id is not None:
                     await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.exception("resident run failed deployment_id=%s", deployment_id)
-                if stats_task and not stats_task.done():
-                    stats_task.cancel()
+                if backend is not None:
                     try:
-                        await stats_task
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        await backend.drain()
+                    except Exception:  # noqa: BLE001
                         pass
                 if run_id is not None:
                     await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
@@ -486,32 +597,6 @@ class Worker:
                 except asyncio.TimeoutError:
                     continue
 
-    async def _resident_stats_loop(
-        self, run_id: int, runtime: FlowRuntime
-    ) -> None:
-        """Periodically flush iteration_count + node_stats while runtime is alive.
-
-        Reads from the live ``runtime._node_runs`` snapshot — non-invasive, no
-        engine hook changes needed.
-        """
-        try:
-            while True:
-                await asyncio.sleep(RESIDENT_STATS_INTERVAL_S)
-                try:
-                    runs = list(runtime._node_runs.values())  # noqa: SLF001
-                    stats = deploy_persistence._aggregate_node_stats(runs)  # noqa: SLF001
-                    iter_count = sum(r.execution_count for r in runs)
-                    await asyncio.to_thread(
-                        deploy_persistence.update_node_stats, run_id, stats
-                    )
-                    await asyncio.to_thread(
-                        deploy_persistence.update_iteration_count, run_id, iter_count
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("resident stats flush failed")
-        except asyncio.CancelledError:
-            return
-
     # ---------------- runtime construction ----------------
 
     async def _prepare_runtime(
@@ -520,7 +605,7 @@ class Worker:
         *,
         trigger_context: dict[str, Any] | None,
         existing_run_id: int | None = None,
-    ) -> tuple[int, FlowRuntime, str]:
+    ) -> tuple[int, FlowRuntime, str, AsyncBufferedDBBackend]:
         flow_code = deployment["flow_code"]
         ver_no = int(deployment["ver_no"])
         flow_data = await asyncio.to_thread(_read_flow_body, flow_code, ver_no)
@@ -548,29 +633,49 @@ class Worker:
             deployment_capability_policy=rules,
             profile_system_capability_policy=profile_rules,
         )
+
+        # Resolve or create the run row first — we need its id for the
+        # observability backend's RunRef.
+        if existing_run_id is not None:
+            run_id = int(existing_run_id)
+        else:
+            run_id = await asyncio.to_thread(
+                deploy_persistence.create_deploy_run,
+                deployment_id=int(deployment["id"]),
+                worker_id=self.worker_id,
+                flow_code=flow_code,
+                ver_no=ver_no,
+                mode=mode,
+                schedule_type=str(deployment.get("schedule_type") or "once"),
+                trigger_type="manual",
+                trigger_context=trigger_context,
+            )
+
+        obs_cfg = parse_obs_config(deployment.get("observability") or {})
+        # Resident flows have no natural end — opening a flow_root span
+        # would leak memory and would never close, holding every child
+        # span as "pending". once / cron / test runs get the root.
+        schedule_type = str(deployment.get("schedule_type") or "once")
+        emit_flow_root_span = schedule_type != "resident"
+        backend = AsyncBufferedDBBackend(
+            run_ref=RunRef(deploy_run_id=run_id),
+            flow_code=flow_code,
+            obs_cfg=obs_cfg,
+            emit_flow_root_span=emit_flow_root_span,
+        )
+
         runtime = FlowRuntime(
             flow,
             dictionary=resolved["resolved_dictionary"],
             run_opts=run_opts,
+            obs=backend,
+            flow_code=flow_code,
         )
+        runtime._obs_run_ref = RunRef(deploy_run_id=run_id)  # type: ignore[attr-defined]
         if trigger_context:
             runtime.ctx.global_ns.update(trigger_context)
 
-        if existing_run_id is not None:
-            return int(existing_run_id), runtime, profile_id
-
-        run_id = await asyncio.to_thread(
-            deploy_persistence.create_deploy_run,
-            deployment_id=int(deployment["id"]),
-            worker_id=self.worker_id,
-            flow_code=flow_code,
-            ver_no=ver_no,
-            mode=mode,
-            schedule_type=str(deployment.get("schedule_type") or "once"),
-            trigger_type="manual",
-            trigger_context=trigger_context,
-        )
-        return run_id, runtime, profile_id
+        return run_id, runtime, profile_id, backend
 
 
 # ---------------------------------------------------------------------------

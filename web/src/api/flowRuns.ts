@@ -1,6 +1,18 @@
-/** REST client for `/api/flow-runs` (run 历史 / 详情). */
-
-import type { LogEntry, NodeRunInfo } from "@/api/flows";
+/** REST client for run-detail entry points (deploy / test).
+ *
+ * The flow engine has split detail into two cheap dimensions:
+ *
+ *   * `FlowRunDetail` keeps lifecycle metadata + rollup counters only
+ *     (`span_count` / `sampled_span_count`); per-execution trace lives
+ *     in `fe_run_span` and is queried via the dedicated spans API
+ *     (see `@/api/spans`).
+ *   * `FlowRunSummary` is the list-row projection used by deploy runs
+ *     / test batch runs / overview.
+ *
+ * NodeRunInfo / NodeStats / flow_logs from the legacy contract have
+ * been removed (the data no longer exists on the backend rows). For
+ * any per-node aggregate, use metrics summary (`@/api/metrics`).
+ */
 
 async function checkOk(r: Response): Promise<Response> {
   if (!r.ok) {
@@ -38,9 +50,15 @@ export type FlowRunSummary = {
   worker_id: string | null;
   started_at: string | null;
   finished_at: string | null;
-  iteration_count: number | null;
   error: string | null;
-  /** 测试批次下列表专用 */
+  /** 部署运行：累计触发的 Span 总数（采样前）。仅 deploy_runs 提供。 */
+  span_count?: number | null;
+  /** 部署运行：实际写库的 Span 数量（即被采样的样本）。仅 deploy_runs 提供。 */
+  sampled_span_count?: number | null;
+  /** 调度类型：resident / once / cron / test，影响详情页布局。 */
+  schedule_type?: string | null;
+  trigger_type?: string | null;
+  /** 测试批次专用列。 */
   case_index?: number | null;
   case_key?: string | null;
   verdict?: string | null;
@@ -55,22 +73,13 @@ export type FlowRunsListResponse = {
 };
 
 /**
- * resident 流程 ``node_stats`` 的聚合形态（见 runner/persistence._aggregate_node_stats）；
- * 当前结构为 ``per_node[node_id] = { count, success, failed, avg_ms, p99_ms }``。
+ * Lifecycle + rollup view of one run.
+ *
+ * Detailed execution trace is NOT in here — query
+ *   `/api/deploy-runs/{id}/spans` or `/api/test-runs/{id}/spans`
+ * to enumerate spans, then `/api/spans/{span_id}` for a specific
+ * sample's children / logs / attributes.
  */
-export type NodeStatRecord = {
-  count: number;
-  success: number;
-  failed: number;
-  avg_ms: number;
-  p99_ms: number;
-};
-
-export type NodeStats = {
-  per_node: Record<string, NodeStatRecord>;
-  last_updated_at: string;
-};
-
 export type FlowRunDetail = {
   id: number;
   deployment_id: number | null;
@@ -80,17 +89,19 @@ export type FlowRunDetail = {
   flow_code: string;
   ver_no: number;
   mode: string;
+  schedule_type?: string | null;
+  trigger_type?: string | null;
   trigger_context: Record<string, unknown> | null;
   status: FlowRunStatus;
   started_at: string | null;
   finished_at: string | null;
-  iteration_count: number | null;
-  /** once / cron / test 流程：完整 NodeRunInfo[]；resident 流程为 null。 */
-  node_runs: NodeRunInfo[] | null;
-  /** resident 流程：聚合统计；其它为 null。 */
-  node_stats: NodeStats | null;
-  flow_logs: LogEntry[] | null;
-  global_ns?: Record<string, unknown> | null;
+  /** 部署运行：累计触发的 Span 总数（含未采样）。 */
+  span_count?: number | null;
+  /** 部署运行：实际写库的 Span 数量。 */
+  sampled_span_count?: number | null;
+  /** 测试运行/test_batch 子运行：case 标识。 */
+  case_index?: number | null;
+  case_key?: string | null;
   error: string | null;
   evaluation?: RunEvaluation | null;
 };
@@ -120,3 +131,6 @@ export async function getFlowRun(runId: number): Promise<FlowRunDetail> {
     "Deprecated: /api/flow-runs/{id} has been removed. Use /api/deploy-runs/{id} (Run Center) or /api/test-batches/{batch}/runs/{id} (Test Center).",
   );
 }
+
+// Re-export for legacy imports.
+export { checkOk as _checkOk };

@@ -601,15 +601,16 @@
                     <th style="width:80px">mode</th>
                     <th style="width:170px">started_at</th>
                     <th style="width:110px">耗时</th>
+                    <th style="width:130px" title="累计 / 采样 Span 数">spans</th>
                     <th>worker</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-if="loadingDepRuns">
-                    <td colspan="6" class="muted center">加载中…</td>
+                    <td colspan="7" class="muted center">加载中…</td>
                   </tr>
                   <tr v-else-if="!depRunsResp || depRunsResp.runs.length === 0">
-                    <td colspan="6" class="muted center">暂无运行记录</td>
+                    <td colspan="7" class="muted center">暂无运行记录</td>
                   </tr>
                   <tr
                     v-for="r in depRunsResp?.runs ?? []"
@@ -625,6 +626,9 @@
                     <td><span class="tag mode">{{ r.mode }}</span></td>
                     <td class="mono small">{{ formatTs(r.started_at) }}</td>
                     <td class="mono small">{{ runElapsed(r) }}</td>
+                    <td class="mono small" :title="`总 ${r.span_count ?? 0} / 采样 ${r.sampled_span_count ?? 0}`">
+                      {{ formatSpanCounters(r) }}
+                    </td>
                     <td class="mono small">
                       {{ r.worker_id ?? "—" }}
                       <button
@@ -709,14 +713,17 @@
             <th style="width:110px">状态</th>
             <th style="width:160px">started_at</th>
             <th style="width:120px">耗时</th>
+            <th style="width:130px" title="累计触发的 Span 数（采样前） / 实际写库数（采样后）">
+              spans
+            </th>
             <th>worker</th>
             <th style="width:100px">deployment</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loadingRuns"><td colspan="9" class="muted center">加载中…</td></tr>
+          <tr v-if="loadingRuns"><td colspan="10" class="muted center">加载中…</td></tr>
           <tr v-else-if="!runsResp || runsResp.runs.length === 0">
-            <td colspan="9" class="muted center">暂无运行记录</td>
+            <td colspan="10" class="muted center">暂无运行记录</td>
           </tr>
           <tr
             v-for="r in runsResp?.runs ?? []"
@@ -736,6 +743,9 @@
             <td><span class="tag" :class="runStatusTag(r.status)">{{ r.status }}</span></td>
             <td class="mono small">{{ formatTs(r.started_at) }}</td>
             <td class="mono small">{{ runElapsed(r) }}</td>
+            <td class="mono small" :title="`总 ${r.span_count ?? 0} / 采样 ${r.sampled_span_count ?? 0}`">
+              {{ formatSpanCounters(r) }}
+            </td>
             <td class="mono small">{{ r.worker_id ?? "—" }}</td>
             <td class="mono small">{{ r.deployment_id ? `#${r.deployment_id}` : "—" }}</td>
           </tr>
@@ -1411,6 +1421,21 @@ function runElapsed(r: FlowRunSummary): string {
   if (diff < 60_000) return `${(diff / 1000).toFixed(2)}s`;
   if (diff < 3600_000) return `${(diff / 60_000).toFixed(1)}min`;
   return `${(diff / 3600_000).toFixed(1)}h`;
+}
+
+/** Compact spans column: ``总 / 采样`` with short formatting. */
+function formatSpanCounters(r: FlowRunSummary): string {
+  const total = r.span_count;
+  const sampled = r.sampled_span_count;
+  if (total == null && sampled == null) return "—";
+  return `${shortNum(total)} / ${shortNum(sampled)}`;
+}
+
+function shortNum(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 watch(

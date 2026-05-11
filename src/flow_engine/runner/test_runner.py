@@ -1,7 +1,8 @@
 """Lookup-namespace-driven test runner.
 
 每行 lookup namespace 数据 → 一次 ``RunMode.DEBUG`` 流程运行 → 一条
-``fe_flow_run``；可选断言规则写入 ``FeFlowRun.evaluation``。
+``fe_test_run``；可选断言规则写入 ``FeTestRun.evaluation``，详细执行
+轨迹写入 ``fe_run_span``（test_run_id=run_id）。
 
 并发由 ``asyncio.Semaphore`` 控制；DB 访问全部经 ``asyncio.to_thread``。
 """
@@ -279,12 +280,37 @@ async def _run_single_test_case(
         trigger_context={"row": test_input, "mapped": mapped_ctx},
     )
 
+    # Wire an observability backend so the test domain also produces
+    # spans in ``fe_run_span`` (keyed by test_run_id). Tests always run
+    # at full sampling — they are bounded and the user is intentionally
+    # inspecting them.
+    from flow_engine.engine.observability import RunRef
+    from flow_engine.runner.obs_backend import (
+        AsyncBufferedDBBackend,
+        ObsRuntimeConfig,
+    )
+
+    obs_cfg = ObsRuntimeConfig()  # defaults: 1.0 rate, ERROR-only logs
+    backend = AsyncBufferedDBBackend(
+        run_ref=RunRef(test_run_id=run_id),
+        flow_code=flow_code,
+        obs_cfg=obs_cfg,
+    )
+    runtime.obs = backend
+    runtime.flow_code = flow_code
+    runtime._obs_run_ref = RunRef(test_run_id=run_id)  # type: ignore[attr-defined]
+
     success = False
     try:
-        with profile_scope(profile_code):
-            result = await runtime.run()
-        node_runs = [r.to_dict() for r in result.node_runs]
-        flow_logs = list(result.flow_logs)
+        await backend.start()
+        try:
+            with profile_scope(profile_code):
+                result = await runtime.run()
+        finally:
+            try:
+                await backend.drain()
+            except Exception:  # noqa: BLE001
+                logger.exception("obs drain failed for test run_id=%s", run_id)
         gns = dict(getattr(result.context, "global_ns", {}) or {})
         gns.pop("dictionary", None)
         from flow_engine.engine.models import FlowState as _FS
@@ -294,9 +320,6 @@ async def _run_single_test_case(
             test_persistence.complete_test_run,
             run_id,
             status=status,
-            node_runs=node_runs,
-            flow_logs=flow_logs,
-            global_ns=gns,
             error=result.message,
         )
         rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
@@ -311,6 +334,10 @@ async def _run_single_test_case(
         success = result.state == _FS.COMPLETED
     except Exception as e:  # noqa: BLE001
         logger.exception("test run failed (run_id=%s)", run_id)
+        try:
+            await backend.drain()
+        except Exception:  # noqa: BLE001
+            pass
         await asyncio.to_thread(test_persistence.fail_test_run, run_id, str(e))
         await asyncio.to_thread(
             test_persistence.set_test_run_evaluation,
