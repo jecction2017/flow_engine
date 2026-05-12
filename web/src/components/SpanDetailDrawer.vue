@@ -1,12 +1,14 @@
 <template>
-  <aside class="span-drawer">
+  <aside class="span-drawer" :class="{ inline: layout === 'inline' }">
     <header class="sd-head">
       <div class="sd-title">
         <span class="sd-id mono">#{{ span.id }}</span>
         <span class="sd-node mono" :title="span.node_id">{{ span.node_id }}</span>
         <span class="badge type">{{ span.node_type }}</span>
         <span class="badge" :class="spanStatusClass(span.status)">{{ span.status }}</span>
-        <button type="button" class="btn ghost small close-btn" @click="emit('close')">关闭</button>
+        <button type="button" class="btn ghost small close-btn" @click="emit('close')">
+          {{ layout === "inline" ? "收起" : "关闭" }}
+        </button>
       </div>
       <div class="sd-meta">
         <span v-if="span.scope_key" class="muted" :title="`scope_key=${span.scope_key}`">
@@ -142,7 +144,9 @@ import {
 const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
 
-const props = defineProps<{ span: SpanDetail }>();
+const props = withDefaults(defineProps<{ span: SpanDetail; layout?: "drawer" | "inline" }>(), {
+  layout: "drawer",
+});
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "navigate", spanId: number): void;
@@ -247,6 +251,14 @@ function formatTs(iso: string | null | undefined): string {
   background: var(--surface);
   min-width: 360px;
   max-width: 100%;
+}
+
+.span-drawer.inline {
+  border-left: none;
+  border-radius: 8px;
+  min-width: 0;
+  padding: 10px;
+  background: #fff;
 }
 
 .sd-head {

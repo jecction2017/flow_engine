@@ -1109,28 +1109,32 @@ function nodeChoicesFromDoc(doc: FlowDocument | null | undefined): Array<{ id: s
     .filter((x) => x.id);
 }
 
+function asFlowDocument(raw: Record<string, unknown>): FlowDocument {
+  return raw as unknown as FlowDocument;
+}
+
 async function resolvePlanFlowDocument(flowId: string, versionChannel: string): Promise<FlowDocument | null> {
   const ch = (versionChannel || "latest").trim();
   try {
     if (ch === "draft") {
       try {
-        return (await fetchDraft(flowId)) as FlowDocument;
+        return asFlowDocument(await fetchDraft(flowId));
       } catch {
         const vl = await fetchVersionList(flowId);
-        if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
+        if (vl.latest_version > 0) return asFlowDocument(await fetchVersion(flowId, vl.latest_version));
         return null;
       }
     }
     if (ch === "latest") {
       const vl = await fetchVersionList(flowId);
-      if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
-      if (vl.has_draft) return (await fetchDraft(flowId)) as FlowDocument;
+      if (vl.latest_version > 0) return asFlowDocument(await fetchVersion(flowId, vl.latest_version));
+      if (vl.has_draft) return asFlowDocument(await fetchDraft(flowId));
       return null;
     }
     const m = /^v?(\d+)$/.exec(ch);
-    if (m) return (await fetchVersion(flowId, parseInt(m[1], 10))) as FlowDocument;
+    if (m) return asFlowDocument(await fetchVersion(flowId, parseInt(m[1], 10)));
     const vl = await fetchVersionList(flowId);
-    if (vl.latest_version > 0) return (await fetchVersion(flowId, vl.latest_version)) as FlowDocument;
+    if (vl.latest_version > 0) return asFlowDocument(await fetchVersion(flowId, vl.latest_version));
     return null;
   } catch {
     return null;
@@ -1167,13 +1171,13 @@ async function loadMockNodeOptionsForBatch() {
     let doc: FlowDocument | null = null;
     if (form.use_draft) {
       try {
-        doc = (await fetchDraft(fc)) as FlowDocument;
+        doc = asFlowDocument(await fetchDraft(fc));
       } catch {
         const vl = await fetchVersionList(fc);
-        if (vl.latest_version > 0) doc = (await fetchVersion(fc, vl.latest_version)) as FlowDocument;
+        if (vl.latest_version > 0) doc = asFlowDocument(await fetchVersion(fc, vl.latest_version));
       }
     } else if (form.ver_no > 0) {
-      doc = (await fetchVersion(fc, form.ver_no)) as FlowDocument;
+      doc = asFlowDocument(await fetchVersion(fc, form.ver_no));
     }
     mockNodeOptions.value = nodeChoicesFromDoc(doc);
   } finally {

@@ -111,6 +111,8 @@ export type NodeRunInfo = {
   duration_ms: number | null;
   final_state: string;
   parent_id?: string | null;
+  /** When set, parent row key is this ``order`` (disambiguates same ``parent_id``). */
+  parent_order?: number | null;
   iterations?: number | null;
   execution_count?: number;
   transitions: NodeRunTransition[];

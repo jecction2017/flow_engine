@@ -429,10 +429,12 @@ async def test_result_exposes_node_runs_timeline() -> None:
 async def test_node_runs_record_tree_hierarchy_and_iterations() -> None:
     """Loop / subflow children must be linked to their structural parent.
 
-    The Flow Studio run panel groups rows by ``parent_id`` to render the
-    execution tree, so a regression here would flatten the visualization.
-    ``iterations`` on the loop and ``execution_count`` on its children
-    together tell the user how often each leaf ran.
+    The Flow Studio run panel groups rows by ``parent_id`` / ``parent_order``
+    to render the execution tree, so a regression here would flatten the
+    visualization.
+    Sequential loops emit one ``NodeRunInfo`` per iteration for the loop node
+    so each body's rows attach under the correct pass. ``execution_count`` on
+    children counts passes within that row (one STAGING… terminal chain each).
     """
     flow = _flow(
         """
@@ -479,17 +481,37 @@ async def test_node_runs_record_tree_hierarchy_and_iterations() -> None:
     )
     res = await FlowRuntime(flow).run()
     assert res.state == FlowState.COMPLETED
-    by_id = {r.node_id: r for r in res.node_runs}
-    assert by_id["root_task"].parent_id is None
-    assert by_id["main_loop"].parent_id is None
-    assert by_id["leaf_a"].parent_id == "main_loop"
-    assert by_id["inner_subflow"].parent_id == "main_loop"
-    assert by_id["deep_leaf"].parent_id == "inner_subflow"
-    # Loop ran across 3 items, and every child should have been staged once
-    # per iteration (execution_count counts STAGING + SKIPPED transitions).
-    assert by_id["main_loop"].iterations == 3
-    assert by_id["leaf_a"].execution_count == 3
-    assert by_id["deep_leaf"].execution_count == 3
+    root_task = next(r for r in res.node_runs if r.node_id == "root_task")
+    main_loop_runs = sorted(
+        (r for r in res.node_runs if r.node_id == "main_loop"),
+        key=lambda r: r.order,
+    )
+    assert root_task.parent_id is None
+    assert root_task.parent_order is None
+    assert len(main_loop_runs) == 3
+    assert all(r.parent_id is None for r in main_loop_runs)
+    assert all(r.parent_order is None for r in main_loop_runs)
+    leaf_runs = [r for r in res.node_runs if r.node_id == "leaf_a"]
+    inner_runs = [r for r in res.node_runs if r.node_id == "inner_subflow"]
+    deep_runs = [r for r in res.node_runs if r.node_id == "deep_leaf"]
+    assert len(leaf_runs) == 3
+    assert len(inner_runs) == 3
+    assert len(deep_runs) == 3
+    assert all(r.parent_id == "main_loop" for r in leaf_runs)
+    assert all(r.parent_id == "main_loop" for r in inner_runs)
+    assert all(r.parent_id == "inner_subflow" for r in deep_runs)
+    loops_by_order = {r.order: r for r in main_loop_runs}
+    for r in leaf_runs + inner_runs:
+        assert r.parent_order is not None
+        assert r.parent_order in loops_by_order
+    inners_by_order = {r.order: r for r in inner_runs}
+    for d in deep_runs:
+        assert d.parent_order is not None
+        assert d.parent_order in inners_by_order
+    # Each loop iteration is a separate ``NodeRunInfo`` row; execution_count
+    # counts passes within that row (one STAGING… terminal chain each).
+    assert sum(r.execution_count for r in leaf_runs) == 3
+    assert sum(r.execution_count for r in deep_runs) == 3
 
 
 def test_compiler_rejects_retry_with_zero_retry_count() -> None:

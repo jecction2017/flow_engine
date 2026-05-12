@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
 from contextvars import ContextVar, copy_context
@@ -113,10 +114,12 @@ class NodeRunInfo:
 
     Timestamps are relative milliseconds from the moment ``FlowRuntime.run``
     entered :attr:`FlowState.RUNNING` so that consumers can plot a timeline
-    without knowing the wall-clock start. ``order`` is the 0-based index in
-    which the node was first observed by the scheduler -- this is what drives
-    the "execution sequence" column in the UI and is stable across reruns of
-    deterministic flows.
+    without knowing the wall-clock start. ``order`` is a monotonic 0-based
+    index assigned when this row is created (each loop iteration / re-dispatch
+    after a terminal state gets a new row). The UI keys tree rows on ``order``
+    so repeated ``node_id`` values stay distinct. When the engine sets
+    :attr:`parent_order`, consumers must attach the row under that exact parent
+    row key; otherwise fall back to :attr:`parent_id` plus timeline order.
     """
 
     node_id: str
@@ -126,6 +129,14 @@ class NodeRunInfo:
     finished_ms: int | None = None
     final_state: NodeState = NodeState.INITIALIZED
     parent_id: str | None = None
+    #: Row key in :attr:`FlowRuntime._node_runs_list` for the structural parent
+    #: (same as that row's :attr:`order`). When set, UIs attach this run under
+    #: that exact parent row — required when the same ``parent_id`` node id
+    #: appears on multiple rows (loop iterations, retries) and child work may
+    #: interleave (async loop concurrency).
+    parent_order: int | None = None
+    #: Iterable length for loop rows when the engine stamps a total count
+    #: (e.g. concurrent loop); otherwise ``None``.
     iterations: int | None = None
     transitions: list[dict[str, Any]] = field(default_factory=list)
     # Log entries emitted by this node's task script AND its hooks
@@ -177,6 +188,7 @@ class NodeRunInfo:
             "duration_ms": self.duration_ms,
             "final_state": self.final_state.value,
             "parent_id": self.parent_id,
+            "parent_order": self.parent_order,
             "iterations": self.iterations,
             "execution_count": self.execution_count,
             "transitions": list(self.transitions),
@@ -228,7 +240,10 @@ class FlowRuntime:
         self.ctx.global_ns["dictionary"] = copy.deepcopy(self.dictionary)
         self.flow_state: FlowState = FlowState.PENDING
         self.node_state: dict[str, NodeState] = {}
-        self._node_runs: dict[str, NodeRunInfo] = {}
+        # One ``NodeRunInfo`` per scheduler *pass* (loop iterations are separate
+        # rows). ``order`` is the global append index — UI/timeline keys on it.
+        self._node_runs_list: list[NodeRunInfo] = []
+        self._runs_lock = threading.RLock()
         self._flow_logs: list[dict[str, Any]] = []
         self._t0: float | None = None
         self._root_tracker = TaskTracker()
@@ -250,33 +265,84 @@ class FlowRuntime:
             return 0
         return max(0, int((time.monotonic() - self._t0) * 1000))
 
-    def _mark(self, nid: str, st: NodeState, *, parent_id: str | None = None) -> None:
+    def _latest_run_for_nid_unlocked(self, nid: str) -> NodeRunInfo | None:
+        for r in reversed(self._node_runs_list):
+            if r.node_id == nid:
+                return r
+        return None
+
+    def _mark(
+        self,
+        nid: str,
+        st: NodeState,
+        *,
+        parent_id: str | None = None,
+        parent_order: int | None = None,
+        force_new: bool = False,
+    ) -> int:
+        """Update or create the latest ``NodeRunInfo`` for ``nid``; return its ``order``.
+
+        ``force_new`` starts a fresh row even when the previous row for ``nid`` is
+        still non-terminal — required when concurrent loop iterations each need
+        their own timeline row and may interleave ``RUNNING`` marks.
+        """
         self.node_state[nid] = st
         t = self._now_ms()
-        info = self._node_runs.get(nid)
-        if info is None:
-            info = NodeRunInfo(
-                node_id=nid,
-                order=len(self._node_runs),
-                first_seen_ms=t,
-                final_state=st,
-                parent_id=parent_id,
+        terminal = (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED)
+        restart_states = (NodeState.STAGING, NodeState.DISPATCHED, NodeState.RUNNING)
+        with self._runs_lock:
+            last = self._latest_run_for_nid_unlocked(nid)
+            start_new = force_new or last is None or (
+                last.final_state in terminal and st in restart_states
             )
-            self._node_runs[nid] = info
-        # `parent_id` is only authoritative on the FIRST observation. If a
-        # loop child re-enters across iterations it must stay attached to
-        # the loop it was first scheduled under rather than flipping to
-        # whatever the current caller passes.
-        info.final_state = st
-        info.transitions.append({"state": st.value, "t_ms": t})
-        if info.started_ms is None and st in (
-            NodeState.STAGING,
-            NodeState.DISPATCHED,
-            NodeState.RUNNING,
-        ):
-            info.started_ms = t
-        if st in (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED):
-            info.finished_ms = t
+            if (
+                not start_new
+                and st == NodeState.STAGING
+                and parent_order is not None
+                and last is not None
+                and last.final_state not in terminal
+                and last.parent_order != parent_order
+            ):
+                start_new = True
+            if start_new:
+                info = NodeRunInfo(
+                    node_id=nid,
+                    order=len(self._node_runs_list),
+                    first_seen_ms=t,
+                    final_state=st,
+                    parent_id=parent_id,
+                    parent_order=parent_order,
+                )
+                self._node_runs_list.append(info)
+            else:
+                info = last
+                assert info is not None
+            info.final_state = st
+            info.transitions.append({"state": st.value, "t_ms": t})
+            if info.started_ms is None and st in (
+                NodeState.STAGING,
+                NodeState.DISPATCHED,
+                NodeState.RUNNING,
+            ):
+                info.started_ms = t
+            if st in (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED):
+                info.finished_ms = t
+            return info.order
+
+    def _mark_order(self, order_key: int, st: NodeState) -> None:
+        """Apply ``st`` to the ``NodeRunInfo`` row identified by ``order_key``."""
+        t = self._now_ms()
+        terminal_close = (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED)
+        with self._runs_lock:
+            for info in self._node_runs_list:
+                if info.order != order_key:
+                    continue
+                self.node_state[info.node_id] = st
+                info.final_state = st
+                info.transitions.append({"state": st.value, "t_ms": t})
+                if st in terminal_close:
+                    info.finished_ms = t
+                return
 
     def _strategy_for(self, m: FlowMember) -> ExecutionStrategy:
         try:
@@ -292,26 +358,35 @@ class FlowRuntime:
         entries: list[dict[str, Any]] | None,
         *,
         attempt: int | None = None,
+        run_order: int | None = None,
     ) -> None:
         """Append collected log entries to ``NodeRunInfo.logs``.
 
         ``attempt`` is only attached when > 0 so the common case (no
-        retries) keeps log records minimal. Missing ``nid`` is a no-op so
-        callers don't need to null-check the record.
+        retries) keeps records minimal. When ``run_order`` is set, logs attach
+        to that row (concurrent loop iterations share ``node_id``). Missing
+        target row is a no-op.
         """
         if not entries:
             return
-        info = self._node_runs.get(nid)
-        if info is None:
-            return
-        if attempt is not None and attempt > 0:
-            for e in entries:
-                rec = dict(e)
-                rec["attempt"] = attempt
-                info.logs.append(rec)
-        else:
-            for e in entries:
-                info.logs.append(dict(e))
+        with self._runs_lock:
+            if run_order is not None:
+                info = next(
+                    (r for r in self._node_runs_list if r.order == run_order),
+                    None,
+                )
+            else:
+                info = self._latest_run_for_nid_unlocked(nid)
+            if info is None:
+                return
+            if attempt is not None and attempt > 0:
+                for e in entries:
+                    rec = dict(e)
+                    rec["attempt"] = attempt
+                    info.logs.append(rec)
+            else:
+                for e in entries:
+                    info.logs.append(dict(e))
 
     def _append_flow_logs(self, entries: list[dict[str, Any]] | None) -> None:
         if not entries:
@@ -516,77 +591,77 @@ class FlowRuntime:
         for THIS span (vs whatever an earlier iteration may have done).
         """
         out: list[dict[str, Any]] = []
-        for cid in child_ids:
-            info = self._node_runs.get(cid)
-            if info is None:
-                continue
-            base = snap.get(cid, 0)
-            new = info.transitions[base:]
-            if not new:
-                continue
-            final = new[-1].get("state", "")
-            started_ms: int | None = None
-            finished_ms: int | None = None
-            for tr in new:
-                st = tr.get("state")
-                t = tr.get("t_ms")
-                if started_ms is None and st in (
-                    NodeState.STAGING.value,
-                    NodeState.DISPATCHED.value,
-                    NodeState.RUNNING.value,
-                ):
-                    started_ms = int(t) if t is not None else None
-                if st in (
-                    NodeState.SUCCESS.value,
-                    NodeState.FAILED.value,
-                    NodeState.SKIPPED.value,
-                ):
-                    finished_ms = int(t) if t is not None else None
-            dur: int | None = None
-            if started_ms is not None and finished_ms is not None:
-                dur = max(0, finished_ms - started_ms)
-            out.append(
-                {
-                    "node_id": cid,
-                    "duration_ms": dur,
-                    "status": final,
-                }
-            )
+        with self._runs_lock:
+            for cid in child_ids:
+                info = self._latest_run_for_nid_unlocked(cid)
+                if info is None:
+                    continue
+                base = snap.get(cid, 0)
+                new = info.transitions[base:]
+                if not new:
+                    continue
+                final = new[-1].get("state", "")
+                started_ms: int | None = None
+                finished_ms: int | None = None
+                for tr in new:
+                    st = tr.get("state")
+                    t = tr.get("t_ms")
+                    if started_ms is None and st in (
+                        NodeState.STAGING.value,
+                        NodeState.DISPATCHED.value,
+                        NodeState.RUNNING.value,
+                    ):
+                        started_ms = int(t) if t is not None else None
+                    if st in (
+                        NodeState.SUCCESS.value,
+                        NodeState.FAILED.value,
+                        NodeState.SKIPPED.value,
+                    ):
+                        finished_ms = int(t) if t is not None else None
+                dur: int | None = None
+                if started_ms is not None and finished_ms is not None:
+                    dur = max(0, finished_ms - started_ms)
+                out.append(
+                    {
+                        "node_id": cid,
+                        "duration_ms": dur,
+                        "status": final,
+                    }
+                )
         return out
 
     def _snapshot_transitions(self, child_ids: list[str]) -> dict[str, int]:
-        return {
-            cid: len(self._node_runs[cid].transitions)
-            for cid in child_ids
-            if cid in self._node_runs
-        }
+        with self._runs_lock:
+            out: dict[str, int] = {}
+            for cid in child_ids:
+                lr = self._latest_run_for_nid_unlocked(cid)
+                if lr is not None:
+                    out[cid] = len(lr.transitions)
+            return out
 
     def _snapshot_log_count(self, node_id: str) -> int:
         """Capture the current length of a node's log list.
 
         Used together with :meth:`_diff_node_logs` to extract the logs
-        emitted during a single execution slice. Necessary because
-        ``NodeRunInfo.logs`` is shared across all iterations of a node
-        inside a loop — passing the full list to each span would
-        duplicate every prior iteration's logs and grow unboundedly.
+        emitted during a single execution slice (per ``NodeRunInfo`` row).
         """
-        info = self._node_runs.get(node_id)
-        if info is None:
-            return 0
-        return len(info.logs)
+        with self._runs_lock:
+            info = self._latest_run_for_nid_unlocked(node_id)
+            if info is None:
+                return 0
+            return len(info.logs)
 
     def _diff_node_logs(self, node_id: str, base: int) -> list[dict[str, Any]] | None:
-        info = self._node_runs.get(node_id)
-        if info is None:
-            return None
-        if base <= 0 and len(info.logs) == 0:
-            return None
-        new = info.logs[base:]
-        if not new:
-            return None
-        # Defensive copy so the backend's filtering can't mutate the
-        # canonical run-info list.
-        return [dict(e) for e in new]
+        with self._runs_lock:
+            info = self._latest_run_for_nid_unlocked(node_id)
+            if info is None:
+                return None
+            if base <= 0 and len(info.logs) == 0:
+                return None
+            new = info.logs[base:]
+            if not new:
+                return None
+            return [dict(e) for e in new]
 
     @staticmethod
     def _direct_child_ids(members: list[FlowMember]) -> list[str]:
@@ -601,7 +676,8 @@ class FlowRuntime:
             apply_outputs(result, outputs, ctx)
 
     def _result(self, message: str | None) -> FlowRunResult:
-        runs = sorted(self._node_runs.values(), key=lambda r: r.order)
+        with self._runs_lock:
+            runs = sorted(self._node_runs_list, key=lambda r: r.order)
         return FlowRunResult(
             state=self.flow_state,
             context=self.ctx,
@@ -738,13 +814,16 @@ class FlowRuntime:
         tracker: TaskTracker,
         *,
         parent_id: str | None = None,
+        parent_order: int | None = None,
     ) -> None:
         i = 0
         jumps = 0
         while i < len(members):
             m = members[i]
             try:
-                await self._dispatch_member(m, ctx, tracker, parent_id=parent_id)
+                await self._dispatch_member(
+                    m, ctx, tracker, parent_id=parent_id, parent_order=parent_order
+                )
             except JumpTarget as j:
                 idx = self._index_by_id(members, j.target)
                 if idx is not None:
@@ -771,6 +850,7 @@ class FlowRuntime:
         tracker: TaskTracker,
         *,
         parent_id: str | None = None,
+        parent_order: int | None = None,
     ) -> None:
         nid = self._nid(m)
 
@@ -781,13 +861,19 @@ class FlowRuntime:
             await tracker.wait_all()
 
         if not eval_condition(m.condition, ctx):
-            self._mark(nid, NodeState.SKIPPED, parent_id=parent_id)
+            self._mark(nid, NodeState.SKIPPED, parent_id=parent_id, parent_order=parent_order)
             return
 
         st = self._strategy_for(m)
         mode = _strategy_mode(st)
 
-        self._mark(nid, NodeState.STAGING, parent_id=parent_id)
+        if isinstance(m, LoopNode):
+            await self._execute_loop(
+                m, ctx, tracker, parent_id=parent_id, parent_order=parent_order
+            )
+            return
+
+        self._mark(nid, NodeState.STAGING, parent_id=parent_id, parent_order=parent_order)
 
         if isinstance(m, TaskNode):
             with node_capability_scope(m.capability_overrides):
@@ -797,8 +883,6 @@ class FlowRuntime:
                 else:
                     self._mark(nid, NodeState.DISPATCHED)
                     await self._execute_task_node(m, ctx, tracker, await_result=False)
-        elif isinstance(m, LoopNode):
-            await self._execute_loop(m, ctx, tracker)
         elif isinstance(m, SubflowNode):
             await self._execute_subflow(m, ctx, tracker)
         else:
@@ -1269,21 +1353,26 @@ class FlowRuntime:
         finally:
             ctx.pop()
 
-    async def _execute_loop(self, node: LoopNode, ctx: ContextStack, tracker: TaskTracker) -> None:
+    async def _execute_loop(
+        self,
+        node: LoopNode,
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        *,
+        parent_id: str | None = None,
+        parent_order: int | None = None,
+    ) -> None:
         nid = self._nid(node)
         await tracker.wait_all()
-        self._mark(nid, NodeState.RUNNING)
         hooks = node.hooks if isinstance(node.hooks, LoopHooks) else None
 
+        # Run before iterable evaluation (same ordering as the legacy single-row
+        # loop): hooks may prepare context used by ``iterable``.
+        loop_pre_exec_logs: list[dict[str, Any]] | None = None
         if hooks and hooks.pre_exec:
-            self._append_node_logs(
-                nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
-            )
+            loop_pre_exec_logs = run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
 
         items = eval_iterable_expr(node.iterable, ctx)
-        info = self._node_runs.get(nid)
-        if info is not None:
-            info.iterations = len(items)
         copy_mode = getattr(node, "copy_item", "shared")
         isolation = getattr(node, "iteration_isolation", "shared")
         collect = getattr(node, "iteration_collect", None)
@@ -1307,11 +1396,34 @@ class FlowRuntime:
         try:
             if concurrency == 1:
                 await self._run_loop_sequential(
-                    node, prepared, ctx, tracker, hooks, isolation, collect
+                    node,
+                    prepared,
+                    ctx,
+                    tracker,
+                    hooks,
+                    isolation,
+                    collect,
+                    loop_pre_exec_logs,
+                    parent_id=parent_id,
+                    parent_order=parent_order,
                 )
             else:
+                # ``pre_exec`` cannot attach to a specific iteration row when
+                # iterations start concurrently; mirror sequential semantics by
+                # recording those entries at flow scope.
+                if loop_pre_exec_logs:
+                    self._append_flow_logs(loop_pre_exec_logs)
                 await self._run_loop_concurrent(
-                    node, prepared, ctx, tracker, hooks, isolation, collect, concurrency
+                    node,
+                    prepared,
+                    ctx,
+                    tracker,
+                    hooks,
+                    isolation,
+                    collect,
+                    concurrency,
+                    parent_id=parent_id,
+                    parent_order=parent_order,
                 )
         finally:
             if hooks and hooks.post_exec:
@@ -1324,7 +1436,8 @@ class FlowRuntime:
                     logger.exception("loop post_exec hook failed")
 
         await tracker.wait_all()
-        self._mark(nid, NodeState.SUCCESS)
+        # Sequential and concurrent loops each end every iteration's loop-node
+        # row with a terminal state inside the per-iteration path.
 
     @staticmethod
     def _collect_iteration_result(
@@ -1363,6 +1476,10 @@ class FlowRuntime:
         hooks: LoopHooks | None,
         isolation: str,
         collect: Any,
+        loop_pre_exec_logs: list[dict[str, Any]] | None = None,
+        *,
+        parent_id: str | None = None,
+        parent_order: int | None = None,
     ) -> None:
         """Legacy path: run iterations one-by-one.
 
@@ -1373,12 +1490,41 @@ class FlowRuntime:
 
         Each iteration produces one ``loop_iter`` span (subject to backend
         sampling) and one metric point. ``child_spans`` is computed via the
-        ``_node_runs.transitions`` diff-snapshot — accurate here because
+        ``_node_runs_list`` / latest-run transition diff-snapshot — accurate here because
         sequential iterations don't interleave.
+
+        Each iteration also opens a dedicated ``NodeRunInfo`` row for the loop
+        node (RUNNING→SUCCESS/FAILED) so consumers can attach body nodes to the
+        correct iteration under the same ``parent_id`` (structural node id).
         """
         nid = self._nid(node)
         child_ids = self._direct_child_ids(node.children)
-        for it in items:
+
+        if not items:
+            self._mark(
+                nid,
+                NodeState.RUNNING,
+                parent_id=parent_id,
+                parent_order=parent_order,
+            )
+            if loop_pre_exec_logs:
+                self._append_node_logs(nid, loop_pre_exec_logs)
+            self._mark(nid, NodeState.SUCCESS)
+            return
+
+        for idx, it in enumerate(items):
+            self._mark(
+                nid,
+                NodeState.RUNNING,
+                parent_id=parent_id,
+                parent_order=parent_order,
+            )
+            if idx == 0 and loop_pre_exec_logs:
+                self._append_node_logs(nid, loop_pre_exec_logs)
+
+            with self._runs_lock:
+                loop_row_order = self._latest_run_for_nid_unlocked(nid).order
+
             iter_ctx_for_extract = ctx if isolation != "fork" else None
             scope_key = self._extract_scope_key(nid, it, ctx, iter_ctx_for_extract)
             iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
@@ -1410,7 +1556,11 @@ class FlowRuntime:
                             )
                         try:
                             await self._run_members(
-                                node.children, iter_ctx, iter_tracker, parent_id=nid
+                                node.children,
+                                iter_ctx,
+                                iter_tracker,
+                                parent_id=nid,
+                                parent_order=loop_row_order,
                             )
                         except ContinueInterrupt:
                             iter_status = "skipped"
@@ -1420,6 +1570,7 @@ class FlowRuntime:
                         except Exception as e:  # noqa: BLE001
                             iter_status = "failed"
                             iter_error = str(e)
+                            self._mark(nid, NodeState.FAILED)
                             raise
                         else:
                             # Collect while the iteration frame is still pushed so
@@ -1455,6 +1606,7 @@ class FlowRuntime:
                             iter_pre_snap,
                             log_base=iter_log_base,
                         )
+                self._mark(nid, NodeState.SUCCESS)
                 if stop_loop:
                     break
                 continue
@@ -1476,7 +1628,11 @@ class FlowRuntime:
                         )
                     try:
                         await self._run_members(
-                            node.children, ctx, iter_tracker, parent_id=nid
+                            node.children,
+                            ctx,
+                            iter_tracker,
+                            parent_id=nid,
+                            parent_order=loop_row_order,
                         )
                     except ContinueInterrupt:
                         iter_status = "skipped"
@@ -1486,6 +1642,7 @@ class FlowRuntime:
                     except Exception as e:  # noqa: BLE001
                         iter_status = "failed"
                         iter_error = str(e)
+                        self._mark(nid, NodeState.FAILED)
                         raise
                     else:
                         # Same rationale as the fork branch: the alias frame must
@@ -1520,6 +1677,7 @@ class FlowRuntime:
                         iter_pre_snap,
                         log_base=iter_log_base,
                     )
+            self._mark(nid, NodeState.SUCCESS)
             if stop_loop:
                 break
 
@@ -1533,6 +1691,9 @@ class FlowRuntime:
         isolation: str,
         collect: Any,
         concurrency: int,
+        *,
+        parent_id: str | None = None,
+        parent_order: int | None = None,
     ) -> None:
         """Dispatch each iteration as an asyncio task bounded by a semaphore.
 
@@ -1550,6 +1711,7 @@ class FlowRuntime:
         nid = self._nid(node)
         sem = asyncio.Semaphore(concurrency)
         stop_requested = {"flag": False}
+        total_iters = len(items)
 
         async def one(idx: int, raw_item: Any) -> None:
             if stop_requested["flag"]:
@@ -1557,9 +1719,20 @@ class FlowRuntime:
             async with sem:
                 if stop_requested["flag"]:
                     return
+                self._mark(
+                    nid,
+                    NodeState.RUNNING,
+                    parent_id=parent_id,
+                    parent_order=parent_order,
+                    force_new=True,
+                )
+                with self._runs_lock:
+                    lp_row = self._latest_run_for_nid_unlocked(nid)
+                    my_loop_order = lp_row.order if lp_row is not None else 0
+                    loop_parent_order = my_loop_order
+                    if lp_row is not None:
+                        lp_row.iterations = total_iters
                 iter_ctx = ctx.fork(clone_global=(isolation == "fork"))
-                # Each concurrent iteration runs in its own task and thus
-                # owns its own copy of the _current_span_handle ContextVar.
                 scope_key = self._extract_scope_key(nid, raw_item, ctx, iter_ctx)
                 iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
                 iter_span_token = (
@@ -1568,11 +1741,6 @@ class FlowRuntime:
                 iter_start = time.monotonic()
                 iter_status = "success"
                 iter_error: str | None = None
-                # child_spans diff-snapshot is unreliable for concurrent
-                # iterations (transitions interleave across siblings), so
-                # we deliberately skip per-child detail and report only
-                # iteration-level totals. Users wanting per-child spans
-                # should lower concurrency to 1.
                 iter_tracker = TaskTracker(parent=None)
                 frame = ContextFrame(
                     node_id=nid,
@@ -1580,67 +1748,74 @@ class FlowRuntime:
                     loop_item=raw_item,
                     loop_alias=node.alias,
                 )
-                with self._pushed_frame(iter_ctx, frame):
-                    try:
-                        if hooks and hooks.on_iteration_start:
-                            self._append_node_logs(
-                                nid,
-                                run_hook_script(
-                                    hooks.on_iteration_start,
+                iter_failed = False
+                try:
+                    with self._pushed_frame(iter_ctx, frame):
+                        try:
+                            if hooks and hooks.on_iteration_start:
+                                self._append_node_logs(
+                                    nid,
+                                    run_hook_script(
+                                        hooks.on_iteration_start,
+                                        iter_ctx,
+                                        {"item": raw_item},
+                                        source="on_iteration_start",
+                                    ),
+                                    run_order=my_loop_order,
+                                )
+                            try:
+                                await self._run_members(
+                                    node.children,
                                     iter_ctx,
-                                    {"item": raw_item},
-                                    source="on_iteration_start",
-                                ),
-                            )
-                        try:
-                            await self._run_members(
-                                node.children, iter_ctx, iter_tracker, parent_id=nid
-                            )
-                        except ContinueInterrupt:
-                            iter_status = "skipped"
-                            return
-                        except BreakInterrupt:
-                            iter_status = "skipped"
-                            stop_requested["flag"] = True
-                            return
-                        except Exception as e:  # noqa: BLE001
-                            iter_status = "failed"
-                            iter_error = str(e)
-                            raise
-                        # Must collect while the alias frame is still pushed so
-                        # ``from_path`` of form ``$.alias.*`` can resolve; skip
-                        # on continue/break/error (no partial results).
-                        if collect is not None:
-                            self._collect_iteration_result(iter_ctx, ctx, collect)
-                    finally:
-                        try:
-                            await iter_tracker.wait_all()
+                                    iter_tracker,
+                                    parent_id=nid,
+                                    parent_order=loop_parent_order,
+                                )
+                            except ContinueInterrupt:
+                                iter_status = "skipped"
+                            except BreakInterrupt:
+                                iter_status = "skipped"
+                                stop_requested["flag"] = True
+                            except Exception as e:  # noqa: BLE001
+                                iter_status = "failed"
+                                iter_error = str(e)
+                                iter_failed = True
+                                self._mark_order(my_loop_order, NodeState.FAILED)
+                                raise
+                            else:
+                                if collect is not None:
+                                    self._collect_iteration_result(iter_ctx, ctx, collect)
                         finally:
-                            if hooks and hooks.on_iteration_end:
-                                try:
-                                    self._append_node_logs(
-                                        nid,
-                                        run_hook_script(
-                                            hooks.on_iteration_end,
-                                            iter_ctx,
-                                            {"item": raw_item},
-                                            source="on_iteration_end",
-                                        ),
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    logger.exception("on_iteration_end hook failed")
-                        # Close span / emit metric. No child_spans under
-                        # concurrent mode (see comment above).
-                        self._finalize_iteration_span(
-                            iter_span,
-                            iter_span_token,
-                            iter_status,
-                            iter_error,
-                            nid,
-                            iter_start,
-                            child_ids=[],
-                            pre_snap={},
-                        )
+                            try:
+                                await iter_tracker.wait_all()
+                            finally:
+                                if hooks and hooks.on_iteration_end:
+                                    try:
+                                        self._append_node_logs(
+                                            nid,
+                                            run_hook_script(
+                                                hooks.on_iteration_end,
+                                                iter_ctx,
+                                                {"item": raw_item},
+                                                source="on_iteration_end",
+                                            ),
+                                            run_order=my_loop_order,
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        logger.exception("on_iteration_end hook failed")
+                            self._finalize_iteration_span(
+                                iter_span,
+                                iter_span_token,
+                                iter_status,
+                                iter_error,
+                                nid,
+                                iter_start,
+                                child_ids=[],
+                                pre_snap={},
+                            )
+                finally:
+                    if not iter_failed:
+                        self._mark_order(my_loop_order, NodeState.SUCCESS)
 
         coros = [one(i, it) for i, it in enumerate(items)]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -1666,6 +1841,10 @@ class FlowRuntime:
         self._mark(nid, NodeState.RUNNING)
         hooks = node.hooks if isinstance(node.hooks, NodeHooks) else None
 
+        with self._runs_lock:
+            sub_row = self._latest_run_for_nid_unlocked(nid)
+            sub_parent_order = sub_row.order if sub_row is not None else 0
+
         if hooks and hooks.pre_exec:
             self._append_node_logs(
                 nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
@@ -1687,7 +1866,13 @@ class FlowRuntime:
         try:
             with self._pushed_frame(ctx, frame):
                 try:
-                    await self._run_members(node.children, ctx, sub_tracker, parent_id=nid)
+                    await self._run_members(
+                        node.children,
+                        ctx,
+                        sub_tracker,
+                        parent_id=nid,
+                        parent_order=sub_parent_order,
+                    )
                 except BaseException as e:  # noqa: BLE001
                     close_status = "failed"
                     close_error = str(e)

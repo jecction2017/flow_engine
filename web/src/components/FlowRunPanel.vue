@@ -54,170 +54,97 @@
       <section class="col timeline-col">
         <div class="lbl timeline-lbl">
           <span>节点执行时间线</span>
-          <span v-if="response" class="muted">{{ rawRuns.length }} 个节点</span>
+          <span v-if="response" class="muted">{{ rawRuns.length }} 条执行记录</span>
         </div>
         <div v-if="!response" class="hint">未运行</div>
         <div v-else-if="rawRuns.length === 0" class="hint">没有节点被调度</div>
-        <div v-else class="timeline">
-          <div class="tl-axis">
-            <span class="tl-axis-pad" />
-            <span class="tl-axis-pad" />
-            <span class="tl-axis-pad" />
-            <div class="tl-axis-ticks">
-              <span>0ms</span>
-              <span>{{ Math.round(maxMs / 2) }}ms</span>
-              <span>{{ maxMs }}ms</span>
-            </div>
-            <span class="tl-axis-pad" />
-          </div>
-          <div class="tl-toolbar">
+        <ExecutionLinkTree
+          v-else
+          :rows="trialLinkRows"
+          :timeline-min-ms="0"
+          :timeline-max-ms="maxMs"
+          :collapsed="collapsed"
+          :secondary-open-key="openLogsFor"
+          :detail-on-row-click="false"
+          :log-button="true"
+          :show-node-meta="false"
+          @toggle-collapsed="toggleCollapsed"
+          @toggle-secondary="toggleLogDrawer"
+        >
+          <template #toolbar>
             <button class="link" type="button" @click="expandAll">全部展开</button>
             <span class="sep">·</span>
             <button class="link" type="button" @click="collapseAll">全部折叠</button>
             <span class="sep">·</span>
-            <span class="tl-filter-lbl">日志级别</span>
+            <span class="rt-filter-lbl">日志级别</span>
             <button
-              v-for="lvl in ALL_LOG_LEVELS"
+              v-for="lvl in LOG_LEVELS"
               :key="lvl"
               type="button"
-              class="chip-btn"
+              class="rt-chip-btn"
               :class="[`lvl-${lvl}`, { active: levelFilter.has(lvl) }]"
               @click="toggleLevelFilter(lvl)"
             >
               {{ lvl }}
             </button>
-            <button
-              v-if="levelFilter.size > 0"
-              type="button"
-              class="link"
-              @click="clearLevelFilter"
-            >
-              清除
-            </button>
-          </div>
-          <ul class="tl-rows">
-            <template v-for="row in treeRows" :key="row.node_id">
-              <li
-                class="tl-row"
-                :class="[
-                  statusClass(row.final_state),
-                  { 'is-branch': row.hasChildren, 'has-logs': (logCountsByNode.get(row.node_id) ?? 0) > 0 },
-                ]"
-                :title="rowTitle(row)"
-              >
-                <span class="tl-order">{{ row.order + 1 }}</span>
-                <span class="tl-dot" />
-                <span class="tl-name mono">
-                  <span class="tl-indent" aria-hidden="true">
-                    <span
-                      v-for="(hasLine, i) in row.guides"
-                      :key="i"
-                      class="tl-guide"
-                      :class="{ on: hasLine }"
-                    />
-                    <span v-if="row.depth > 0" class="tl-guide elbow">
-                      {{ row.isLast ? "└" : "├" }}
-                    </span>
-                  </span>
-                  <button
-                    v-if="row.hasChildren"
-                    type="button"
-                    class="tl-caret"
-                    :aria-expanded="!collapsed.has(row.node_id)"
-                    @click="toggleCollapsed(row.node_id)"
-                  >
-                    {{ collapsed.has(row.node_id) ? "▶" : "▼" }}
-                  </button>
-                  <span v-else class="tl-caret-spacer" />
-                  <span class="tl-id" :title="row.node_id">{{ row.node_id }}</span>
-                  <span v-if="row.iterations != null" class="tl-meta" title="迭代次数">
-                    × {{ row.iterations }}
-                  </span>
-                  <span
-                    v-else-if="row.execution_count && row.execution_count > 1"
-                    class="tl-meta"
-                    title="执行次数"
-                  >
-                    × {{ row.execution_count }}
-                  </span>
-                  <button
-                    v-if="(logCountsByNode.get(row.node_id) ?? 0) > 0"
-                    type="button"
-                    class="tl-logs-btn"
-                    :aria-expanded="openLogsFor === row.node_id"
-                    :title="`展开 / 折叠 ${row.node_id} 的日志`"
-                    @click="toggleLogDrawer(row.node_id)"
-                  >
-                    📝 {{ logCountsByNode.get(row.node_id) }}
-                  </button>
+            <button v-if="levelFilter.size > 0" type="button" class="link" @click="clearLevelFilter">清除</button>
+            <span v-if="levelFilter.size > 0" class="muted">命中 {{ filterHitCount }} / 总计 {{ rawRuns.length }}</span>
+          </template>
+          <template #secondary="{ row }">
+            <div class="rt-logs-drawer">
+              <div class="rt-logs-head">
+                <span>{{ row.nodeId }} 日志</span>
+                <span class="muted">
+                  共 {{ logCountsByRunOrder.get(row.key) ?? 0 }} 条
+                  <template v-if="levelFilter.size > 0">· 已过滤 {{ filteredLogsFor(row.key).length }} 条</template>
                 </span>
-                <div class="tl-track">
-                  <div class="tl-bar" :style="barStyle(row)">
-                    <span class="tl-bar-label">{{ formatDuration(row.duration_ms) }}</span>
-                  </div>
-                </div>
-                <span class="tl-status">{{ row.final_state }}</span>
-              </li>
-              <li
-                v-if="openLogsFor === row.node_id"
-                :key="row.node_id + ':logs'"
-                class="tl-logs-drawer"
-              >
-                <div class="tl-logs-head">
-                  <span>{{ row.node_id }} 日志</span>
-                  <span class="muted">
-                    共 {{ logCountsByNode.get(row.node_id) }} 条
-                    <template v-if="levelFilter.size > 0">
-                      · 已过滤 {{ filteredLogsFor(row.node_id).length }} 条
-                    </template>
+              </div>
+              <ul v-if="filteredLogsFor(row.key).length" class="rt-logs-list mono">
+                <li
+                  v-for="(entry, i) in filteredLogsFor(row.key)"
+                  :key="i"
+                  class="rt-log-row"
+                  :class="`lvl-${entry.level}`"
+                >
+                  <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
+                  <span class="rt-log-lvl">{{ entry.level }}</span>
+                  <span class="rt-log-src" :title="`来源: ${entry.source}`">
+                    {{ entry.source }}<span v-if="entry.attempt" class="rt-log-attempt">#{{ entry.attempt }}</span>
                   </span>
-                </div>
-                <ul v-if="filteredLogsFor(row.node_id).length" class="logs-list mono">
-                  <li
-                    v-for="(entry, i) in filteredLogsFor(row.node_id)"
-                    :key="i"
-                    class="log-row"
-                    :class="`lvl-${entry.level}`"
-                  >
-                    <span class="log-ts">+{{ entry.ts_ms }}ms</span>
-                    <span class="log-lvl">{{ entry.level }}</span>
-                    <span class="log-src" :title="`来源: ${entry.source}`">
-                      {{ entry.source }}<span v-if="entry.attempt" class="log-attempt">#{{ entry.attempt }}</span>
-                    </span>
-                    <span class="log-msg">{{ entry.message }}</span>
-                    <span v-if="entry.truncated" class="log-trunc" title="达到日志上限，后续条目被丢弃">…</span>
-                  </li>
-                </ul>
-                <div v-else class="muted tl-logs-empty">
-                  当前过滤条件下没有可显示的日志
-                </div>
-              </li>
-            </template>
-          </ul>
-          <section v-if="flowLogs.length" class="flow-logs">
-            <div class="flow-logs-head">
-              <span>流程级日志</span>
-              <span class="muted">{{ flowLogs.length }} 条 · on_start / on_complete / on_failure</span>
+                  <span class="rt-log-msg">{{ entry.message }}</span>
+                  <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限，后续条目被丢弃">...</span>
+                </li>
+              </ul>
+              <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
             </div>
-            <ul v-if="filteredFlowLogs.length" class="logs-list mono">
-              <li
-                v-for="(entry, i) in filteredFlowLogs"
-                :key="i"
-                class="log-row"
-                :class="`lvl-${entry.level}`"
-              >
-                <span class="log-ts">+{{ entry.ts_ms }}ms</span>
-                <span class="log-lvl">{{ entry.level }}</span>
-                <span class="log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
-                <span class="log-msg">{{ entry.message }}</span>
-                <span v-if="entry.truncated" class="log-trunc" title="达到日志上限">…</span>
-              </li>
-            </ul>
-            <div v-else class="muted tl-logs-empty">
-              当前过滤条件下没有可显示的日志
+          </template>
+          <template #footer>
+            <div v-if="trialLinkRows.length === 0" class="rt-filter-empty muted">
+              当前日志级别筛选下没有执行记录
             </div>
-          </section>
-        </div>
+            <section v-if="flowLogs.length" class="rt-flow-logs">
+              <div class="rt-flow-logs-head">
+                <span>流程级日志</span>
+                <span class="muted">{{ flowLogs.length }} 条 · on_start / on_complete / on_failure</span>
+              </div>
+              <ul v-if="filteredFlowLogs.length" class="rt-logs-list mono">
+                <li
+                  v-for="(entry, i) in filteredFlowLogs"
+                  :key="i"
+                  class="rt-log-row"
+                  :class="`lvl-${entry.level}`"
+                >
+                  <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
+                  <span class="rt-log-lvl">{{ entry.level }}</span>
+                  <span class="rt-log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
+                  <span class="rt-log-msg">{{ entry.message }}</span>
+                  <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限">...</span>
+                </li>
+              </ul>
+              <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
+            </section>
+          </template>
+        </ExecutionLinkTree>
       </section>
       <section class="col">
         <div class="lbl">全局上下文（global_ns）</div>
@@ -239,10 +166,16 @@ import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
 import { fetchProfileConfig } from "@/api/profiles";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
+import ExecutionLinkTree, { type ExecutionLinkRow } from "@/components/ExecutionLinkTree.vue";
 import type { CapabilityRule } from "@/types/flow";
 
-const ALL_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
-type KnownLevel = (typeof ALL_LOG_LEVELS)[number];
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+type KnownLogLevel = (typeof LOG_LEVELS)[number];
+
+function normalizeKnownLevel(level: string | undefined): KnownLogLevel | null {
+  const s = typeof level === "string" ? level.trim().toLowerCase() : "";
+  return (LOG_LEVELS as readonly string[]).includes(s) ? (s as KnownLogLevel) : null;
+}
 
 type TreeRow = NodeRunInfo & {
   depth: number;
@@ -279,7 +212,7 @@ const collapsed = reactive(new Set<string>());
 /** id of the currently open log drawer, or null when none is open. */
 const openLogsFor = ref<string | null>(null);
 /** Active log-level filter. Empty set = show all. */
-const levelFilter = reactive(new Set<KnownLevel>());
+const levelFilter = reactive(new Set<KnownLogLevel>());
 
 watch(
   () => props.initialContext,
@@ -336,45 +269,84 @@ const rawRuns = computed<NodeRunInfo[]>(() => {
   }));
 });
 
+/** Parent row key: ``parent_order`` when present, else latest preceding row with ``parent_id``. */
+function resolveParentRunKey(r: NodeRunInfo, sorted: NodeRunInfo[]): string | null {
+  const po = r.parent_order;
+  if (po != null && Number.isFinite(Number(po))) {
+    return String(po);
+  }
+  const pid = r.parent_id?.trim();
+  if (!pid) return null;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const cand = sorted[i]!;
+    if (cand.order >= r.order) continue;
+    if (cand.node_id === pid) return String(cand.order);
+  }
+  return null;
+}
+
+function runMatchesLevelFilter(run: NodeRunInfo): boolean {
+  if (levelFilter.size === 0) return true;
+  const all = Array.isArray(run.logs) ? run.logs : [];
+  return all.some((e) => {
+    const nk = normalizeKnownLevel(e.level);
+    return nk != null && levelFilter.has(nk);
+  });
+}
+
 /**
- * Flatten the parent/child tree into the exact display order so the template
- * can iterate a single list while still retaining visual hierarchy via the
- * ``depth`` and ``guides`` metadata we attach to each row.
- *
- * We intentionally render "depth-first, order-ascending" -- that matches how
- * a human reads the underlying YAML and keeps sibling nodes chronologically
- * adjacent within each parent group.
+ * Flatten the parent/child tree (keys = ``order`` strings) so repeated
+ * ``node_id`` across loop iterations stay distinct — aligned with persisted spans.
  */
 const treeRows = computed<TreeRow[]>(() => {
   const runs = rawRuns.value;
   if (runs.length === 0) return [];
-  const byId = new Map<string, NodeRunInfo>(runs.map((r) => [r.node_id, r]));
-  const childrenByParent = new Map<string | null, string[]>();
-  for (const r of runs) {
-    const pid = r.parent_id ?? null;
-    const key = pid && byId.has(pid) ? pid : null;
-    if (!childrenByParent.has(key)) childrenByParent.set(key, []);
-    childrenByParent.get(key)!.push(r.node_id);
+  const sorted = [...runs].sort((a, b) => a.order - b.order);
+  const byOrder = new Map(sorted.map((rr) => [rr.order, rr]));
+  const childrenByParent = new Map<string | null, number[]>();
+  const parentByOrder = new Map<number, string | null>();
+  for (const r of sorted) {
+    const pk = resolveParentRunKey(r, sorted);
+    parentByOrder.set(r.order, pk);
+    if (!childrenByParent.has(pk)) childrenByParent.set(pk, []);
+    childrenByParent.get(pk)!.push(r.order);
   }
   for (const arr of childrenByParent.values()) {
-    arr.sort((a, b) => byId.get(a)!.order - byId.get(b)!.order);
+    arr.sort((a, b) => a - b);
   }
-
+  let visibleOrderSet: Set<number> | null = null;
+  if (levelFilter.size > 0) {
+    visibleOrderSet = new Set<number>();
+    for (const r of sorted) {
+      if (!runMatchesLevelFilter(r)) continue;
+      visibleOrderSet.add(r.order);
+      let parentKey = parentByOrder.get(r.order) ?? null;
+      while (parentKey != null) {
+        const po = Number(parentKey);
+        if (!Number.isFinite(po) || visibleOrderSet.has(po)) break;
+        visibleOrderSet.add(po);
+        parentKey = parentByOrder.get(po) ?? null;
+      }
+    }
+  }
   const out: TreeRow[] = [];
-  const walk = (ids: string[], depth: number, ancestorGuides: boolean[]) => {
-    ids.forEach((id, idx) => {
-      const run = byId.get(id)!;
-      const isLast = idx === ids.length - 1;
-      const childIds = childrenByParent.get(id) ?? [];
+  const walk = (orderIds: number[], depth: number, ancestorGuides: boolean[]) => {
+    const visibleOrders = visibleOrderSet
+      ? orderIds.filter((ord) => visibleOrderSet!.has(ord))
+      : orderIds;
+    visibleOrders.forEach((ord, idx) => {
+      const run = byOrder.get(ord)!;
+      const isLast = idx === visibleOrders.length - 1;
+      const childOrders = childrenByParent.get(String(ord)) ?? [];
       out.push({
         ...run,
         depth,
-        hasChildren: childIds.length > 0,
+        hasChildren: childOrders.length > 0,
         isLast,
         guides: [...ancestorGuides],
       });
-      if (childIds.length > 0 && !collapsed.has(id)) {
-        walk(childIds, depth + 1, [...ancestorGuides, !isLast]);
+      if (childOrders.length > 0 && !collapsed.has(String(ord))) {
+        walk(childOrders, depth + 1, [...ancestorGuides, !isLast]);
       }
     });
   };
@@ -392,6 +364,88 @@ const maxMs = computed(() => {
   }
   return Math.max(1, m);
 });
+
+function formatDur(ms: number | null): string {
+  if (ms == null) return "-";
+  if (ms < 1) return "<1ms";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function formatOffset(ms: number): string {
+  if (ms < 1000) return `+${ms}ms`;
+  if (ms < 60_000) return `+${(ms / 1000).toFixed(3)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const sec = ((ms % 60_000) / 1000).toFixed(3);
+  return `+${mins}m${sec}s`;
+}
+
+function formatDelta(ms: number): string {
+  if (ms < 1000) return `Δ+${ms}ms`;
+  if (ms < 60_000) return `Δ+${(ms / 1000).toFixed(3)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const sec = ((ms % 60_000) / 1000).toFixed(3);
+  return `Δ+${mins}m${sec}s`;
+}
+
+function trialTone(st: string): string {
+  if (st === "SUCCESS") return "ok";
+  if (st === "FAILED") return "bad";
+  if (st === "SKIPPED") return "skipped";
+  if (st === "RUNNING" || st === "DISPATCHED" || st === "STAGING") return "running";
+  return "info";
+}
+
+const trialLinkRows = computed<ExecutionLinkRow[]>(() => {
+  const m = maxMs.value;
+  let prevStartedMs: number | null = null;
+  return treeRows.value.map((tr) => {
+    const start = tr.started_ms ?? tr.first_seen_ms ?? 0;
+    const end = tr.finished_ms ?? (tr.started_ms != null ? Math.max(tr.started_ms, m) : start + 1);
+    let startedDeltaDisplay: string | undefined;
+    let startedDeltaTitle: string | undefined;
+    if (tr.started_ms != null && prevStartedMs != null) {
+      const delta = Math.max(0, tr.started_ms - prevStartedMs);
+      startedDeltaDisplay = formatDelta(delta);
+      startedDeltaTitle = `相对上一行开始时间 +${delta}ms`;
+    }
+    if (tr.started_ms != null) prevStartedMs = tr.started_ms;
+    const badges: { label: string; title?: string }[] = [];
+    if (tr.iterations != null) badges.push({ label: `×${tr.iterations}`, title: "迭代次数" });
+    else     if (tr.execution_count && tr.execution_count > 1) {
+      badges.push({ label: `×${tr.execution_count}`, title: "执行次数" });
+    }
+    const logCount = filteredLogsFor(String(tr.order)).length;
+    return {
+      key: String(tr.order),
+      orderDisplay: String(tr.order + 1),
+      depth: tr.depth,
+      hasChildren: tr.hasChildren,
+      isLast: tr.isLast,
+      guides: tr.guides,
+      nodeId: tr.node_id,
+      nodeType: "",
+      scopeKey: "",
+      startedDisplay: tr.started_ms != null ? formatOffset(tr.started_ms) : "—",
+      startedTitle: tr.started_ms != null ? `相对流程起点 +${tr.started_ms}ms` : undefined,
+      startedDeltaDisplay,
+      startedDeltaTitle,
+      durationMs: tr.duration_ms,
+      durationDisplay: formatDur(tr.duration_ms),
+      statusLabel: tr.final_state,
+      statusTone: trialTone(tr.final_state),
+      filterMatch: levelFilter.size > 0 && logCount > 0,
+      logCount,
+      barStartMs: start,
+      barEndMs: Math.max(end, start + 1),
+      metaBadges: badges.length ? badges : undefined,
+    };
+  });
+});
+
+const filterHitCount = computed(() =>
+  levelFilter.size === 0 ? 0 : trialLinkRows.value.reduce((n, r) => n + (r.logCount > 0 ? 1 : 0), 0),
+);
 
 const summary = computed(() => {
   if (!response.value) return null;
@@ -411,21 +465,23 @@ const flowLogs = computed<LogEntry[]>(() => {
   return Array.isArray(r?.flow_logs) ? (r!.flow_logs as LogEntry[]) : [];
 });
 
-const logCountsByNode = computed<Map<string, number>>(() => {
+const logCountsByRunOrder = computed<Map<string, number>>(() => {
   const m = new Map<string, number>();
   for (const r of rawRuns.value) {
-    m.set(r.node_id, Array.isArray(r.logs) ? r.logs.length : 0);
+    m.set(String(r.order), Array.isArray(r.logs) ? r.logs.length : 0);
   }
   return m;
 });
 
 function entryMatchesFilter(e: LogEntry): boolean {
   if (levelFilter.size === 0) return true;
-  return levelFilter.has(e.level as KnownLevel);
+  const nk = normalizeKnownLevel(e.level);
+  return nk != null && levelFilter.has(nk);
 }
 
-function filteredLogsFor(nid: string): LogEntry[] {
-  const run = rawRuns.value.find((r) => r.node_id === nid);
+function filteredLogsFor(runOrderKey: string): LogEntry[] {
+  const ord = Number(runOrderKey);
+  const run = rawRuns.value.find((r) => r.order === ord);
   const all = Array.isArray(run?.logs) ? (run!.logs as LogEntry[]) : [];
   return all.filter(entryMatchesFilter);
 }
@@ -434,7 +490,7 @@ const filteredFlowLogs = computed<LogEntry[]>(() =>
   flowLogs.value.filter(entryMatchesFilter),
 );
 
-function toggleLevelFilter(lvl: KnownLevel): void {
+function toggleLevelFilter(lvl: KnownLogLevel): void {
   if (levelFilter.has(lvl)) levelFilter.delete(lvl);
   else levelFilter.add(lvl);
 }
@@ -443,13 +499,13 @@ function clearLevelFilter(): void {
   levelFilter.clear();
 }
 
-function toggleLogDrawer(nid: string): void {
-  openLogsFor.value = openLogsFor.value === nid ? null : nid;
+function toggleLogDrawer(runOrderKey: string): void {
+  openLogsFor.value = openLogsFor.value === runOrderKey ? null : runOrderKey;
 }
 
-function toggleCollapsed(nid: string): void {
-  if (collapsed.has(nid)) collapsed.delete(nid);
-  else collapsed.add(nid);
+function toggleCollapsed(runOrderKey: string): void {
+  if (collapsed.has(runOrderKey)) collapsed.delete(runOrderKey);
+  else collapsed.add(runOrderKey);
 }
 
 function expandAll(): void {
@@ -457,10 +513,13 @@ function expandAll(): void {
 }
 
 function collapseAll(): void {
-  for (const r of rawRuns.value) {
-    const hasKids = rawRuns.value.some((c) => c.parent_id === r.node_id);
-    if (hasKids) collapsed.add(r.node_id);
+  const sorted = [...rawRuns.value].sort((a, b) => a.order - b.order);
+  const parents = new Set<string>();
+  for (const c of sorted) {
+    const pk = resolveParentRunKey(c, sorted);
+    if (pk != null) parents.add(pk);
   }
+  parents.forEach((k) => collapsed.add(k));
 }
 
 function stateClass(state: string): string {
@@ -468,52 +527,6 @@ function stateClass(state: string): string {
   if (state === "FAILED") return "bad";
   if (state === "TERMINATED") return "warn";
   return "info";
-}
-
-function statusClass(st: string): string {
-  if (st === "SUCCESS") return "ok";
-  if (st === "FAILED") return "bad";
-  if (st === "SKIPPED") return "skipped";
-  if (st === "RUNNING" || st === "DISPATCHED" || st === "STAGING") return "running";
-  return "info";
-}
-
-function barStyle(row: NodeRunInfo): Record<string, string> {
-  const total = maxMs.value;
-  const start = row.started_ms ?? row.first_seen_ms ?? 0;
-  const end =
-    row.finished_ms ?? (row.started_ms != null ? Math.max(row.started_ms, total) : start);
-  const leftPct = Math.max(0, Math.min(100, (start / total) * 100));
-  // Always draw a minimum 2% width bar so instant nodes stay visible.
-  const rawWidth = ((end - start) / total) * 100;
-  const widthPct = Math.max(2, Math.min(100 - leftPct, rawWidth));
-  return {
-    left: `${leftPct}%`,
-    width: `${widthPct}%`,
-  };
-}
-
-function formatDuration(ms: number | null): string {
-  if (ms == null) return "—";
-  if (ms < 1) return "<1ms";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
-}
-
-function rowTitle(row: NodeRunInfo): string {
-  const parts = [
-    `#${row.order + 1} ${row.node_id}`,
-    `状态: ${row.final_state}`,
-  ];
-  if (row.started_ms != null) parts.push(`开始: +${row.started_ms}ms`);
-  if (row.finished_ms != null) parts.push(`结束: +${row.finished_ms}ms`);
-  parts.push(`耗时: ${formatDuration(row.duration_ms)}`);
-  if (row.transitions.length) {
-    parts.push(
-      "轨迹: " + row.transitions.map((t) => `${t.state}@${t.t_ms}ms`).join(" → "),
-    );
-  }
-  return parts.join("\n");
 }
 
 async function run() {

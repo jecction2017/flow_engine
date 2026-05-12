@@ -135,6 +135,14 @@ async def test_loop_concurrent_async_strategy_runs_iterations_in_parallel() -> N
     # Order is iteration-completion order (not source order) under concurrency,
     # so compare as a set / sorted list.
     assert sorted(g["collected"]) == [2, 4, 6, 8, 10]
+    lp_runs = sorted((r for r in res.node_runs if r.node_id == "lp"), key=lambda r: r.order)
+    slow_runs = sorted((r for r in res.node_runs if r.node_id == "slow"), key=lambda r: r.order)
+    assert len(lp_runs) == 5
+    assert len(slow_runs) == 5
+    lp_orders = {r.order for r in lp_runs}
+    for s in slow_runs:
+        assert s.parent_id == "lp"
+        assert s.parent_order is not None and s.parent_order in lp_orders
     # Sanity bound — even on slow CI, 5 concurrent iterations should finish
     # well under 5s.
     assert elapsed < 5.0

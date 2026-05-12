@@ -928,12 +928,12 @@ const flowOptions = ref<FlowListItem[]>([]);
 const versionOptions = ref<FlowVersionMeta[]>([]);
 const profileOptions = ref<string[]>([]);
 
-const DEFAULT_WORKER_POLICY: WorkerPolicy = {
+const DEFAULT_WORKER_POLICY = {
   type: "single_active",
   min_workers: 1,
   max_restarts: 5,
   restart_backoff_s: 30,
-};
+} as const;
 
 const form = reactive<{
   flow_code: string;
@@ -956,10 +956,10 @@ const workerPolicyForm = reactive<{
   max_restarts: number;
   restart_backoff_s: number;
 }>({
-  type: "single_active",
-  min_workers: 1,
-  max_restarts: 5,
-  restart_backoff_s: 30,
+  type: DEFAULT_WORKER_POLICY.type,
+  min_workers: DEFAULT_WORKER_POLICY.min_workers,
+  max_restarts: DEFAULT_WORKER_POLICY.max_restarts,
+  restart_backoff_s: DEFAULT_WORKER_POLICY.restart_backoff_s,
 });
 const capabilityPolicyText = ref("[]");
 
@@ -979,10 +979,10 @@ function toggleWorkerSelection(id: string) {
 function applyWorkerPolicyPreset(id: "single") {
   // keep a single internal initializer; UI does not expose presets.
   void id;
-  workerPolicyForm.type = "single_active";
-  workerPolicyForm.min_workers = 1;
-  workerPolicyForm.max_restarts = 5;
-  workerPolicyForm.restart_backoff_s = 30;
+  workerPolicyForm.type = DEFAULT_WORKER_POLICY.type;
+  workerPolicyForm.min_workers = DEFAULT_WORKER_POLICY.min_workers;
+  workerPolicyForm.max_restarts = DEFAULT_WORKER_POLICY.max_restarts;
+  workerPolicyForm.restart_backoff_s = DEFAULT_WORKER_POLICY.restart_backoff_s;
 }
 
 function applyCapabilityPreset(id: "allow_all" | "suppress_writes" | "empty") {
@@ -1376,16 +1376,6 @@ async function loadRuns() {
   }
 }
 
-async function refreshOverviewRuns() {
-  runOffset.value = 0;
-  runFilters.deployment_id = null;
-  runFilters.flow_code = "";
-  runFilters.worker_id = "";
-  runFilters.mode = "";
-  runFilters.status = "";
-  await loadRuns();
-}
-
 function prevPage() {
   runOffset.value = Math.max(0, runOffset.value - runPageSize);
   loadRuns();
@@ -1505,7 +1495,6 @@ function reloadActive() {
     loadWorkers();
     loadRuns();
   } else if (tab.value === "runs") loadRuns();
-  else if (tab.value === "runs") loadRuns();
   else loadWorkers();
 }
 

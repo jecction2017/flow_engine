@@ -23,7 +23,7 @@ import CodeMirror from "vue-codemirror6";
 import { json } from "@codemirror/lang-json";
 import { python } from "@codemirror/lang-python";
 import { yaml } from "@codemirror/lang-yaml";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension, type Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { RegistryDoc } from "@/api/starlark";
 import { flowRegistryAutocompletion } from "@/codemirror/flowRegistryAutocomplete";
@@ -44,9 +44,9 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", v: string): void }>();
 
-function onCmUpdate(v: string) {
+function onCmUpdate(v?: string | Text) {
   if (props.readOnly) return;
-  emit("update:modelValue", v);
+  emit("update:modelValue", typeof v === "string" ? v : (v?.toString() ?? ""));
 }
 
 const heightPx = computed(() => `${props.height}px`);
@@ -84,14 +84,14 @@ const placeholderText = computed(() => {
   return "Starlark / Python 风格脚本";
 });
 
-const extensions = computed(() => {
+const extensions = computed<Extension[]>(() => {
   const lang =
     props.language === "yaml" ? yaml() : props.language === "json" ? json() : python();
   const reg =
-    props.language === "python" && props.registry ? flowRegistryAutocompletion(props.registry) : [];
+    props.language === "python" && props.registry ? flowRegistryAutocompletion(props.registry) : null;
   return [
     lang,
-    ...reg,
+    ...(reg ? [reg] : []),
     EditorState.readOnly.of(props.readOnly),
     EditorView.editable.of(!props.readOnly),
     theme,

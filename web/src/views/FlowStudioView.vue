@@ -40,7 +40,7 @@
           <button
             type="button"
             class="btn ghost"
-            :disabled="!store.activeFlowId || saving"
+            :disabled="!store.activeFlowId || !!saving"
             title="保存为草稿（不创建新版本）"
             @click="saveDraft"
           >

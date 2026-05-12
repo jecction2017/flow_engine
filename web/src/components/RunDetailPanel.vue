@@ -61,20 +61,21 @@
 
     <section v-if="activeTab === 'spans'" class="rd-section">
       <div class="rd-section-head">
-        <span>执行 Span 浏览</span>
-        <span class="muted small">点击行查看父子链路、日志与 attributes</span>
+        <span>执行链路</span>
+        <span class="muted small">按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes</span>
       </div>
       <SpansExplorer
         v-if="isDeployRun"
         :deploy-run-id="detail.id"
         :key="`deploy-${detail.id}-${drillNodeKey}`"
-        :page-size="50"
+        :page-size="500"
+        :initial-node-id="drillNodeId"
       />
       <SpansExplorer
         v-else
         :test-run-id="detail.id"
         :key="`test-${detail.id}`"
-        :page-size="50"
+        :page-size="500"
       />
     </section>
 
@@ -165,7 +166,7 @@ function setTab(id: TabId): void {
 }
 
 // When the overview's "查看 Span →" link is clicked, jump to the
-// Spans tab pre-filtered on that node_id. The drill key bumps the
+// execution tree pre-filtered on that node_id. The drill key bumps the
 // SpansExplorer's key so it re-applies the filter cleanly.
 const drillNodeKey = ref(0);
 const drillNodeId = ref<string | null>(null);
@@ -174,10 +175,6 @@ function onDrillNode(nodeId: string): void {
   drillNodeId.value = nodeId;
   drillNodeKey.value += 1;
   activeTab.value = "spans";
-  // Defer to next frame so the new SpansExplorer mounts before
-  // we push the filter onto it via a custom event. For simplicity
-  // we let the user pick the node themselves on jump — the dropdown
-  // is pre-populated by the API response.
 }
 
 const hasCounters = computed(
@@ -238,7 +235,6 @@ const triggerCtxText = computed(() =>
 
 // Silence "unused" linter warnings.
 void isTestRun;
-void drillNodeId;
 </script>
 
 <style scoped>

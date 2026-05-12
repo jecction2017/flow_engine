@@ -550,6 +550,7 @@ async function reload() {
 }
 
 async function loadTable(ns: string) {
+  void ns;
   await refreshPage();
 }
 

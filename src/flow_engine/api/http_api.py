@@ -572,7 +572,7 @@ def create_app() -> FastAPI:
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if timed_out or res is None:
-            partial_runs = [r.to_dict() for r in sorted(rt._node_runs.values(), key=lambda r: r.order)]  # noqa: SLF001
+            partial_runs = [r.to_dict() for r in sorted(rt._node_runs_list, key=lambda r: r.order)]  # noqa: SLF001
             partial_state = {
                 k: v.value if isinstance(v, NodeState) else str(v) for k, v in rt.node_state.items()
             }
@@ -1630,20 +1630,28 @@ def create_app() -> FastAPI:
     def list_deploy_run_spans(
         run_id: int,
         node_id: str | None = Query(default=None),
+        node_id_contains: str | None = Query(default=None),
         status: str | None = Query(default=None),
         scope_key: str | None = Query(default=None),
         started_after: str | None = Query(default=None),
         started_before: str | None = Query(default=None),
+        duration_min_ms: int | None = Query(default=None, ge=0),
+        duration_max_ms: int | None = Query(default=None, ge=0),
+        log_level: str | None = Query(default=None),
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=500),
     ) -> dict[str, Any]:
         return span_persistence.list_spans(
             deploy_run_id=run_id,
             node_id=node_id,
+            node_id_contains=node_id_contains,
             status=status,
             scope_key=scope_key,
             started_after=_parse_iso(started_after),
             started_before=_parse_iso(started_before),
+            duration_min_ms=duration_min_ms,
+            duration_max_ms=duration_max_ms,
+            log_level=log_level,
             offset=offset,
             limit=limit,
         )
@@ -1652,20 +1660,28 @@ def create_app() -> FastAPI:
     def list_test_run_spans(
         run_id: int,
         node_id: str | None = Query(default=None),
+        node_id_contains: str | None = Query(default=None),
         status: str | None = Query(default=None),
         scope_key: str | None = Query(default=None),
         started_after: str | None = Query(default=None),
         started_before: str | None = Query(default=None),
+        duration_min_ms: int | None = Query(default=None, ge=0),
+        duration_max_ms: int | None = Query(default=None, ge=0),
+        log_level: str | None = Query(default=None),
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=500),
     ) -> dict[str, Any]:
         return span_persistence.list_spans(
             test_run_id=run_id,
             node_id=node_id,
+            node_id_contains=node_id_contains,
             status=status,
             scope_key=scope_key,
             started_after=_parse_iso(started_after),
             started_before=_parse_iso(started_before),
+            duration_min_ms=duration_min_ms,
+            duration_max_ms=duration_max_ms,
+            log_level=log_level,
             offset=offset,
             limit=limit,
         )

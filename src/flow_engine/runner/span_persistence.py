@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import delete, func, select, text as sql_text
 
 from flow_engine.db.models import FeRunSpan
 from flow_engine.db.session import db_session
@@ -86,6 +86,21 @@ def update_span_parent(handle_to_id: dict[int, int]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _log_count(r: FeRunSpan) -> int:
+    raw = r.logs
+    if raw is None:
+        return 0
+    if isinstance(raw, list):
+        return len(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return 0
+        return len(parsed) if isinstance(parsed, list) else 0
+    return 0
+
+
 def _row_to_summary(r: FeRunSpan) -> dict[str, Any]:
     return {
         "id": int(r.id),
@@ -103,6 +118,7 @@ def _row_to_summary(r: FeRunSpan) -> dict[str, Any]:
         "status": r.status,
         "error": r.error,
         "sampled": bool(r.sampled),
+        "log_count": _log_count(r),
     }
 
 
@@ -132,10 +148,14 @@ def list_spans(
     deploy_run_id: int | None = None,
     test_run_id: int | None = None,
     node_id: str | None = None,
+    node_id_contains: str | None = None,
     status: str | None = None,
     scope_key: str | None = None,
     started_after: datetime | None = None,
     started_before: datetime | None = None,
+    duration_min_ms: int | None = None,
+    duration_max_ms: int | None = None,
+    log_level: str | None = None,
     offset: int = 0,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -152,6 +172,8 @@ def list_spans(
             stmt = stmt.where(FeRunSpan.test_run_id == int(test_run_id))
         if node_id:
             stmt = stmt.where(FeRunSpan.node_id == node_id)
+        elif node_id_contains and node_id_contains.strip():
+            stmt = stmt.where(FeRunSpan.node_id.contains(node_id_contains.strip()))
         if status:
             stmt = stmt.where(FeRunSpan.status == status)
         if scope_key:
@@ -160,6 +182,23 @@ def list_spans(
             stmt = stmt.where(FeRunSpan.started_at >= started_after)
         if started_before is not None:
             stmt = stmt.where(FeRunSpan.started_at < started_before)
+        if duration_min_ms is not None:
+            stmt = stmt.where(
+                FeRunSpan.duration_ms.isnot(None),
+                FeRunSpan.duration_ms >= int(duration_min_ms),
+            )
+        if duration_max_ms is not None:
+            stmt = stmt.where(
+                FeRunSpan.duration_ms.isnot(None),
+                FeRunSpan.duration_ms <= int(duration_max_ms),
+            )
+        if log_level and log_level.strip():
+            lvl = log_level.strip().lower()
+            stmt = stmt.where(
+                sql_text(
+                    "JSON_SEARCH(fe_run_span.logs, 'one', :log_lvl, NULL, '$[*].level') IS NOT NULL",
+                ).bindparams(log_lvl=lvl),
+            )
 
         count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
         total = int(s.execute(count_stmt).scalar_one() or 0)

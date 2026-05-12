@@ -54,6 +54,8 @@ export type SpanSummary = {
   status: SpanStatus;
   error: string | null;
   sampled: boolean;
+  /** Number of log entries stored on the span row (when provided by API). */
+  log_count?: number;
 };
 
 export type SpanDetail = SpanSummary & {
@@ -73,10 +75,14 @@ export type SpansListResponse = {
 
 export type ListSpansParams = {
   node_id?: string;
+  node_id_contains?: string;
   status?: SpanStatus | string;
   scope_key?: string;
   started_after?: string;
   started_before?: string;
+  duration_min_ms?: number;
+  duration_max_ms?: number;
+  log_level?: string;
   offset?: number;
   limit?: number;
 };
@@ -84,10 +90,14 @@ export type ListSpansParams = {
 function buildQuery(params: ListSpansParams): string {
   const qs = new URLSearchParams();
   if (params.node_id) qs.set("node_id", params.node_id);
+  if (params.node_id_contains) qs.set("node_id_contains", params.node_id_contains);
   if (params.status) qs.set("status", String(params.status));
   if (params.scope_key) qs.set("scope_key", params.scope_key);
   if (params.started_after) qs.set("started_after", params.started_after);
   if (params.started_before) qs.set("started_before", params.started_before);
+  if (params.duration_min_ms != null) qs.set("duration_min_ms", String(params.duration_min_ms));
+  if (params.duration_max_ms != null) qs.set("duration_max_ms", String(params.duration_max_ms));
+  if (params.log_level) qs.set("log_level", params.log_level);
   if (params.offset != null) qs.set("offset", String(params.offset));
   if (params.limit != null) qs.set("limit", String(params.limit));
   const q = qs.toString();
