@@ -1,118 +1,13 @@
 <template>
   <div class="spans-explorer">
-    <div class="se-toolbar">
-      <div class="se-toolbar-grid">
-        <label class="ctl">
-          <span>节点</span>
-          <select v-model="filters.node_id" class="inp">
-            <option value="">全部</option>
-            <option v-for="nid in nodeOptions" :key="nid" :value="nid">{{ nid }}</option>
-          </select>
-        </label>
-        <label class="ctl">
-          <span>状态</span>
-          <select v-model="filters.status" class="inp">
-            <option value="">全部</option>
-            <option value="success">success</option>
-            <option value="failed">failed</option>
-            <option value="skipped">skipped</option>
-            <option value="running">running</option>
-          </select>
-        </label>
-        <label class="ctl se-span-2">
-          <span>业务键 scope_key</span>
-          <input
-            v-model.trim="filters.scope_key"
-            class="inp mono"
-            placeholder="精确匹配，回车搜索"
-            @keyup.enter="reload"
-          />
-        </label>
-        <div class="se-panel se-span-3">
-          <div class="se-panel-hd">开始时间（UTC 写入）</div>
-          <div class="se-panel-bd se-time-pair">
-            <label class="ctl-inline">
-              <span class="sub">≥</span>
-              <input v-model="filters.started_after" class="inp mono" type="datetime-local" step="1" />
-            </label>
-            <label class="ctl-inline">
-              <span class="sub">&lt;</span>
-              <input v-model="filters.started_before" class="inp mono" type="datetime-local" step="1" />
-            </label>
-          </div>
-        </div>
-        <div class="se-panel se-span-2">
-          <div class="se-panel-hd">耗时（毫秒）</div>
-          <div class="se-panel-bd se-dur-pair">
-            <label class="ctl-inline">
-              <span class="sub">≥</span>
-              <input
-                v-model.number="filters.duration_min_ms"
-                class="inp mono"
-                type="number"
-                min="0"
-                step="1"
-                placeholder="—"
-              />
-            </label>
-            <label class="ctl-inline">
-              <span class="sub">≤</span>
-              <input
-                v-model.number="filters.duration_max_ms"
-                class="inp mono"
-                type="number"
-                min="0"
-                step="1"
-                placeholder="—"
-              />
-            </label>
-          </div>
-        </div>
-        <div class="se-panel se-span-3">
-          <div class="se-panel-hd">日志级别（与试运行一致）</div>
-          <div class="se-panel-bd se-lvl-row">
-            <button
-              v-for="lvl in LOG_LEVELS"
-              :key="lvl"
-              type="button"
-              class="se-chip-btn"
-              :class="[`lvl-${lvl}`, { active: filters.log_level === lvl }]"
-              @click="toggleLogLevel(lvl)"
-            >
-              {{ lvl }}
-            </button>
-            <button v-if="filters.log_level" type="button" class="link tiny" @click="clearLogLevel">清除</button>
-          </div>
-        </div>
-      </div>
-      <div class="se-toolbar-actions">
-        <button type="button" class="btn ghost small" :disabled="loading" @click="reload">
-          {{ loading ? "查询中…" : "搜索" }}
-        </button>
-        <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置</button>
-        <span class="sep" />
-        <button type="button" class="link small" @click="expandTree">全部展开</button>
-        <span class="sep">·</span>
-        <button type="button" class="link small" @click="collapseTree">全部折叠</button>
-        <span class="spacer" />
-        <span class="muted small">本页 {{ items.length }} / 命中 {{ resp?.total ?? 0 }} 条</span>
-        <button type="button" class="btn small ghost" :disabled="!hasNext || loading" @click="loadMore">
-          {{ loading && appendMode ? "加载中…" : "加载更多" }}
-        </button>
-      </div>
-    </div>
+    <p v-if="error" class="err">{{ error }}</p>
 
     <p v-if="filterBanner" class="trace-filter-banner">
       当前为筛选或分页结果：仅展示本页已加载的 Span；父子关系在缺少上层节点时可能在顶层并列显示。
       <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置筛选</button>
     </p>
 
-    <p v-if="error" class="err">{{ error }}</p>
-
-    <div v-if="loading && !appendMode" class="muted center tree-state">加载中…</div>
-    <div v-else-if="!items.length" class="muted center tree-state">没有匹配的 Span</div>
     <ExecutionLinkTree
-      v-else
       ref="linkRef"
       :rows="linkRows"
       :timeline-min-ms="timeline.min"
@@ -125,6 +20,164 @@
       @toggle-collapsed="onToggleCollapsed"
       @row-click="onRowClick"
     >
+      <template #toolbar>
+        <button type="button" class="link" @click="expandTree">全部展开</button>
+        <span class="sep">·</span>
+        <button type="button" class="link" @click="collapseTree">全部折叠</button>
+        <span class="spacer" />
+        <button type="button" class="btn small ghost" :disabled="loading" @click="reload">
+          {{ loading && !appendMode ? "查询中…" : "搜索" }}
+        </button>
+        <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置</button>
+        <span class="muted small">命中 {{ resp?.total ?? 0 }} · 本页 {{ items.length }}</span>
+        <button
+          type="button"
+          class="btn small ghost"
+          :disabled="!hasNext || loading"
+          @click="loadMore"
+        >
+          {{ loading && appendMode ? "加载中…" : "加载更多" }}
+        </button>
+      </template>
+
+      <template #filters>
+        <!-- col 1: 顺序 spacer -->
+        <span class="rt-filters-spacer" aria-hidden="true" />
+        <!-- col 2: dot spacer -->
+        <span class="rt-filters-spacer" aria-hidden="true" />
+        <!-- col 3: node_id -->
+        <select v-model="filters.node_id" class="rt-finp" :title="filters.node_id || '全部节点'">
+          <option value="">全部节点</option>
+          <option v-for="nid in nodeOptions" :key="nid" :value="nid">{{ nid }}</option>
+        </select>
+        <!-- col 4: 类型 (no filter) -->
+        <span class="rt-filters-spacer" aria-hidden="true" />
+        <!-- col 5: scope_key -->
+        <input
+          v-model.trim="filters.scope_key"
+          class="rt-finp mono"
+          placeholder="业务键"
+          title="scope_key 精确匹配，回车搜索"
+          @keyup.enter="reload"
+        />
+        <!-- col 6: 开始时间范围 popover -->
+        <span class="rt-filter-cell">
+          <button
+            type="button"
+            class="rt-fbtn"
+            :class="{ active: hasTimeRange }"
+            :title="timeRangeTitle"
+            :aria-expanded="timePopOpen"
+            @click.stop="toggleTimePop"
+          >
+            <span aria-hidden="true">⏱</span>
+          </button>
+          <div v-if="timePopOpen" class="rt-popover" @click.stop>
+            <div class="rt-popover-hd">
+              <span>开始时间</span>
+              <span class="muted">UTC 写入</span>
+            </div>
+            <div class="rt-popover-row">
+              <span class="sub">≥</span>
+              <input
+                v-model="filters.started_after"
+                type="datetime-local"
+                step="1"
+                class="rt-finp mono"
+                @keyup.enter="commitPopAndReload"
+              />
+            </div>
+            <div class="rt-popover-row">
+              <span class="sub">&lt;</span>
+              <input
+                v-model="filters.started_before"
+                type="datetime-local"
+                step="1"
+                class="rt-finp mono"
+                @keyup.enter="commitPopAndReload"
+              />
+            </div>
+            <div class="rt-popover-actions">
+              <button v-if="hasTimeRange" type="button" class="link" @click="clearTimeRange">清除</button>
+              <button type="button" class="link" @click="commitPopAndReload">应用</button>
+            </div>
+          </div>
+        </span>
+        <!-- col 7: 耗时范围 popover -->
+        <span class="rt-filter-cell">
+          <button
+            type="button"
+            class="rt-fbtn"
+            :class="{ active: hasDurRange }"
+            :title="durRangeTitle"
+            :aria-expanded="durPopOpen"
+            @click.stop="toggleDurPop"
+          >
+            <span aria-hidden="true">Δ</span>
+          </button>
+          <div v-if="durPopOpen" class="rt-popover" @click.stop>
+            <div class="rt-popover-hd">
+              <span>耗时</span>
+              <span class="muted">毫秒</span>
+            </div>
+            <div class="rt-popover-row">
+              <span class="sub">≥</span>
+              <input
+                v-model.number="filters.duration_min_ms"
+                type="number"
+                min="0"
+                step="1"
+                class="rt-finp mono"
+                placeholder="—"
+                @keyup.enter="commitPopAndReload"
+              />
+            </div>
+            <div class="rt-popover-row">
+              <span class="sub">≤</span>
+              <input
+                v-model.number="filters.duration_max_ms"
+                type="number"
+                min="0"
+                step="1"
+                class="rt-finp mono"
+                placeholder="—"
+                @keyup.enter="commitPopAndReload"
+              />
+            </div>
+            <div class="rt-popover-actions">
+              <button v-if="hasDurRange" type="button" class="link" @click="clearDurRange">清除</button>
+              <button type="button" class="link" @click="commitPopAndReload">应用</button>
+            </div>
+          </div>
+        </span>
+        <!-- col 8: 时间线区 - 状态过滤 -->
+        <select
+          v-model="filters.status"
+          class="rt-finp"
+          :title="filters.status ? `状态：${filters.status}` : '全部状态'"
+        >
+          <option value="">全部状态</option>
+          <option value="success">success</option>
+          <option value="failed">failed</option>
+          <option value="skipped">skipped</option>
+          <option value="running">running</option>
+        </select>
+        <!-- col 9 + col 10 span: log level chips -->
+        <span class="rt-finp-chips rt-log-chips">
+          <button
+            v-for="lvl in LOG_LEVELS"
+            :key="lvl"
+            type="button"
+            class="rt-chip-btn"
+            :class="[`lvl-${lvl}`, { active: filters.log_level === lvl }]"
+            :title="`日志级别：${lvl}`"
+            @click="toggleLogLevel(lvl)"
+          >
+            {{ lvl[0].toUpperCase() }}
+          </button>
+        </span>
+      </template>
+
       <template #secondary="{ row }">
         <div class="rt-inline-detail" @click.stop>
           <p v-if="detailErr" class="inline-err">{{ detailErr }}</p>
@@ -132,12 +185,17 @@
           <SpanInlineDetail v-else-if="detail && row.spanId != null && detail.id === row.spanId" :span="detail" />
         </div>
       </template>
+
+      <template #footer>
+        <div v-if="loading && !appendMode" class="tree-state">加载中…</div>
+        <div v-else-if="!items.length" class="tree-state">没有匹配的 Span</div>
+      </template>
     </ExecutionLinkTree>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   getSpan,
   listDeployRunSpans,
@@ -186,6 +244,12 @@ const appendMode = ref(false);
 const loadedItems = ref<SpanSummary[]>([]);
 const linkRef = ref<InstanceType<typeof ExecutionLinkTree> | null>(null);
 
+// Range filter popovers (started_at / duration). At most one is open at a
+// time; clicking outside closes whichever is open. Both popovers share the
+// same dismissal listener installed in onMounted.
+const timePopOpen = ref(false);
+const durPopOpen = ref(false);
+
 const collapsedSpanKeys = reactive(new Set<string>());
 const openDetailKey = ref<string | null>(null);
 const detail = ref<SpanDetail | null>(null);
@@ -200,24 +264,85 @@ const hasNext = computed(() => {
   return loadedItems.value.length < resp.value.total;
 });
 
+const hasTimeRange = computed(
+  () => !!filters.started_after.trim() || !!filters.started_before.trim(),
+);
+
+const hasDurRange = computed(
+  () =>
+    (filters.duration_min_ms != null && Number.isFinite(filters.duration_min_ms)) ||
+    (filters.duration_max_ms != null && Number.isFinite(filters.duration_max_ms)),
+);
+
 const hasFilters = computed(() => {
   if (filters.node_id) return true;
   if (filters.status) return true;
   if (filters.scope_key) return true;
-  if (filters.started_after.trim()) return true;
-  if (filters.started_before.trim()) return true;
-  if (filters.duration_min_ms != null && Number.isFinite(filters.duration_min_ms)) return true;
-  if (filters.duration_max_ms != null && Number.isFinite(filters.duration_max_ms)) return true;
+  if (hasTimeRange.value) return true;
+  if (hasDurRange.value) return true;
   if (filters.log_level) return true;
   return false;
+});
+
+const timeRangeTitle = computed(() => {
+  const after = filters.started_after.trim();
+  const before = filters.started_before.trim();
+  if (!after && !before) return "开始时间筛选";
+  return `开始时间：${after || "*"} ~ ${before || "*"}`;
+});
+
+const durRangeTitle = computed(() => {
+  const min = filters.duration_min_ms;
+  const max = filters.duration_max_ms;
+  const minOk = min != null && Number.isFinite(min);
+  const maxOk = max != null && Number.isFinite(max);
+  if (!minOk && !maxOk) return "耗时筛选（毫秒）";
+  return `耗时：${minOk ? min : "*"}ms ~ ${maxOk ? max : "*"}ms`;
 });
 
 function toggleLogLevel(lvl: (typeof LOG_LEVELS)[number]): void {
   filters.log_level = filters.log_level === lvl ? "" : lvl;
 }
 
-function clearLogLevel(): void {
-  filters.log_level = "";
+function toggleTimePop(): void {
+  durPopOpen.value = false;
+  timePopOpen.value = !timePopOpen.value;
+}
+
+function toggleDurPop(): void {
+  timePopOpen.value = false;
+  durPopOpen.value = !durPopOpen.value;
+}
+
+function closePopovers(): void {
+  timePopOpen.value = false;
+  durPopOpen.value = false;
+}
+
+function commitPopAndReload(): void {
+  closePopovers();
+  void reload();
+}
+
+function clearTimeRange(): void {
+  filters.started_after = "";
+  filters.started_before = "";
+}
+
+function clearDurRange(): void {
+  filters.duration_min_ms = null;
+  filters.duration_max_ms = null;
+}
+
+function onDocPointerDown(e: PointerEvent | MouseEvent): void {
+  if (!timePopOpen.value && !durPopOpen.value) return;
+  const target = e.target as Node | null;
+  if (!target) return;
+  const el = target instanceof Element ? target : null;
+  // Only swallow if the click is outside both the popover and its trigger.
+  // .rt-filter-cell hosts the trigger button + popover for each range filter.
+  if (el && el.closest(".rt-filter-cell")) return;
+  closePopovers();
 }
 
 const filterBanner = computed(() => hasFilters.value || (resp.value != null && items.value.length < resp.value.total));
@@ -417,6 +542,7 @@ function resetFilters(): void {
   filters.duration_min_ms = null;
   filters.duration_max_ms = null;
   filters.log_level = "";
+  closePopovers();
   void reload();
 }
 
@@ -536,203 +662,21 @@ watch(
   { immediate: true },
 );
 
+onMounted(() => {
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
+});
+
 </script>
 
 <style scoped>
 .spans-explorer {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.se-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, #94a3b8);
-  border-radius: 10px;
-  background: linear-gradient(180deg, #f8fafc 0%, #fff 48%);
-}
-
-.se-toolbar-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px 12px;
-  align-items: end;
-}
-
-@media (max-width: 1100px) {
-  .se-toolbar-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.se-span-2 {
-  grid-column: span 2;
-}
-
-.se-span-3 {
-  grid-column: span 3;
-}
-
-@media (max-width: 1100px) {
-  .se-span-2,
-  .se-span-3 {
-    grid-column: span 2;
-  }
-}
-
-.se-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
-  padding-top: 4px;
-  border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
-}
-
-.ctl {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #475569;
-  min-width: 0;
-}
-
-.ctl .inp {
-  font-size: 12px;
-  padding: 5px 8px;
-  border: 1px solid color-mix(in srgb, #64748b 28%, var(--border));
-  border-radius: 8px;
-  background: #fff;
-  color: #0f172a;
-}
-
-.ctl .inp:focus {
-  outline: none;
-  border-color: color-mix(in srgb, var(--accent, #2563eb) 55%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #2563eb) 18%, transparent);
-}
-
-.se-panel {
-  min-width: 0;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, #64748b 18%, var(--border));
-  background: #fff;
-  overflow: hidden;
-}
-
-.se-panel-hd {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #64748b;
-  padding: 5px 8px;
-  background: color-mix(in srgb, #f1f5f9 88%, #fff);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-}
-
-.se-panel-bd {
-  padding: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.se-time-pair,
-.se-dur-pair {
-  gap: 10px;
-}
-
-.ctl-inline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--muted);
-  flex: 1 1 140px;
-  min-width: 0;
-}
-
-.ctl-inline .sub {
-  flex: 0 0 auto;
-  width: 1.25rem;
-  font-weight: 700;
-  color: #64748b;
-  text-align: center;
-}
-
-.ctl-inline .inp {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.se-lvl-row {
-  gap: 5px;
-  align-items: center;
-}
-
-.se-chip-btn {
-  text-transform: uppercase;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border-radius: 999px;
-  padding: 2px 9px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.se-chip-btn.active.lvl-info {
-  background: color-mix(in srgb, #3b82f6 18%, transparent);
-  color: #1d4ed8;
-  border-color: color-mix(in srgb, #3b82f6 35%, transparent);
-}
-
-.se-chip-btn.active.lvl-warn {
-  background: color-mix(in srgb, #f59e0b 22%, transparent);
-  color: #92400e;
-  border-color: color-mix(in srgb, #f59e0b 40%, transparent);
-}
-
-.se-chip-btn.active.lvl-error {
-  background: color-mix(in srgb, #ef4444 20%, transparent);
-  color: #b91c1c;
-  border-color: color-mix(in srgb, #ef4444 35%, transparent);
-}
-
-.se-chip-btn.active.lvl-debug {
-  background: color-mix(in srgb, #94a3b8 22%, transparent);
-  color: #475569;
-  border-color: color-mix(in srgb, #94a3b8 40%, transparent);
-}
-
-.link.tiny {
-  font-size: 10px;
-  margin-left: 4px;
-}
-
-.spacer {
-  flex: 1 1 auto;
-}
-
-.sep {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.tree-state {
-  padding: 18px 12px;
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  background: #fbfdff;
 }
 
 .trace-filter-banner {
@@ -749,12 +693,55 @@ watch(
   gap: 8px;
 }
 
+.err {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #fecaca 30%, transparent);
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.inline-err {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #fecaca 35%, transparent);
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.tree-state {
+  padding: 18px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  border-top: 1px dashed var(--border);
+}
+
+.pad {
+  padding: 6px 0;
+}
+
+/* ---- Utility classes consumed by content rendered into the
+   ExecutionLinkTree #toolbar / #filters slots. Scoped to this
+   component so they only style this component's slot content. ---- */
+
+.small {
+  font-size: 11px;
+}
+
 .muted {
   color: var(--muted);
 }
 
-.center {
-  text-align: center;
+.spacer {
+  flex: 1 1 auto;
+}
+
+.sep {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .link {
@@ -770,33 +757,53 @@ watch(
   text-decoration: underline;
 }
 
-.err {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, #fecaca 30%, transparent);
-  color: #b91c1c;
-  font-size: 12px;
-}
-
-.mono {
-  font-family: var(--mono);
-}
-
-.inline-err {
-  margin: 0 0 8px;
-  padding: 6px 8px;
+.btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
   border-radius: 6px;
-  background: color-mix(in srgb, #fecaca 35%, transparent);
-  color: #b91c1c;
-  font-size: 12px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
 }
 
-.small {
+.btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent);
+}
+
+.btn.small {
+  padding: 2px 7px;
   font-size: 11px;
 }
 
-.pad {
-  padding: 6px 0;
+.btn.ghost {
+  background: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Per-cell filter wrapper hosting the trigger button + anchored popover.
+   The popover positions itself relative to this cell via run-trace.css. */
+.rt-filter-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Log-level chip group span 2 grid columns so the four single-letter
+   chips fit comfortably regardless of column width. */
+.rt-log-chips {
+  grid-column: 9 / span 2;
+}
+
+@media (max-width: 1100px) {
+  .rt-log-chips {
+    grid-column: auto;
+  }
 }
 </style>
