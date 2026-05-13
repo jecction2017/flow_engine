@@ -16,6 +16,9 @@
     <div v-if="$slots.toolbar" class="rt-toolbar">
       <slot name="toolbar" />
     </div>
+    <div v-if="$slots.filters" class="rt-filters">
+      <slot name="filters" />
+    </div>
     <ul class="rt-rows">
       <li v-for="row in rows" :key="row.key" class="rt-item">
         <div

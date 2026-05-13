@@ -97,6 +97,15 @@ def test_delete_flow_missing_returns_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_flow_deletable_endpoint(client: TestClient) -> None:
+    _create_flow(client, "deletable_flow")
+    r = client.get("/api/flows/deletable_flow/deletable")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["deletable"] is True
+    assert body["reasons"] == []
+
+
 # ---------------------------------------------------------------------------
 # Version management
 # ---------------------------------------------------------------------------

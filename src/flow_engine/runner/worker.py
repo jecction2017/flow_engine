@@ -652,16 +652,10 @@ class Worker:
             )
 
         obs_cfg = parse_obs_config(deployment.get("observability") or {})
-        # Resident flows have no natural end — opening a flow_root span
-        # would leak memory and would never close, holding every child
-        # span as "pending". once / cron / test runs get the root.
-        schedule_type = str(deployment.get("schedule_type") or "once")
-        emit_flow_root_span = schedule_type != "resident"
         backend = AsyncBufferedDBBackend(
             run_ref=RunRef(deploy_run_id=run_id),
             flow_code=flow_code,
             obs_cfg=obs_cfg,
-            emit_flow_root_span=emit_flow_root_span,
         )
 
         runtime = FlowRuntime(

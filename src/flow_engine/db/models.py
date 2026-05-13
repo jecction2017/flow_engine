@@ -1228,10 +1228,14 @@ class FeRunSpan(_AuditCols, Base):
     """统一的执行 Span 表，承载所有可观测的「执行单元」。
 
     Span 是 OpenTelemetry 风格的执行边界记录：
-      - node_type=flow_root:  once/cron/test 顶层运行
       - node_type=task:       TaskNode 执行（默认不采，仅按配置开启）
       - node_type=loop_iter:  LoopNode 单次迭代
       - node_type=subflow:    SubflowNode 单次调用
+
+    历史上还存在 node_type=flow_root（once/cron/test 的合成顶层节点），
+    现已废弃：流程级运行由 fe_deploy_run / fe_test_run 承载，无需为它
+    再合成一个 Span。read 路径在 ``list_spans_forest`` 中过滤掉该类型
+    以兼容存量数据。
 
     通过 ``parent_span_id`` 形成树（嵌套循环 / 嵌套子流程自然支持）。
     多循环场景由 ``node_id`` 区分，无需新表。
@@ -1316,13 +1320,13 @@ class FeRunSpan(_AuditCols, Base):
         String(128),
         nullable=False,
         server_default=text("''"),
-        comment="产生 Span 的节点 id；flow_root 使用 '__flow_root__'",
+        comment="产生 Span 的节点 id（历史 flow_root 行用 '__flow_root__'，已废弃）",
     )
     node_type: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
         server_default=text("'task'"),
-        comment="Span 类型：flow_root / task / loop_iter / subflow",
+        comment="Span 类型：task / loop_iter / subflow（历史值 flow_root 已废弃）",
     )
     span_seq: Mapped[int] = mapped_column(
         BIGINT(unsigned=True),
@@ -1446,7 +1450,7 @@ class FeNodeMetric(_AuditCols, Base):
         String(128),
         nullable=False,
         server_default=text("''"),
-        comment="节点 id（flow_root 时为 '__flow_root__'）",
+        comment="节点 id（流程级指标使用历史标签 '__flow_root__'）",
     )
     bucket_at: Mapped[datetime] = mapped_column(
         MySQLDateTime(fsp=3),

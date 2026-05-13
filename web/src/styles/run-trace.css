@@ -581,6 +581,23 @@
   border-color: color-mix(in srgb, #94a3b8 40%, transparent);
 }
 
+/* Generic toggle-style chip (e.g. "包含子节点"). Mixed-case label, accent
+   tone when active. Distinct from log-level chips which keep their own
+   per-level color. */
+.run-trace .rt-chip-btn.rt-chip-toggle {
+  text-transform: none;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  padding: 1px 8px;
+}
+
+.run-trace .rt-chip-btn.rt-chip-toggle.active {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, #fff);
+  color: var(--accent, #2563eb);
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 45%, transparent);
+}
+
 @media (max-width: 1100px) {
   .run-trace.run-trace--spans .rt-row {
     grid-template-columns: 34px 12px minmax(160px, 1fr) 90px 70px;
@@ -603,6 +620,7 @@
 }
 
 .run-trace.run-trace--link .rt-axis,
+.run-trace.run-trace--link .rt-filters,
 .run-trace.run-trace--link .rt-row {
   display: grid;
   gap: 4px 6px;
@@ -612,6 +630,7 @@
 }
 
 .run-trace.run-trace--link.rt-no-meta .rt-axis,
+.run-trace.run-trace--link.rt-no-meta .rt-filters,
 .run-trace.run-trace--link.rt-no-meta .rt-row {
   grid-template-columns:
     24px 10px minmax(96px, 1.4fr) minmax(84px, 0.68fr) 44px minmax(64px, 1fr) 52px 36px;
@@ -768,14 +787,219 @@
 
 @media (max-width: 1280px) {
   .run-trace.run-trace--link .rt-axis,
+  .run-trace.run-trace--link .rt-filters,
   .run-trace.run-trace--link .rt-row {
     grid-template-columns:
       22px 8px minmax(64px, 1fr) minmax(40px, 0.35fr) minmax(48px, 0.4fr) minmax(72px, 0.55fr) 40px minmax(40px, 0.75fr) 48px 32px;
   }
 
   .run-trace.run-trace--link.rt-no-meta .rt-axis,
+  .run-trace.run-trace--link.rt-no-meta .rt-filters,
   .run-trace.run-trace--link.rt-no-meta .rt-row {
     grid-template-columns:
       22px 8px minmax(72px, 1fr) minmax(68px, 0.62fr) 40px minmax(48px, 0.84fr) 48px 32px;
+  }
+}
+
+/* ---------------- Inline filter row (table-header filters) ---------------- */
+
+.run-trace.run-trace--link .rt-filters {
+  padding: 4px 10px;
+  background: color-mix(in srgb, #f8fafc 70%, #fff);
+  border-bottom: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 11px;
+  position: relative;
+}
+
+/* Each direct child of .rt-filters is a grid cell. Keep them clipped so a
+   wide control (e.g. select with long options) cannot break the column. */
+.run-trace.run-trace--link .rt-filters > * {
+  min-width: 0;
+}
+
+/* Compact field (input + select) used inside the header filter row. Visual
+   weight matches .rt-chip-btn so the row reads as a single design family. */
+.run-trace .rt-finp {
+  width: 100%;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  background: #fff;
+  color: var(--text, #0f172a);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.run-trace .rt-finp.mono {
+  font-family: var(--mono);
+}
+
+.run-trace .rt-finp:focus {
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 55%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #2563eb) 18%, transparent);
+}
+
+.run-trace select.rt-finp {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 10px) 50%, calc(100% - 6px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 16px;
+}
+
+/* Icon-led trigger button used inside narrow columns (started / duration). */
+.run-trace .rt-fbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  position: relative;
+  justify-self: center;
+}
+
+.run-trace .rt-fbtn:hover {
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 35%, var(--border));
+  color: var(--text, #0f172a);
+}
+
+.run-trace .rt-fbtn.active {
+  background: color-mix(in srgb, var(--accent, #2563eb) 12%, #fff);
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 45%, transparent);
+  color: var(--accent, #2563eb);
+}
+
+/* Tiny dot badge to signal "this filter is active" without the user having
+   to open the popover. */
+.run-trace .rt-fbtn.active::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent, #2563eb);
+}
+
+/* Chip group inside a single column cell (e.g. log level in the rightmost
+   column). Reuses .rt-chip-btn for the actual chips. */
+.run-trace .rt-finp-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.run-trace .rt-finp-chips .rt-chip-btn {
+  padding: 1px 5px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+/* Anchored popover used by range filters (started / duration). The host
+   button uses position: relative so the popover sits right under it. */
+.run-trace .rt-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text, #0f172a);
+}
+
+.run-trace .rt-popover-hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.run-trace .rt-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-trace .rt-popover-row > .sub {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.run-trace .rt-popover-row > .rt-finp {
+  flex: 1 1 auto;
+  height: 24px;
+}
+
+.run-trace .rt-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.run-trace .rt-popover-actions .link {
+  font-size: 10px;
+}
+
+/* Narrow-screen degradation: drop column alignment, lay filters out in a
+   single wrap row so nothing is squashed. */
+@media (max-width: 1100px) {
+  .run-trace.run-trace--link .rt-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: center;
+  }
+
+  .run-trace.run-trace--link .rt-filters > .rt-filters-spacer {
+    display: none;
+  }
+
+  .run-trace .rt-finp {
+    width: auto;
+    min-width: 96px;
+  }
+
+  .run-trace .rt-finp-chips {
+    justify-content: flex-start;
+  }
+
+  .run-trace .rt-popover {
+    left: 0;
+    transform: none;
   }
 }

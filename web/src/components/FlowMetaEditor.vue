@@ -5,7 +5,7 @@
         <span class="hd-title">流程属性</span>
         <InfoTip
           wide
-          text="业务逻辑以 flow_id 为唯一主键，显示名仅用于界面展示。initial_context 作为流程运行前的全局上下文。"
+          text="流程名称用于列表与导出文件名；服务端以内部 id 区分流程。initial_context 为运行前注入的全局上下文。"
         />
       </div>
     </header>
@@ -14,17 +14,10 @@
       <div class="grid">
         <label class="field">
           <span class="lbl-row">
-            显示名
-            <InfoTip text="留空时在界面上回落使用 flow_id。" />
+            流程名称<span class="req">*</span>
+            <InfoTip text="在流程列表等处展示；保存草稿或新版本前必填。" />
           </span>
-          <input v-model="displayName" class="inp" :placeholder="store.activeFlowId ?? ''" />
-        </label>
-
-        <label class="field">
-          <span class="lbl-row">
-            版本<span class="req">*</span>
-          </span>
-          <input v-model="version" class="inp" placeholder="例如：1.0" />
+          <input v-model="displayName" class="inp" placeholder="例如：订单履约主流程" />
         </label>
 
         <label class="field">
@@ -60,10 +53,10 @@
           :key="k"
           class="strategy-card"
           :class="{ active: selectedStrategyKey === k && !isCreatingStrategy }"
-          @click="store.select({ kind: 'strategy', key: k })"
+          @click="openStrategyDrawer(k)"
         >
           <div class="strategy-header">
-            <span class="mono strategy-key">{{ k }}</span>
+            <span class="strategy-title">{{ strategyCardLabel(k) }}</span>
             <span class="mode-badge" :data-mode="store.modeOf(k)">{{ store.modeOf(k) }}</span>
           </div>
           <div v-if="store.doc.strategies[k]" class="strategy-meta">
@@ -76,100 +69,111 @@
           </div>
         </div>
       </div>
-
-      <div
-        v-if="isCreatingStrategy || (selectedStrategyKey && store.doc.strategies[selectedStrategyKey])"
-        class="strategy-editor-inline"
-      >
-        <div class="inline-hd">
-          <span class="inline-title">
-            <template v-if="isCreatingStrategy">新增策略</template>
-            <template v-else>编辑：<span class="mono">{{ selectedStrategyKey }}</span></template>
-          </span>
-          <div class="inline-actions">
-            <template v-if="isCreatingStrategy">
-              <button type="button" class="btn ghost sm" @click="cancelCreateStrategy">取消</button>
-              <button type="button" class="btn primary sm" @click="createStrategy">创建</button>
-            </template>
-            <template v-else>
-              <button
-                v-if="selectedStrategyKey && selectedStrategyKey !== 'default_sync'"
-                type="button"
-                class="btn danger sm"
-                @click="removeStrategy(selectedStrategyKey)"
-              >删除</button>
-            </template>
-          </div>
-        </div>
-
-        <div class="grid">
-          <label v-if="isCreatingStrategy" class="field">
-            <span class="lbl-row">
-              策略 Key<span class="req">*</span>
-              <InfoTip text="唯一英文标识，一经创建不可修改。" />
-            </span>
-            <input v-model="newStrategyKey" class="inp mono" placeholder="my_strategy" />
-          </label>
-          <label class="field">
-            <span class="lbl-row">显示名称</span>
-            <input v-model="editSt.name" class="inp" @change="!isCreatingStrategy && saveStrategy()" />
-          </label>
-          <label class="field">
-            <span class="lbl-row">
-              模式<span class="req">*</span>
-              <InfoTip
-                wide
-                text="sync：同步阻塞；async：协程派发；thread：线程池；process：进程池。"
-              />
-            </span>
-            <select v-model="editSt.mode" class="inp" @change="!isCreatingStrategy && saveStrategy()">
-              <option value="sync">sync</option>
-              <option value="async">async</option>
-              <option value="thread">thread</option>
-              <option value="process">process</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="lbl-row">
-              并发 / 池大小<span class="req">*</span>
-            </span>
-            <input
-              v-model.number="editSt.concurrency"
-              class="inp"
-              type="number"
-              min="1"
-              @change="!isCreatingStrategy && saveStrategy()"
-            />
-          </label>
-          <label class="field">
-            <span class="lbl-row">
-              超时 (秒)
-              <InfoTip text="可选。为空表示不限制。" />
-            </span>
-            <input
-              :value="editTimeout"
-              class="inp"
-              type="number"
-              min="0"
-              step="1"
-              placeholder="不限"
-              @input="updateTimeout($event)"
-              @change="!isCreatingStrategy && saveStrategy()"
-            />
-          </label>
-          <label class="field">
-            <span class="lbl-row">重试次数</span>
-            <input
-              v-model.number="editSt.retry_count"
-              class="inp"
-              type="number"
-              min="0"
-              @change="!isCreatingStrategy && saveStrategy()"
-            />
-          </label>
-        </div>
-      </div>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="strategyDrawerOpen"
+        class="st-backdrop"
+        @click.self="closeStrategyDrawer"
+      >
+        <aside
+          class="st-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="运行策略"
+          @click.stop
+        >
+          <div class="strategy-editor-inline">
+            <div class="inline-hd">
+              <span class="inline-title">
+                <template v-if="isCreatingStrategy">新增策略</template>
+                <template v-else>编辑策略：{{ strategyEditTitle }}</template>
+              </span>
+              <div class="inline-actions">
+                <template v-if="isCreatingStrategy">
+                  <button type="button" class="btn ghost sm" @click="closeStrategyDrawer">取消</button>
+                  <button type="button" class="btn primary sm" @click="createStrategy">创建</button>
+                </template>
+                <template v-else>
+                  <button
+                    v-if="selectedStrategyKey && selectedStrategyKey !== 'default_sync'"
+                    type="button"
+                    class="btn danger sm"
+                    @click="removeStrategy(selectedStrategyKey)"
+                  >删除</button>
+                  <button type="button" class="btn ghost sm" @click="closeStrategyDrawer">关闭</button>
+                </template>
+              </div>
+            </div>
+
+            <div class="grid">
+              <label class="field">
+                <span class="lbl-row">
+                  策略名<span class="req">*</span>
+                  <InfoTip text="界面展示用；保存时系统会自动分配内部策略标识。" />
+                </span>
+                <input v-model="editSt.name" class="inp" placeholder="例如：异步 IO 池" />
+              </label>
+              <label class="field">
+                <span class="lbl-row">
+                  模式<span class="req">*</span>
+                  <InfoTip
+                    wide
+                    text="sync：同步阻塞；async：协程派发；thread：线程池；process：进程池。"
+                  />
+                </span>
+                <select v-model="editSt.mode" class="inp" @change="!isCreatingStrategy && saveStrategy()">
+                  <option value="sync">sync</option>
+                  <option value="async">async</option>
+                  <option value="thread">thread</option>
+                  <option value="process">process</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="lbl-row">
+                  并发 / 池大小<span class="req">*</span>
+                </span>
+                <input
+                  v-model.number="editSt.concurrency"
+                  class="inp"
+                  type="number"
+                  min="1"
+                  @change="!isCreatingStrategy && saveStrategy()"
+                />
+              </label>
+              <label class="field">
+                <span class="lbl-row">
+                  超时 (秒)
+                  <InfoTip text="可选。为空表示不限制。" />
+                </span>
+                <input
+                  :value="editTimeout"
+                  class="inp"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="不限"
+                  @input="updateTimeout($event)"
+                  @change="!isCreatingStrategy && saveStrategy()"
+                />
+              </label>
+              <label class="field">
+                <span class="lbl-row">重试次数</span>
+                <input
+                  v-model.number="editSt.retry_count"
+                  class="inp"
+                  type="number"
+                  min="0"
+                  @change="!isCreatingStrategy && saveStrategy()"
+                />
+              </label>
+            </div>
+            <p v-if="strategyFormErr" class="form-err">{{ strategyFormErr }}</p>
+          </div>
+        </aside>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -185,14 +189,66 @@ const selectedStrategyKey = computed<string | null>(() =>
   store.selection.kind === "strategy" ? store.selection.key : null,
 );
 
+const isCreatingStrategy = ref(false);
+const strategyFormErr = ref("");
+
+const editSt = reactive<ExecutionStrategy>({
+  name: "default_sync",
+  mode: "sync",
+  concurrency: 4,
+  timeout: undefined,
+  retry_count: 0,
+});
+
+const strategyDrawerOpen = computed(
+  () =>
+    isCreatingStrategy.value ||
+    (selectedStrategyKey.value != null &&
+      !!store.doc.strategies[selectedStrategyKey.value]),
+);
+
+const strategyEditTitle = computed(() => {
+  if (isCreatingStrategy.value) return "";
+  const nm = (editSt.name ?? "").trim();
+  return nm || "未命名策略";
+});
+
+function strategyCardLabel(key: string): string {
+  const st = store.doc.strategies[key];
+  const nm = (st?.name ?? "").trim();
+  if (nm) return nm;
+  return "未命名策略";
+}
+
+/** 新建策略时生成的内部 key，不展示给用户。 */
+function allocateNewStrategyKey(): string {
+  const used = new Set(Object.keys(store.doc.strategies));
+  for (let i = 0; i < 10000; i++) {
+    const k = `st_${Date.now()}_${i}`;
+    if (!used.has(k)) return k;
+  }
+  return `st_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function openStrategyDrawer(key: string) {
+  isCreatingStrategy.value = false;
+  strategyFormErr.value = "";
+  store.select({ kind: "strategy", key });
+}
+
+function closeStrategyDrawer() {
+  strategyFormErr.value = "";
+  if (isCreatingStrategy.value) {
+    isCreatingStrategy.value = false;
+  }
+  if (store.selection.kind === "strategy") {
+    store.select({ kind: "flow" });
+  }
+}
+
 const displayName = computed({
   get: () => store.doc.display_name ?? "",
   set: (v: string) => store.setFlowMeta({ display_name: v }),
-});
-
-const version = computed({
-  get: () => store.doc.version,
-  set: (v: string) => store.setFlowMeta({ version: v }),
 });
 
 const ctx = computed({
@@ -206,24 +262,12 @@ const ctx = computed({
   },
 });
 
-// === Inline Strategy Editor Logic ===
-const isCreatingStrategy = ref(false);
-const newStrategyKey = ref("");
-
-const editSt = reactive<ExecutionStrategy>({
-  name: "default_sync",
-  mode: "sync",
-  concurrency: 4,
-  timeout: undefined,
-  retry_count: 0,
-});
-
 function startAddStrategy() {
+  strategyFormErr.value = "";
   isCreatingStrategy.value = true;
-  newStrategyKey.value = `strategy_${Date.now()}`;
   store.select({ kind: "flow" });
 
-  editSt.name = newStrategyKey.value;
+  editSt.name = "";
   editSt.mode = "async";
   editSt.concurrency = 4;
   editSt.timeout = 120;
@@ -231,23 +275,16 @@ function startAddStrategy() {
 }
 
 function createStrategy() {
-  const k = newStrategyKey.value.trim();
-  if (!k) {
-    alert("请输入策略 Key");
+  strategyFormErr.value = "";
+  const nm = String(editSt.name ?? "").trim();
+  if (!nm) {
+    strategyFormErr.value = "请填写策略名";
     return;
   }
-  if (store.doc.strategies[k]) {
-    alert("该策略 Key 已存在");
-    return;
-  }
-
-  store.upsertStrategy(k, { ...editSt });
+  const key = allocateNewStrategyKey();
+  store.upsertStrategy(key, { ...editSt, name: nm });
   isCreatingStrategy.value = false;
-  store.select({ kind: "strategy", key: k });
-}
-
-function cancelCreateStrategy() {
-  isCreatingStrategy.value = false;
+  store.select({ kind: "strategy", key });
 }
 
 const editTimeout = computed(() => (editSt.timeout == null ? "" : String(editSt.timeout)));
@@ -262,6 +299,7 @@ watch(
   (sel) => {
     if (sel.kind === "strategy" && sel.key) {
       isCreatingStrategy.value = false;
+      strategyFormErr.value = "";
       const cur = store.doc.strategies[sel.key];
       if (cur) Object.assign(editSt, cur);
     }
@@ -270,9 +308,14 @@ watch(
 );
 
 function saveStrategy() {
-  if (store.selection.kind === "strategy" && store.selection.key) {
-    store.upsertStrategy(store.selection.key, { ...editSt });
+  if (store.selection.kind !== "strategy" || !store.selection.key) return;
+  strategyFormErr.value = "";
+  const nm = String(editSt.name ?? "").trim();
+  if (!nm) {
+    strategyFormErr.value = "请填写策略名";
+    return;
   }
+  store.upsertStrategy(store.selection.key, { ...editSt, name: nm });
 }
 
 function removeStrategy(key: string) {
@@ -453,13 +496,19 @@ function removeStrategy(key: string) {
   gap: 6px;
 }
 
-.strategy-key {
+.strategy-title {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.form-err {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #b91c1c;
 }
 
 .mode-badge {
@@ -503,13 +552,52 @@ function removeStrategy(key: string) {
   background: color-mix(in srgb, var(--border) 40%, transparent);
 }
 
-/* Inline strategy editor */
+/* Inline strategy editor (drawer 内复用类名) */
 .strategy-editor-inline {
   margin-top: 10px;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   border-radius: 10px;
   background: color-mix(in srgb, var(--accent-soft) 25%, #fff);
+}
+
+.st-drawer .strategy-editor-inline {
+  margin-top: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.st-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+}
+
+.st-drawer {
+  width: min(440px, calc(100vw - 16px));
+  max-width: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(15, 23, 42, 0.14);
+  overflow: auto;
+  padding: 14px 16px 20px;
+  animation: st-slide-in 0.2s ease-out;
+}
+
+@keyframes st-slide-in {
+  from {
+    transform: translateX(12px);
+    opacity: 0.85;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
 .inline-hd {

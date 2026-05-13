@@ -1,46 +1,29 @@
 <template>
   <div class="app-root">
     <nav class="global-nav" aria-label="主视图">
-      <button type="button" class="nav-btn" :class="{ active: view === 'flow' }" @click="view = 'flow'">
-        Flow Studio
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'ops' }" @click="view = 'ops'">
-        运行中心
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'test' }" @click="view = 'test'">
-        测试中心
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'starlark' }" @click="view = 'starlark'">
-        能力与脚本
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'profiles' }" @click="view = 'profiles'">
-        环境配置
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'dict' }" @click="view = 'dict'">
-        数据字典
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'lookup' }" @click="view = 'lookup'">
-        Lookup
-      </button>
-      <button type="button" class="nav-btn" :class="{ active: view === 'guide' }" @click="view = 'guide'">
-        帮助文档
+      <button
+        v-for="item in navItems"
+        :key="item.id"
+        type="button"
+        class="nav-btn"
+        :class="{ active: view === item.id }"
+        :aria-current="view === item.id ? 'page' : undefined"
+        @click="view = item.id"
+      >
+        {{ item.label }}
       </button>
     </nav>
     <main class="main-fill">
-      <FlowStudioView v-if="view === 'flow'" />
-      <OperationsCenterView v-else-if="view === 'ops'" />
-      <TestCenterView v-else-if="view === 'test'" />
-      <CapabilityCenterView v-else-if="view === 'starlark'" />
-      <ProfileConfigView v-else-if="view === 'profiles'" />
-      <DictConfigView v-else-if="view === 'dict'" />
-      <LookupConfigView v-else-if="view === 'lookup'" />
-      <ScriptGuideView v-else />
+      <!-- KeepAlive：各主 tab 互不依赖，切换时保留滚动位置与局部 UI 状态，避免整页重建 -->
+      <KeepAlive :max="12">
+        <component :is="activeView" />
+      </KeepAlive>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { type Component, computed, ref, watch } from "vue";
 import FlowStudioView from "./views/FlowStudioView.vue";
 import OperationsCenterView from "./views/OperationsCenterView.vue";
 import TestCenterView from "./views/TestCenterView.vue";
@@ -50,7 +33,55 @@ import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
 import ScriptGuideView from "./views/ScriptGuideView.vue";
 
-const view = ref<"flow" | "ops" | "test" | "starlark" | "profiles" | "dict" | "lookup" | "guide">("flow");
+const LAST_MAIN_VIEW_KEY = "flowEngine:app:lastMainView";
+
+type MainViewId = "flow" | "ops" | "test" | "starlark" | "profiles" | "dict" | "lookup" | "guide";
+
+const navItems: { id: MainViewId; label: string }[] = [
+  { id: "flow", label: "Flow Studio" },
+  { id: "ops", label: "运行中心" },
+  { id: "test", label: "测试中心" },
+  { id: "starlark", label: "能力与脚本" },
+  { id: "profiles", label: "环境配置" },
+  { id: "dict", label: "数据字典" },
+  { id: "lookup", label: "Lookup" },
+  { id: "guide", label: "帮助文档" },
+];
+
+const viewComponentById: Record<MainViewId, Component> = {
+  flow: FlowStudioView,
+  ops: OperationsCenterView,
+  test: TestCenterView,
+  starlark: CapabilityCenterView,
+  profiles: ProfileConfigView,
+  dict: DictConfigView,
+  lookup: LookupConfigView,
+  guide: ScriptGuideView,
+};
+
+const allowedIds = new Set<MainViewId>(navItems.map((n) => n.id));
+
+function readStoredMainView(): MainViewId {
+  try {
+    const raw = localStorage.getItem(LAST_MAIN_VIEW_KEY);
+    if (raw && allowedIds.has(raw as MainViewId)) return raw as MainViewId;
+  } catch {
+    /* private mode / denied */
+  }
+  return "flow";
+}
+
+const view = ref<MainViewId>(readStoredMainView());
+
+watch(view, (v) => {
+  try {
+    localStorage.setItem(LAST_MAIN_VIEW_KEY, v);
+  } catch {
+    /* ignore */
+  }
+});
+
+const activeView = computed(() => viewComponentById[view.value]);
 </script>
 
 <style scoped>

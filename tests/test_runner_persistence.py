@@ -86,11 +86,21 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
     # Counters are populated by the flush loop.
     assert (detail.get("sampled_span_count") or 0) >= 1
 
-    page = span_persistence.list_spans(deploy_run_id=run_id, limit=50)
+    page = span_persistence.list_spans_forest(deploy_run_id=run_id, limit=50)
+    # No filter applied → ``total`` equals the run's root-subtree count
+    # (back-compat alias for ``total_roots``); top-level node spans are
+    # the natural roots now that the synthetic flow_root span is gone.
     assert page["total"] >= 1
-    flow_root = [s for s in page["items"] if s["node_type"] == "flow_root"]
-    assert flow_root, "expected a flow_root span"
-    assert flow_root[0]["status"] in {"success", "completed", "running"}
+    assert page["total_roots"] >= 1
+    assert page["total_matched"] is None  # no filter → null per contract
+    assert page["truncated"] == {"matched": False, "returned": False}
+    # No synthetic flow_root rows are surfaced by the API.
+    assert all(s["node_type"] != "flow_root" for s in page["items"])
+    # At least one real node span (the flow's "a" task) must be present
+    # and act as a natural root of the forest.
+    a_spans = [s for s in page["items"] if s["node_id"] == "a"]
+    assert a_spans, "expected a span for task node 'a'"
+    assert a_spans[0]["parent_span_id"] is None
 
 
 @pytest.mark.asyncio

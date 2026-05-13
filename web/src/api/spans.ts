@@ -64,13 +64,45 @@ export type SpanDetail = SpanSummary & {
   attributes: Record<string, unknown> | null;
 };
 
+/** Truncation flags surfaced by the backend when result-size caps kick in.
+ *
+ * The backend bounds (a) the filter-hit set before tree expansion and
+ * (b) the spans returned in a single page after expansion. Either cap
+ * exceeded raises a flag here so the UI can prompt for filter refinement
+ * instead of silently dropping data. */
+export type SpansTruncated = {
+  /** Filter hits exceeded the matched-set cap (~10K). Some matches were
+   *  not considered for tree expansion in this page. */
+  matched: boolean;
+  /** Returned forest exceeded the per-page span cap (~5K). Trailing root
+   *  subtrees of this page were dropped; subsequent pages continue. */
+  returned: boolean;
+};
+
 export type SpansListResponse = {
-  total: number;
+  /** Flat span rows. Invariant: every ``parent_span_id`` is either null
+   *  or refers to another span in this same ``items`` array — the forest
+   *  is always well-formed; the frontend never needs orphan fallback. */
+  items: SpanSummary[];
   offset: number;
   limit: number;
-  /** Distinct node_ids present in the run — populates a filter dropdown. */
+  /** Count of root subtrees in the (filter-expanded) forest. This is the
+   *  pagination basis: total pages = ceil(total_roots / limit). */
+  total_roots: number;
+  /** Pre-expansion filter-hit count. ``null`` when no filter was applied
+   *  (in which case ``total_roots`` is the natural "how many things"). */
+  total_matched: number | null;
+  /** ``items.length`` — convenience for "spans on this page after
+   *  ancestor / descendant expansion". */
+  total_returned: number;
+  /** Backwards-compatible alias: equals ``total_matched`` when filtering,
+   *  else ``total_roots``. New code should prefer the explicit fields. */
+  total: number;
+  truncated: SpansTruncated;
+  /** Distinct node_ids of the run — populates the filter dropdown. */
   node_ids: string[];
-  items: SpanSummary[];
+  /** Echo of the request flag, so the UI can keep its toggle in sync. */
+  include_descendants: boolean;
 };
 
 export type ListSpansParams = {
@@ -83,6 +115,10 @@ export type ListSpansParams = {
   duration_min_ms?: number;
   duration_max_ms?: number;
   log_level?: string;
+  /** When true, matched parent spans also pull down their full subtree
+   *  (in addition to the always-on ancestor chain). Useful for
+   *  "filtered by parent node_id; show me everything under it". */
+  include_descendants?: boolean;
   offset?: number;
   limit?: number;
 };
@@ -98,6 +134,7 @@ function buildQuery(params: ListSpansParams): string {
   if (params.duration_min_ms != null) qs.set("duration_min_ms", String(params.duration_min_ms));
   if (params.duration_max_ms != null) qs.set("duration_max_ms", String(params.duration_max_ms));
   if (params.log_level) qs.set("log_level", params.log_level);
+  if (params.include_descendants) qs.set("include_descendants", "true");
   if (params.offset != null) qs.set("offset", String(params.offset));
   if (params.limit != null) qs.set("limit", String(params.limit));
   const q = qs.toString();

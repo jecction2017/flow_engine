@@ -59,25 +59,23 @@
       />
     </section>
 
-    <section v-if="activeTab === 'spans'" class="rd-section">
-      <div class="rd-section-head">
-        <span>执行链路</span>
-        <span class="muted small">按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes</span>
-      </div>
+    <template v-if="activeTab === 'spans'">
       <SpansExplorer
         v-if="isDeployRun"
         :deploy-run-id="detail.id"
         :key="`deploy-${detail.id}-${drillNodeKey}`"
-        :page-size="500"
+        :page-size="50"
         :initial-node-id="drillNodeId"
+        help-tip="按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes"
       />
       <SpansExplorer
         v-else
         :test-run-id="detail.id"
         :key="`test-${detail.id}`"
-        :page-size="500"
+        :page-size="50"
+        help-tip="按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes"
       />
-    </section>
+    </template>
 
     <section v-if="evaluationBlock && activeTab === 'evaluation'" class="rd-section">
       <div class="rd-section-head">
@@ -136,7 +134,7 @@ const tabs = computed<{ id: TabId; label: string }[]>(() => {
   if (isDeployRun.value) {
     out.push({ id: "overview", label: "概览" });
   }
-  out.push({ id: "spans", label: "Span 浏览" });
+  out.push({ id: "spans", label: "执行链路" });
   if (evaluationBlock.value) {
     out.push({ id: "evaluation", label: "评估结果" });
   }

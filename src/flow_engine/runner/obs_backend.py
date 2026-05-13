@@ -251,7 +251,6 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
         span_flush_interval_s: float = 2.0,
         metric_flush_interval_s: float = 60.0,
         span_queue_maxsize: int = 10_000,
-        emit_flow_root_span: bool = True,
     ) -> None:
         self._run_ref = run_ref
         self._flow_code = flow_code
@@ -259,11 +258,6 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
         self._span_batch_size = max(1, int(span_batch_size))
         self._span_flush_interval_s = max(0.1, float(span_flush_interval_s))
         self._metric_flush_interval_s = max(1.0, float(metric_flush_interval_s))
-        # Resident flows do NOT emit a flow_root span (the parent never
-        # closes; would leak memory and hold child spans indefinitely).
-        # once / cron / test runs DO emit one — it gives them a single
-        # tree root that carries top-level child_spans + flow_logs.
-        self._emit_flow_root_span = bool(emit_flow_root_span)
 
         # Span pipeline — `queue.Queue` is fully thread-safe so the
         # engine (main thread) can `put_nowait` while the flush worker
@@ -303,12 +297,7 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
     # ------------------------------------------------------------------
 
     def should_span(self, node_id: str, node_type: str) -> bool:
-        # flow_root spans are opened for once / cron / test only.
-        # Resident flows have no natural close point for the root —
-        # opening one would leak memory and pin every child span as
-        # "pending" forever.
-        if node_type == "flow_root":
-            return self._emit_flow_root_span
+        del node_type  # node_type-specific gating is no longer needed
         cfg = self._cfg.for_node(node_id)
         # always_on_failure forces every span to OPEN regardless of
         # rate, because we cannot retroactively capture a failure if

@@ -711,21 +711,15 @@ class FlowRuntime:
                 self._cancel_dereg = None
 
     async def _run_scoped(self) -> FlowRunResult:
-        # Open a top-level flow_root span so once/cron/test runs get a
-        # single tree root with all top-level nodes as child_spans.
-        # resident runs spawn many root-spans (one per top-level loop
-        # iteration); the backend decides via should_span.
-        top_ids = self._direct_child_ids(self.flow.nodes)
-        flow_root_handle = self._open_span("__flow_root__", "flow_root")
-        span_token = (
-            self._push_span(flow_root_handle)
-            if flow_root_handle != SPAN_UNSAMPLED
-            else None
-        )
-        top_snap = self._snapshot_transitions(top_ids)
+        # The flow run itself is modeled by fe_deploy_run / fe_test_run
+        # (status, started_at, finished_at, error) — we do not synthesize
+        # a "flow_root" span on top. Top-level node spans are the natural
+        # roots of the execution forest. Hook logs ride out via
+        # FlowRunResult.flow_logs for the trial-run path; persisted runs
+        # don't surface them in 执行链路 (matches the prior resident-flow
+        # behaviour, which never had a flow_root either).
         flow_start = time.monotonic()
         final_status = "success"
-        final_error: str | None = None
         try:
             if self.flow.hooks and self.flow.hooks.on_start:
                 self._append_flow_logs(
@@ -751,7 +745,6 @@ class FlowRuntime:
             self.flow_state = FlowState.FAILED
             msg = f"Unresolved jump target: {j.target!r}"
             final_status = "failed"
-            final_error = msg
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -765,7 +758,6 @@ class FlowRuntime:
         except FlowEngineError as e:
             self.flow_state = FlowState.FAILED
             final_status = "failed"
-            final_error = str(e)
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -780,7 +772,6 @@ class FlowRuntime:
             logger.exception("Flow failed")
             self.flow_state = FlowState.FAILED
             final_status = "failed"
-            final_error = str(e)
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
@@ -792,21 +783,13 @@ class FlowRuntime:
                 )
             return self._result(str(e))
         finally:
-            # Close out flow_root span + emit one flow-level metric. We
-            # do this in `finally` so that crashes still produce a
-            # recoverable Span row instead of leaving an open record.
-            if span_token is not None:
-                self._pop_span(span_token)
-            if flow_root_handle != SPAN_UNSAMPLED:
-                self._close_span(
-                    flow_root_handle,
-                    status=final_status,
-                    error=final_error,
-                    child_spans=self._build_child_spans(top_ids, top_snap),
-                    logs=list(self._flow_logs),
-                )
+            # Emit a single flow-level duration+status metric. The
+            # ``"__flow_root__"`` label is kept for back-compat with
+            # existing metric dashboards; it is a metric tag only and no
+            # longer corresponds to any span row.
             elapsed_ms = max(0, int((time.monotonic() - flow_start) * 1000))
             self._emit_metric("__flow_root__", elapsed_ms, final_status)
+
     async def _run_members(
         self,
         members: list[FlowMember],

@@ -282,7 +282,7 @@
                     <select v-model="form.flow_code" class="inp" @change="onFlowChange">
                       <option value="">选择流程</option>
                       <option v-for="f in flowOptions" :key="f.id" :value="f.id">
-                        {{ f.id }}{{ f.display_name ? ` · ${f.display_name}` : "" }}
+                        {{ flowListItemLabel(f) }}
                       </option>
                     </select>
                   </label>
@@ -811,7 +811,8 @@ import { listWorkers, type Worker } from "@/api/workers";
 import { getDeployRun, listDeployRuns } from "@/api/deployRuns";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
 import { fetchFlowList, type FlowListItem } from "@/api/flows";
-import { fetchVersionList, type FlowVersionMeta } from "@/api/flowVersions";
+import { flowListItemLabel } from "@/types/flow";
+import { fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfiles } from "@/api/profiles";
 import RunDetailPanel from "@/components/RunDetailPanel.vue";
 
@@ -1236,9 +1237,9 @@ async function onFlowChange() {
   if (!form.flow_code) return;
   try {
     const res = await fetchVersionList(form.flow_code);
-    versionOptions.value = res.versions;
-    if (res.versions.length > 0) {
-      form.ver_no = res.versions[0].version;
+    versionOptions.value = sortFlowVersionsDesc(res.versions);
+    if (versionOptions.value.length > 0) {
+      form.ver_no = versionOptions.value[0]!.version;
     }
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);

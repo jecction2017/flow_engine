@@ -93,11 +93,14 @@ export type FlowNode = TaskNode | LoopNode | SubflowNode;
 
 export interface FlowDocument {
   /**
-   * 展示名：可选，允许中文/空格。仅用于 UI 渲染；为空时统一回落到 flow_id
-   * （详见 `flowDisplayName` 工具函数）。不参与任何业务逻辑 —— 流程的唯一逻辑
-   * 主键是目录/URL 上的 flow_id。
+   * 流程名称（可选，YAML display_name）；为空时界面显示「未命名流程」，
+   * 不向用户展示 flow_id（详见 `flowDisplayName`）。存储主键仍为 flow_id。
    */
   display_name?: string | null;
+  /**
+   * 文档级语义版本（如 ``1.0.0``），与 ``fe_flow_version.ver_no`` 自增版本无关；
+   * Studio 顶部草稿/Vn 选择器对应后者，本字段不在界面手工编辑。
+   */
   version: string;
   strategies: Record<string, ExecutionStrategy>;
   nodes: FlowNode[];
@@ -105,18 +108,26 @@ export interface FlowDocument {
 }
 
 /**
- * UI 统一的流程显示名计算：优先取 document 的 display_name，其次 flow_id，
- * 最后 fallback 为 "—"，保证永远有值可渲染。
+ * UI 流程展示名：仅用文档中的 display_name；不向用户暴露 flow_id。
+ * （flow_id 仍作为 API/存储主键，由下拉框 value 等内部使用。）
  */
 export function flowDisplayName(
   doc: Pick<FlowDocument, "display_name"> | null | undefined,
-  flowId?: string | null,
+  _flowId?: string | null,
 ): string {
   const name = (doc?.display_name ?? "").trim();
   if (name) return name;
-  const id = (flowId ?? "").trim();
-  if (id) return id;
-  return "—";
+  return "未命名流程";
+}
+
+/**
+ * 流程列表项在下拉框中的展示：有 display_name 用名称；否则用 flow_id，
+ * 避免多条未命名流程在列表中无法区分（与旧版 `id` fallback 行为一致）。
+ */
+export function flowListItemLabel(item: { id: string; display_name?: string | null }): string {
+  const n = (item.display_name ?? "").trim();
+  if (n) return n;
+  return item.id;
 }
 
 export type Selection =
@@ -176,6 +187,17 @@ export function displayName(n: FlowNode): string {
 export function defaultStrategies(): Record<string, ExecutionStrategy> {
   return {
     default_sync: { name: "default_sync", mode: "sync" },
+  };
+}
+
+/** 新建流程时的空白文档（尚未写库）；与后端 POST /api/flows 的默认结构一致。 */
+export function emptyFlowDocument(): FlowDocument {
+  return {
+    display_name: "",
+    version: "1.0.0",
+    strategies: defaultStrategies(),
+    nodes: [],
+    initial_context: {},
   };
 }
 

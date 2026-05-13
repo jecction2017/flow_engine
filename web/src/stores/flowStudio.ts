@@ -19,6 +19,7 @@ import {
   NODE_ID_PATTERN,
   defaultStrategies,
   displayName,
+  emptyFlowDocument,
   emptyLoop,
   emptySubflow,
   emptyTask,
@@ -136,6 +137,10 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   /** 当前绑定的服务端流程 id（对应 ``data/flows/{id}.yaml``） */
   const activeFlowId = ref<string | null>(null);
   /**
+   * 新建流程尚未首次写库时，预先分配的 flow_id（仅用于首次 PUT draft，不在 UI 展示）。
+   */
+  const pendingNewFlowId = ref<string | null>(null);
+  /**
    * 每个节点独立、可完全自定义的调试上下文（原始 JSON 文本，按节点 id/path 隔离）。
    * 初始化时优先从 ``localStorage`` 恢复，避免每次调试都重复造数据。
    */
@@ -152,6 +157,40 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   );
 
   const searchQuery = ref("");
+
+  const hasUnpersistedNewFlow = computed(() => pendingNewFlowId.value != null);
+
+  const studioFlowLabel = computed(() => {
+    const n = (doc.value.display_name ?? "").trim();
+    if (n) return n;
+    if (pendingNewFlowId.value) return "新流程";
+    return "未命名流程";
+  });
+
+  /**
+   * 与 Flow Studio 顶部版本选择器同步：``draft`` 或已提交版本的 ``ver_no`` 字符串（``"1"``、``"2"``…）。
+   * 与 YAML body 里的 ``version``（文档级语义版本）无关。
+   */
+  const studioPickerVersionChannel = ref<string>("");
+
+  const studioPickerVersionLabel = computed(() => {
+    const ch = studioPickerVersionChannel.value.trim();
+    if (!ch) {
+      if (pendingNewFlowId.value && !activeFlowId.value) return "草稿";
+      return "";
+    }
+    if (ch === "draft") return "草稿";
+    if (/^\d+$/.test(ch)) return `V${ch}`;
+    return ch;
+  });
+
+  function setStudioPickerVersionChannel(channel: string) {
+    studioPickerVersionChannel.value = channel;
+  }
+
+  function clearStudioPickerVersionChannel() {
+    studioPickerVersionChannel.value = "";
+  }
 
   function touch() {
     doc.value = clone(doc.value);
@@ -510,6 +549,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     touch();
     select({ kind: "flow" });
     activeFlowId.value = null;
+    pendingNewFlowId.value = null;
     clearAllNodeDrafts();
     // 导入来历不明的 JSON，丢弃本地 ``_local`` 桶的旧调试数据。
     nodeDebugContexts.value = {};
@@ -521,6 +561,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     touch();
     select({ kind: "flow" });
     activeFlowId.value = flowId;
+    if (!flowId) pendingNewFlowId.value = null;
     clearAllNodeDrafts();
     // 切换流程时加载该流程对应的调试上下文，保留上次编辑内容。
     nodeDebugContexts.value = readPersistedDebugContexts(flowId);
@@ -541,8 +582,30 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   }
 
   async function loadFlowFromServer(flowId: string) {
+    pendingNewFlowId.value = null;
     const raw = (await fetchFlowRaw(flowId)) as unknown as FlowDocument;
     loadDocument(raw, flowId);
+  }
+
+  function allocateServerFlowId(): string {
+    return `flow_${Date.now()}`;
+  }
+
+  /** 进入「未写库」的新流程编辑：仅内存与 UI，首次保存草稿时写库。 */
+  function beginLocalNewFlow() {
+    pendingNewFlowId.value = allocateServerFlowId();
+    doc.value = clone(emptyFlowDocument());
+    ensureDefaultStrategies();
+    touch();
+    select({ kind: "flow" });
+    activeFlowId.value = null;
+    clearAllNodeDrafts();
+    nodeDebugContexts.value = readPersistedDebugContexts(null);
+  }
+
+  /** 放弃未写库的新流程（切换其它流程前调用）。 */
+  function abandonUnpersistedNewFlow() {
+    pendingNewFlowId.value = null;
   }
 
   async function saveFlowToServer() {
@@ -563,6 +626,9 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   async function deleteFlowOnServer(flowId: string) {
     await apiDeleteFlow(flowId);
     await refreshFlowList();
+    if (pendingNewFlowId.value === flowId) {
+      pendingNewFlowId.value = null;
+    }
     if (activeFlowId.value === flowId) {
       activeFlowId.value = null;
     }
@@ -620,6 +686,13 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     doc,
     selection,
     strategiesList,
+    pendingNewFlowId,
+    hasUnpersistedNewFlow,
+    studioFlowLabel,
+    studioPickerVersionChannel,
+    studioPickerVersionLabel,
+    setStudioPickerVersionChannel,
+    clearStudioPickerVersionChannel,
     select,
     touch,
     setFlowMeta,
@@ -662,6 +735,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     loadFlowFromServer,
     saveFlowToServer,
     createFlowOnServer,
+    beginLocalNewFlow,
+    abandonUnpersistedNewFlow,
     deleteFlowOnServer,
     parallelEdgeAfter,
     parallelGroupRanges,
