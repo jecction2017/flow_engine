@@ -5,8 +5,8 @@
       <button type="button" class="sel" :class="{ on: store.selection.kind === 'flow' }" @click="store.select({ kind: 'flow' })">
         <span class="dot" />
         <span class="txt">
-          <span class="n">{{ flowDisplayName(store.doc, store.activeFlowId) }}</span>
-          <span class="v">v{{ store.doc.version }}</span>
+          <span class="n">{{ store.studioFlowLabel }}</span>
+          <span v-if="store.studioPickerVersionLabel" class="v">{{ store.studioPickerVersionLabel }}</span>
         </span>
       </button>
     </section>
@@ -42,7 +42,6 @@
 
 <script setup lang="ts">
 import { useFlowStudioStore } from "@/stores/flowStudio";
-import { flowDisplayName } from "@/types/flow";
 import FlowTreeItem from "./FlowTreeItem.vue";
 
 const store = useFlowStudioStore();

@@ -2,11 +2,6 @@
   <div class="spans-explorer">
     <p v-if="error" class="err">{{ error }}</p>
 
-    <p v-if="filterBanner" class="trace-filter-banner">
-      当前为筛选或分页结果：仅展示本页已加载的 Span；父子关系在缺少上层节点时可能在顶层并列显示。
-      <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置筛选</button>
-    </p>
-
     <ExecutionLinkTree
       ref="linkRef"
       :rows="linkRows"
@@ -24,12 +19,36 @@
         <button type="button" class="link" @click="expandTree">全部展开</button>
         <span class="sep">·</span>
         <button type="button" class="link" @click="collapseTree">全部折叠</button>
+        <InfoTip v-if="helpTip" :text="helpTip" />
         <span class="spacer" />
+        <button
+          v-if="hasFilters"
+          type="button"
+          class="rt-chip-btn rt-chip-toggle"
+          :class="{ active: filters.include_descendants }"
+          title="筛选命中父节点时，一并返回该父节点的完整子树"
+          @click="toggleIncludeDescendants"
+        >
+          包含子节点
+        </button>
         <button type="button" class="btn small ghost" :disabled="loading" @click="reload">
           {{ loading && !appendMode ? "查询中…" : "搜索" }}
         </button>
         <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置</button>
-        <span class="muted small">命中 {{ resp?.total ?? 0 }} · 本页 {{ items.length }}</span>
+        <span class="muted small">
+          <template v-if="hasFilters">
+            命中 {{ resp?.total_matched ?? 0 }} · 共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 span
+          </template>
+          <template v-else>
+            共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 span
+          </template>
+        </span>
+        <InfoTip
+          v-if="truncationTip"
+          :text="truncationTip"
+          wide
+          align-end
+        />
         <button
           type="button"
           class="btn small ghost"
@@ -206,6 +225,7 @@ import {
   type SpansListResponse,
 } from "@/api/spans";
 import ExecutionLinkTree, { type ExecutionLinkRow } from "@/components/ExecutionLinkTree.vue";
+import InfoTip from "@/components/InfoTip.vue";
 import SpanInlineDetail from "@/components/SpanInlineDetail.vue";
 
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
@@ -220,11 +240,16 @@ type SpanTreeRow = SpanSummary & {
 const props = defineProps<{
   deployRunId?: number;
   testRunId?: number;
+  /** Page size in **root subtrees**, not spans. Backend caps per-page
+   *  span count separately (~5K) to bound the wire size. */
   pageSize?: number;
   initialNodeId?: string | null;
+  /** Optional help text rendered next to "全部展开 / 全部折叠" as a
+   *  hover-trigger info tip; replaces the old outer section header. */
+  helpTip?: string;
 }>();
 
-const pageSize = computed(() => props.pageSize ?? 500);
+const pageSize = computed(() => props.pageSize ?? 50);
 
 const filters = reactive({
   node_id: "",
@@ -235,6 +260,11 @@ const filters = reactive({
   duration_min_ms: null as number | null,
   duration_max_ms: null as number | null,
   log_level: "" as "" | (typeof LOG_LEVELS)[number],
+  /** Tree-mode modifier: when true, matched parent spans pull down
+   *  their full subtree (in addition to the always-on ancestor chain).
+   *  Only meaningful when other filters are non-empty; the UI hides the
+   *  toggle otherwise. */
+  include_descendants: false,
 });
 
 const loading = ref(false);
@@ -260,8 +290,29 @@ const items = computed(() => loadedItems.value);
 const nodeOptions = computed(() => resp.value?.node_ids ?? []);
 
 const hasNext = computed(() => {
+  // Pagination is by root subtree. The next page starts at offset =
+  // resp.offset + resp.limit; if that's still < total_roots there is more
+  // to load. Span count on the page is bounded separately by the server.
   if (!resp.value) return false;
-  return loadedItems.value.length < resp.value.total;
+  const consumed = resp.value.offset + resp.value.limit;
+  return consumed < resp.value.total_roots;
+});
+
+const truncationTip = computed<string | null>(() => {
+  const t = resp.value?.truncated;
+  if (!t) return null;
+  if (!t.matched && !t.returned) return null;
+  // Both flags warn the user that filter refinement is required to see
+  // every result. Wording is verbose because the InfoTip can host it.
+  const parts: string[] = [];
+  if (t.matched) {
+    parts.push("过滤命中超过 10,000 条，部分匹配未参与树展开。");
+  }
+  if (t.returned) {
+    parts.push("当前页展开后 span 超过 5,000 条，已按完整子树截断。");
+  }
+  parts.push("请收窄筛选条件（按节点、状态、时间或耗时）以获得完整结果。");
+  return parts.join(" ");
 });
 
 const hasTimeRange = computed(
@@ -275,6 +326,9 @@ const hasDurRange = computed(
 );
 
 const hasFilters = computed(() => {
+  // Note: ``include_descendants`` is intentionally NOT counted here. It
+  // is a *modifier* on filtered queries, not a filter itself; toggling it
+  // alone with no other filter has no effect on the result set.
   if (filters.node_id) return true;
   if (filters.status) return true;
   if (filters.scope_key) return true;
@@ -283,6 +337,13 @@ const hasFilters = computed(() => {
   if (filters.log_level) return true;
   return false;
 });
+
+function toggleIncludeDescendants(): void {
+  filters.include_descendants = !filters.include_descendants;
+  // Re-issue the query so the new mode takes effect immediately;
+  // otherwise the chip's state would be out of sync with the listing.
+  void reload();
+}
 
 const timeRangeTitle = computed(() => {
   const after = filters.started_after.trim();
@@ -345,8 +406,6 @@ function onDocPointerDown(e: PointerEvent | MouseEvent): void {
   closePopovers();
 }
 
-const filterBanner = computed(() => hasFilters.value || (resp.value != null && items.value.length < resp.value.total));
-
 const activeHighlightNodeId = computed(() => filters.node_id || props.initialNodeId || null);
 
 const timeline = computed(() => {
@@ -370,6 +429,12 @@ const timeline = computed(() => {
 const flatSpanRows = computed<SpanTreeRow[]>(() => {
   const list = items.value;
   if (list.length === 0) return [];
+  // Backend guarantees a well-formed forest: every non-null
+  // parent_span_id is present in ``items``. We still resolve through
+  // an id-set so a span whose parent was unexpectedly absent surfaces
+  // as a forest root rather than vanishing — a defensive fallback that
+  // turns server bugs into a visible (but degraded) tree instead of a
+  // silent data loss.
   const idSet = new Set(list.map((r) => r.id));
   const childrenByParent = new Map<number | null, SpanSummary[]>();
   for (const r of list) {
@@ -462,8 +527,12 @@ const linkRows = computed<ExecutionLinkRow[]>(() => {
 });
 
 function listParams(append: boolean): ListSpansParams {
+  // ``offset`` is counted in root subtrees, not spans. ``loadedItems`` is
+  // a flat array of spans across multiple pages, so we cannot use its
+  // length — instead derive the next offset from the previous response.
+  const nextOffset = append && resp.value ? resp.value.offset + resp.value.limit : 0;
   const p: ListSpansParams = {
-    offset: append ? loadedItems.value.length : 0,
+    offset: nextOffset,
     limit: pageSize.value,
   };
   if (filters.node_id) p.node_id = filters.node_id;
@@ -478,6 +547,7 @@ function listParams(append: boolean): ListSpansParams {
     p.duration_max_ms = Math.max(0, Math.floor(filters.duration_max_ms));
   }
   if (filters.log_level) p.log_level = filters.log_level;
+  if (filters.include_descendants) p.include_descendants = true;
   return p;
 }
 
@@ -542,6 +612,7 @@ function resetFilters(): void {
   filters.duration_min_ms = null;
   filters.duration_max_ms = null;
   filters.log_level = "";
+  filters.include_descendants = false;
   closePopovers();
   void reload();
 }

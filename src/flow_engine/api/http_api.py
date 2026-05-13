@@ -13,13 +13,15 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from flow_engine.db.models import (
+    FeDeployRun,
     FeFlowDeployment,
     FeFlowTestBatch,
     FeFlowTestBatchPlan,
     FeFlowTestPlan,
+    FeTestRun,
     FeWorker,
     FeWorkerAssignment,
 )
@@ -82,7 +84,7 @@ registry = FlowVersionRegistry()
 
 class CreateFlowBody(BaseModel):
     id: str = Field(..., min_length=1, max_length=128)
-    # 可选的展示名；留空时 UI 回落 flow_id，初始 yaml 里的 display_name 也留空。
+    # 可选的流程名称（界面「流程名称」）；与 YAML display_name 对应。
     display_name: str | None = None
 
 
@@ -307,6 +309,32 @@ def _load_flow_data(flow_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail="Flow has no draft or committed versions")
 
 
+def _flow_runtime_delete_blockers(flow_code: str) -> list[str]:
+    """若仍存在部署运行或测试运行，则不允许删除流程定义（与 YAML 文件）。"""
+    reasons: list[str] = []
+    try:
+        with db_session() as s:
+            n_deploy_runs = int(
+                s.scalar(
+                    select(func.count()).select_from(FeDeployRun).where(FeDeployRun.flow_code == flow_code),
+                )
+                or 0,
+            )
+            n_test_runs = int(
+                s.scalar(
+                    select(func.count()).select_from(FeTestRun).where(FeTestRun.flow_code == flow_code),
+                )
+                or 0,
+            )
+    except Exception:
+        return []
+    if n_deploy_runs > 0:
+        reasons.append("存在部署运行记录（发布运行），无法删除")
+    if n_test_runs > 0:
+        reasons.append("存在测试运行记录，无法删除")
+    return reasons
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -402,10 +430,20 @@ def create_app() -> FastAPI:
         registry.create(fid, compiled.model_dump(mode="json", exclude_none=True))
         return {"ok": True, "id": fid}
 
+    @app.get("/api/flows/{flow_id}/deletable")
+    def flow_deletable(flow_id: str) -> dict[str, Any]:
+        _resolve_flow_id(flow_id)
+        _require_flow(flow_id)
+        reasons = _flow_runtime_delete_blockers(flow_id)
+        return {"deletable": len(reasons) == 0, "reasons": reasons}
+
     @app.delete("/api/flows/{flow_id}")
     def delete_flow(flow_id: str) -> dict[str, Any]:
         _resolve_flow_id(flow_id)
         _require_flow(flow_id)
+        reasons = _flow_runtime_delete_blockers(flow_id)
+        if reasons:
+            raise HTTPException(status_code=409, detail={"reasons": reasons})
         registry.delete(flow_id)
         return {"ok": True}
 
@@ -1638,10 +1676,15 @@ def create_app() -> FastAPI:
         duration_min_ms: int | None = Query(default=None, ge=0),
         duration_max_ms: int | None = Query(default=None, ge=0),
         log_level: str | None = Query(default=None),
+        include_descendants: bool = Query(default=False),
         offset: int = Query(default=0, ge=0),
-        limit: int = Query(default=50, ge=1, le=500),
+        limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return span_persistence.list_spans(
+        # Pagination unit is root subtrees (not spans). ``limit`` therefore
+        # bounds the number of root-of-forest items returned per page; each
+        # root carries its well-formed subtree, capped by the per-page span
+        # ceiling enforced inside ``list_spans_forest``.
+        return span_persistence.list_spans_forest(
             deploy_run_id=run_id,
             node_id=node_id,
             node_id_contains=node_id_contains,
@@ -1652,6 +1695,7 @@ def create_app() -> FastAPI:
             duration_min_ms=duration_min_ms,
             duration_max_ms=duration_max_ms,
             log_level=log_level,
+            include_descendants=include_descendants,
             offset=offset,
             limit=limit,
         )
@@ -1668,10 +1712,11 @@ def create_app() -> FastAPI:
         duration_min_ms: int | None = Query(default=None, ge=0),
         duration_max_ms: int | None = Query(default=None, ge=0),
         log_level: str | None = Query(default=None),
+        include_descendants: bool = Query(default=False),
         offset: int = Query(default=0, ge=0),
-        limit: int = Query(default=50, ge=1, le=500),
+        limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return span_persistence.list_spans(
+        return span_persistence.list_spans_forest(
             test_run_id=run_id,
             node_id=node_id,
             node_id_contains=node_id_contains,
@@ -1682,6 +1727,7 @@ def create_app() -> FastAPI:
             duration_min_ms=duration_min_ms,
             duration_max_ms=duration_max_ms,
             log_level=log_level,
+            include_descendants=include_descendants,
             offset=offset,
             limit=limit,
         )

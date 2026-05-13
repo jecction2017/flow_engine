@@ -897,14 +897,14 @@ import {
 } from "@/api/testBatches";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
 import { fetchFlowList, type FlowListItem } from "@/api/flows";
-import { fetchDraft, fetchVersion, fetchVersionList, type FlowVersionMeta } from "@/api/flowVersions";
+import { fetchDraft, fetchVersion, fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
 import InfoTip from "@/components/InfoTip.vue";
 import RunDetailPanel from "@/components/RunDetailPanel.vue";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import type { CapabilityRule, FlowDocument, FlowNode } from "@/types/flow";
-import { displayName as displayNodeName, nodeId as flowNodeLogicalId } from "@/types/flow";
+import { displayName as displayNodeName, flowListItemLabel, nodeId as flowNodeLogicalId } from "@/types/flow";
 import { previewContextMapping } from "@/testCenter/mappingPreview";
 import {
   createTestPlan,
@@ -1186,14 +1186,13 @@ async function loadMockNodeOptionsForBatch() {
 }
 
 function flowPickerLabel(f: FlowListItem): string {
-  const n = (f.display_name || "").trim();
-  return n || f.id;
+  return flowListItemLabel(f);
 }
 
 function flowLabelById(flowId: string): string {
   if (!flowId) return "";
   const hit = flowOptions.value.find((x) => x.id === flowId);
-  return hit ? flowPickerLabel(hit) : flowId;
+  return hit ? flowListItemLabel(hit) : "未知流程";
 }
 
 function mockModeInfoText(m: MockMode): string {
@@ -1390,7 +1389,7 @@ async function selectPlan(planId: number) {
     // Load version list for this flow so version_channel select is populated.
     try {
       const vr = await fetchVersionList(selectedPlanDetail.value.flow_code);
-      versionOptions.value = vr.versions;
+      versionOptions.value = sortFlowVersionsDesc(vr.versions);
     } catch {
       versionOptions.value = [];
     }
@@ -1644,8 +1643,8 @@ async function onFlowChange() {
   if (!form.flow_code) return;
   try {
     const r = await fetchVersionList(form.flow_code);
-    versionOptions.value = r.versions;
-    if (r.versions.length > 0) form.ver_no = r.versions[0].version;
+    versionOptions.value = sortFlowVersionsDesc(r.versions);
+    if (versionOptions.value.length > 0) form.ver_no = versionOptions.value[0]!.version;
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   }
@@ -1656,7 +1655,7 @@ async function onPlanFlowChange() {
   if (!planForm.flow_code) return;
   try {
     const r = await fetchVersionList(planForm.flow_code);
-    versionOptions.value = r.versions;
+    versionOptions.value = sortFlowVersionsDesc(r.versions);
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   }

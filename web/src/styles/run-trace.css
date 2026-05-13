@@ -581,6 +581,23 @@
   border-color: color-mix(in srgb, #94a3b8 40%, transparent);
 }
 
+/* Generic toggle-style chip (e.g. "包含子节点"). Mixed-case label, accent
+   tone when active. Distinct from log-level chips which keep their own
+   per-level color. */
+.run-trace .rt-chip-btn.rt-chip-toggle {
+  text-transform: none;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  padding: 1px 8px;
+}
+
+.run-trace .rt-chip-btn.rt-chip-toggle.active {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, #fff);
+  color: var(--accent, #2563eb);
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 45%, transparent);
+}
+
 @media (max-width: 1100px) {
   .run-trace.run-trace--spans .rt-row {
     grid-template-columns: 34px 12px minmax(160px, 1fr) 90px 70px;

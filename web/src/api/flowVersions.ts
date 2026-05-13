@@ -17,6 +17,11 @@ export type VersionListResponse = {
   versions: FlowVersionMeta[];
 };
 
+/** 已发布版本号降序（最新在上、V1 在最后），与 Studio / 运行 / 测试下拉里「草稿固定首项、其后版本」一致 */
+export function sortFlowVersionsDesc<T extends { version: number }>(versions: readonly T[]): T[] {
+  return [...versions].sort((a, b) => b.version - a.version);
+}
+
 const jsonHeaders = { "Content-Type": "application/json" };
 
 async function checkOk(r: Response): Promise<Response> {

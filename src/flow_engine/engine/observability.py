@@ -81,7 +81,7 @@ class SpanRecord:
     run_ref: RunRef
     flow_code: str
     node_id: str
-    node_type: str                       # flow_root | task | loop_iter | subflow
+    node_type: str                       # task | loop_iter | subflow
     started_at: datetime
     span_seq: int = 0                    # filled by backend
     parent_span_id: int | None = None    # the seq handle of the enclosing span

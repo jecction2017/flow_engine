@@ -14,34 +14,34 @@
       <div class="actions">
         <div class="grp" title="对应服务端 flows 目录下的流程版本">
           <!-- Flow selector -->
-          <select v-model="selectedId" class="sel" @change="onSelectFlow">
+          <select class="sel" :value="flowSelectBoundValue" @change="onFlowSelectChange">
             <option value="" disabled>选择流程…</option>
+            <option v-if="store.pendingNewFlowId" :value="UNSAVED_SENTINEL">新流程（未保存）</option>
             <option
               v-for="f in store.flowList"
               :key="(f as any).id"
               :value="(f as any).id"
-              :title="(f as any).id"
             >
-              {{ flowOptionLabel(f) }}
+              {{ flowListItemLabel(f as { id: string; display_name?: string }) }}
             </option>
           </select>
 
           <!-- Version selector -->
           <select v-if="store.activeFlowId" v-model="selectedVersion" class="sel-ver" @change="onSelectVersion">
-            <option value="draft" :disabled="!hasDraft">草稿{{ hasDraft ? "（可编辑）" : "（无）" }}</option>
-            <option v-for="v in versionList" :key="v.version" :value="String(v.version)">
-              V{{ v.version }}{{ v.version === latestVersion ? "（已发布，最新）" : "（已发布）" }}
+            <option value="draft" :disabled="!hasDraft">草稿{{ hasDraft ? "" : "（无）" }}</option>
+            <option v-for="(v, i) in versionList" :key="`${v.version}-${i}`" :value="String(v.version)">
+              V{{ v.version }}{{ v.version === latestVersion ? " · 最新" : "" }}
             </option>
           </select>
 
-          <span v-if="store.activeFlowId" class="hint-text">先保存草稿，再提交新版本</span>
+          <span v-if="store.activeFlowId && !store.pendingNewFlowId" class="hint-text">先保存草稿，再保存为新版本</span>
 
           <!-- Save draft -->
           <button
             type="button"
             class="btn ghost"
-            :disabled="!store.activeFlowId || !!saving"
-            title="保存为草稿（不创建新版本）"
+            :disabled="(!store.activeFlowId && !store.pendingNewFlowId) || !!saving"
+            title="保存为草稿（不创建新版本）；未写库的新流程首次点击将创建并写入草稿"
             @click="saveDraft"
           >
             {{ saving === "draft" ? "保存中…" : "保存草稿" }}
@@ -51,21 +51,11 @@
           <button
             type="button"
             class="btn primary"
-            :disabled="!store.activeFlowId || saving !== false"
-            title="将当前草稿提交为新版本（V+1）"
+            :disabled="!store.activeFlowId || store.pendingNewFlowId !== null || saving !== false"
+            title="将当前草稿保存为新版本（V+1）"
             @click="saveNewVersion"
           >
-            {{ saving === "version" ? "提交中…" : `提交为 V${latestVersion + 1}` }}
-          </button>
-
-          <button
-            type="button"
-            class="btn accent"
-            :disabled="!store.activeFlowId"
-            title="临时仿真执行当前流程：固定调试模式，HTTP/写库/发消息等副作用默认抑制。正式生产请创建部署。"
-            @click="toggleRun"
-          >
-            ▶ 试运行
+            {{ saving === "version" ? "保存中…" : "保存为新版本" }}
           </button>
         </div>
         <div class="grp menu-wrap" ref="moreMenuRef">
@@ -73,12 +63,42 @@
             更多{{ moreMenuOpen ? " ▴" : " ▾" }}
           </button>
           <div v-if="moreMenuOpen" class="menu-panel">
-            <button type="button" class="menu-item" @click="onNewFlowFromMenu">新建流程</button>
-            <label class="menu-item">
-              导入 JSON
-              <input hidden type="file" accept="application/json" @change="onImport" />
-            </label>
-            <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 JSON</button>
+            <div class="menu-group">
+              <button type="button" class="menu-item" @click="onNewFlowFromMenu">新建流程</button>
+            </div>
+            <div class="menu-group">
+              <label class="menu-item">
+                导入 JSON
+                <input hidden type="file" accept="application/json" @change="onImport" />
+              </label>
+              <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 JSON</button>
+            </div>
+            <div class="menu-group">
+              <button
+                type="button"
+                class="menu-item"
+                :disabled="!store.activeFlowId || store.pendingNewFlowId !== null"
+                :title="
+                  !store.activeFlowId || store.pendingNewFlowId
+                    ? '请先保存流程后再试运行'
+                    : '临时仿真执行当前流程：固定调试模式，副作用默认抑制'
+                "
+                @click="onTrialRunFromMenu"
+              >
+                流程试运行
+              </button>
+            </div>
+            <div class="menu-group">
+              <button
+                type="button"
+                class="menu-item danger"
+                :disabled="!store.activeFlowId || store.pendingNewFlowId !== null || !flowDeleteMeta.deletable"
+                :title="deleteFlowMenuTitle"
+                @click="onDeleteFlowFromMenu"
+              >
+                删除流程…
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -87,12 +107,38 @@
     <!-- Save message -->
     <div v-if="saveMsg" class="save-msg" :class="saveMsg.type">{{ saveMsg.text }}</div>
     <div v-if="versionConfirmOpen" class="confirm-mask" @click.self="closeVersionConfirm">
-      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="确认提交版本">
-        <div class="confirm-title">确认提交新版本</div>
-        <p class="confirm-text">确认将当前草稿提交为 V{{ pendingVersion }} 吗？</p>
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="确认保存新版本">
+        <div class="confirm-title">确认保存为新版本</div>
+        <p class="confirm-text">确认将当前草稿保存为 V{{ pendingVersion }} 吗？</p>
         <div class="confirm-actions">
           <button type="button" class="btn ghost" @click="closeVersionConfirm">取消</button>
-          <button type="button" class="btn primary" @click="confirmSaveNewVersion">确认提交</button>
+          <button type="button" class="btn primary" @click="confirmSaveNewVersion">确认保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="discardConfirmOpen" class="confirm-mask" @click.self="resolveDiscardConfirm(false)">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="放弃未保存的新流程">
+        <div class="confirm-title">放弃未保存的更改？</div>
+        <p class="confirm-text">{{ discardConfirmText }}</p>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="resolveDiscardConfirm(false)">取消</button>
+          <button type="button" class="btn danger" @click="resolveDiscardConfirm(true)">放弃</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="deleteFlowConfirmOpen" class="confirm-mask" @click.self="closeDeleteFlowConfirm">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="确认删除流程">
+        <div class="confirm-title">删除流程</div>
+        <p class="confirm-text">
+          将永久删除当前流程及其草稿与版本文件，不可恢复。确定删除「{{ flowDeleteDisplayName }}」吗？
+        </p>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" :disabled="deletingFlow" @click="closeDeleteFlowConfirm">取消</button>
+          <button type="button" class="btn danger" :disabled="deletingFlow" @click="confirmDeleteFlow">
+            {{ deletingFlow ? "删除中…" : "确认删除" }}
+          </button>
         </div>
       </div>
     </div>
@@ -117,14 +163,25 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
-import type { FlowDocument } from "@/types/flow";
+import { flowListItemLabel, type FlowDocument } from "@/types/flow";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import FlowRunPanel from "@/components/FlowRunPanel.vue";
-import { fetchVersionList, commitVersion, saveDraft as apiSaveDraft, fetchVersion, fetchDraft } from "@/api/flowVersions";
-import type { FlowVersionMeta } from "@/api/flowVersions";
+import { fetchFlowDeletable, type FlowDeletableResponse } from "@/api/flows";
+import {
+  commitVersion,
+  fetchDraft,
+  fetchVersion,
+  fetchVersionList,
+  saveDraft as putFlowDraft,
+  sortFlowVersionsDesc,
+  type FlowVersionMeta,
+} from "@/api/flowVersions";
+
+const LAST_FLOW_STORAGE_KEY = "flowEngine:flowStudio:lastFlowId";
+const UNSAVED_SENTINEL = "__unsaved_new__";
 
 const store = useFlowStudioStore();
 const selectedId = ref("");
@@ -136,18 +193,109 @@ const moreMenuRef = ref<HTMLElement | null>(null);
 const versionConfirmOpen = ref(false);
 const pendingVersion = ref(0);
 
+const discardConfirmOpen = ref(false);
+const discardConfirmText = ref("");
+let discardConfirmResolver: ((ok: boolean) => void) | null = null;
+
+const deleteFlowConfirmOpen = ref(false);
+const deletingFlow = ref(false);
+const flowDeleteMeta = ref<FlowDeletableResponse>({ deletable: false, reasons: [] });
+
 const versionList = ref<FlowVersionMeta[]>([]);
 const latestVersion = ref(0);
 const hasDraft = ref(false);
+
+const flowSelectBoundValue = computed(() => {
+  if (store.pendingNewFlowId) return UNSAVED_SENTINEL;
+  return selectedId.value;
+});
+
+const flowDeleteDisplayName = computed(() => (store.doc.display_name ?? "").trim() || "该流程");
+
+const deleteFlowMenuTitle = computed(() => {
+  if (!store.activeFlowId || store.pendingNewFlowId) return "请先保存流程";
+  if (!flowDeleteMeta.value.deletable && flowDeleteMeta.value.reasons.length > 0) {
+    return flowDeleteMeta.value.reasons.join("；");
+  }
+  return "删除流程文件（不可恢复）；须无部署运行与测试运行记录";
+});
 
 type SaveMsg = { type: "ok" | "err"; text: string };
 const saveMsg = ref<SaveMsg | null>(null);
 let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
 
+function persistLastFlowId(id: string) {
+  try {
+    localStorage.setItem(LAST_FLOW_STORAGE_KEY, id);
+  } catch {
+    /* ignore */
+  }
+}
+
 function showMsg(type: "ok" | "err", text: string) {
   saveMsg.value = { type, text };
   if (saveMsgTimer) clearTimeout(saveMsgTimer);
   saveMsgTimer = setTimeout(() => (saveMsg.value = null), 3000);
+}
+
+function flowNameOk(): boolean {
+  if (!(store.doc.display_name ?? "").trim()) {
+    showMsg("err", "请填写流程名称");
+    store.select({ kind: "flow" });
+    return false;
+  }
+  return true;
+}
+
+async function refreshFlowDeletable() {
+  const fid = store.activeFlowId;
+  if (!fid || store.pendingNewFlowId) {
+    flowDeleteMeta.value = { deletable: false, reasons: [] };
+    return;
+  }
+  try {
+    flowDeleteMeta.value = await fetchFlowDeletable(fid);
+  } catch {
+    flowDeleteMeta.value = { deletable: false, reasons: ["无法查询是否可删除"] };
+  }
+}
+
+function closeDeleteFlowConfirm() {
+  deleteFlowConfirmOpen.value = false;
+}
+
+function onDeleteFlowFromMenu() {
+  closeMoreMenu();
+  if (!store.activeFlowId || store.pendingNewFlowId) return;
+  if (!flowDeleteMeta.value.deletable) return;
+  deleteFlowConfirmOpen.value = true;
+}
+
+async function confirmDeleteFlow() {
+  const fid = store.activeFlowId;
+  if (!fid) return;
+  deletingFlow.value = true;
+  try {
+    await store.deleteFlowOnServer(fid);
+    closeDeleteFlowConfirm();
+    showMsg("ok", "流程已删除");
+    try {
+      localStorage.removeItem(LAST_FLOW_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    await store.refreshFlowList();
+    if (store.flowList.length > 0) {
+      const next = (store.flowList[0] as { id: string }).id;
+      await loadFlowWithVersions(next);
+    } else {
+      store.beginLocalNewFlow();
+    }
+  } catch (e) {
+    showMsg("err", e instanceof Error ? e.message : String(e));
+  } finally {
+    deletingFlow.value = false;
+  }
 }
 
 function flushActiveInput() {
@@ -159,8 +307,15 @@ function toggleRun() {
   runVisible.value = !runVisible.value;
 }
 
+function onTrialRunFromMenu() {
+  closeMoreMenu();
+  if (!store.activeFlowId || store.pendingNewFlowId) return;
+  toggleRun();
+}
+
 function toggleMoreMenu() {
   moreMenuOpen.value = !moreMenuOpen.value;
+  if (moreMenuOpen.value) void refreshFlowDeletable();
 }
 
 function closeMoreMenu() {
@@ -176,6 +331,20 @@ function closeVersionConfirm() {
   versionConfirmOpen.value = false;
 }
 
+function openDiscardConfirm(message: string): Promise<boolean> {
+  discardConfirmText.value = message;
+  discardConfirmOpen.value = true;
+  return new Promise((resolve) => {
+    discardConfirmResolver = resolve;
+  });
+}
+
+function resolveDiscardConfirm(ok: boolean) {
+  discardConfirmOpen.value = false;
+  discardConfirmResolver?.(ok);
+  discardConfirmResolver = null;
+}
+
 function onWindowMouseDown(ev: MouseEvent) {
   if (!moreMenuOpen.value) return;
   const el = moreMenuRef.value;
@@ -188,12 +357,36 @@ function onWindowKeydown(ev: KeyboardEvent) {
   if (ev.key !== "Escape") return;
   closeMoreMenu();
   closeVersionConfirm();
+  closeDeleteFlowConfirm();
+  if (discardConfirmOpen.value) resolveDiscardConfirm(false);
 }
 
 watch(
-  () => store.activeFlowId,
-  (v) => {
-    selectedId.value = v ?? "";
+  () => [store.activeFlowId, store.pendingNewFlowId] as const,
+  ([aid, pend]) => {
+    if (pend) return;
+    selectedId.value = aid ?? "";
+    void refreshFlowDeletable();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => ({
+    id: store.activeFlowId,
+    pending: store.pendingNewFlowId,
+    ver: selectedVersion.value,
+  }),
+  ({ id, pending, ver }) => {
+    if (id) {
+      store.setStudioPickerVersionChannel(ver);
+      return;
+    }
+    if (pending) {
+      store.setStudioPickerVersionChannel("draft");
+      return;
+    }
+    store.clearStudioPickerVersionChannel();
   },
   { immediate: true },
 );
@@ -203,10 +396,18 @@ onMounted(async () => {
   window.addEventListener("keydown", onWindowKeydown);
   await store.refreshFlowList();
   try {
-    if (store.flowList.some((f) => (f as any).id === "demo_flow")) {
+    let last: string | null = null;
+    try {
+      last = localStorage.getItem(LAST_FLOW_STORAGE_KEY);
+    } catch {
+      last = null;
+    }
+    if (last && store.flowList.some((f) => (f as { id: string }).id === last)) {
+      await loadFlowWithVersions(last);
+    } else if (store.flowList.some((f) => (f as { id: string }).id === "demo_flow")) {
       await loadFlowWithVersions("demo_flow");
     } else if (store.flowList.length > 0) {
-      await loadFlowWithVersions((store.flowList[0] as any).id);
+      await loadFlowWithVersions((store.flowList[0] as { id: string }).id);
     }
   } catch {
     /* offline – use built-in sample */
@@ -218,22 +419,49 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKeydown);
 });
 
+function normalizeVersionListItem(raw: unknown): FlowVersionMeta | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const vn = o.version ?? o.ver_no;
+  const ver = typeof vn === "number" && Number.isFinite(vn) ? vn : Number(vn);
+  if (!Number.isFinite(ver) || ver < 1) return null;
+  const ca = o.created_at;
+  const createdAt =
+    typeof ca === "number" && Number.isFinite(ca) ? ca : typeof ca === "string" ? Number(ca) || 0 : 0;
+  const desc = o.description;
+  return {
+    version: ver,
+    created_at: createdAt,
+    description: desc == null || desc === "" ? null : String(desc),
+    display_name: typeof o.display_name === "string" ? o.display_name : String(o.display_name ?? ""),
+  };
+}
+
 async function refreshVersionList(flowId: string) {
   try {
     const vl = await fetchVersionList(flowId);
-    versionList.value = vl.versions;
-    latestVersion.value = vl.latest_version;
-    hasDraft.value = vl.has_draft;
-  } catch {
+    const raw = vl.versions;
+    const arr = Array.isArray(raw) ? raw : [];
+    versionList.value = sortFlowVersionsDesc(
+      arr.map(normalizeVersionListItem).filter((x): x is FlowVersionMeta => x != null),
+    );
+    latestVersion.value =
+      typeof vl.latest_version === "number" && Number.isFinite(vl.latest_version)
+        ? vl.latest_version
+        : Number(vl.latest_version) || 0;
+    hasDraft.value = Boolean(vl.has_draft);
+  } catch (e) {
     versionList.value = [];
     latestVersion.value = 0;
     hasDraft.value = false;
+    showMsg("err", e instanceof Error ? e.message : String(e));
   }
 }
 
 async function loadFlowWithVersions(flowId: string) {
   await store.loadFlowFromServer(flowId);
   await refreshVersionList(flowId);
+  persistLastFlowId(flowId);
   // Show draft if it exists, otherwise latest version
   if (hasDraft.value) {
     selectedVersion.value = "draft";
@@ -244,10 +472,21 @@ async function loadFlowWithVersions(flowId: string) {
   }
 }
 
-async function onSelectFlow() {
-  if (!selectedId.value) return;
+async function onFlowSelectChange(ev: Event) {
+  const el = ev.target as HTMLSelectElement;
+  const next = el.value;
+  if (!next || next === UNSAVED_SENTINEL) return;
+  if (store.pendingNewFlowId) {
+    const ok = await openDiscardConfirm("当前新流程尚未保存，确定放弃并切换流程吗？");
+    if (!ok) {
+      el.value = UNSAVED_SENTINEL;
+      return;
+    }
+    store.abandonUnpersistedNewFlow();
+  }
+  selectedId.value = next;
   try {
-    await loadFlowWithVersions(selectedId.value);
+    await loadFlowWithVersions(next);
   } catch (e) {
     alert(e instanceof Error ? e.message : String(e));
   }
@@ -271,17 +510,21 @@ async function onSelectVersion() {
 }
 
 async function saveDraft() {
-  const fid = store.activeFlowId;
+  const fid = store.activeFlowId ?? store.pendingNewFlowId;
   if (!fid) return;
+  if (!flowNameOk()) return;
   flushActiveInput();
   store.flushNodeDraftsToDocument();
   saving.value = "draft";
+  const wasUnpersistedNew = !!store.pendingNewFlowId;
   try {
-    await apiSaveDraft(fid, store.doc as unknown as Record<string, unknown>);
+    await putFlowDraft(fid, store.doc as unknown as Record<string, unknown>);
+    await store.loadFlowFromServer(fid);
     await refreshVersionList(fid);
     selectedVersion.value = "draft";
     await onSelectVersion();
-    showMsg("ok", "草稿已保存");
+    persistLastFlowId(fid);
+    showMsg("ok", wasUnpersistedNew ? "流程已创建，草稿已保存" : "草稿已保存");
   } catch (e) {
     showMsg("err", e instanceof Error ? e.message : String(e));
   } finally {
@@ -292,24 +535,27 @@ async function saveDraft() {
 async function saveNewVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
+  if (!flowNameOk()) return;
   openVersionConfirm();
 }
 
 async function confirmSaveNewVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
+  if (!flowNameOk()) return;
   closeVersionConfirm();
   flushActiveInput();
   store.flushNodeDraftsToDocument();
   saving.value = "version";
   try {
     // Save current doc to draft first, then commit
-    await apiSaveDraft(fid, store.doc as unknown as Record<string, unknown>);
+    await putFlowDraft(fid, store.doc as unknown as Record<string, unknown>);
     const res = await commitVersion(fid);
     await refreshVersionList(fid);
     selectedVersion.value = String(res.version);
     await onSelectVersion();
-    showMsg("ok", `版本 V${res.version} 已提交`);
+    persistLastFlowId(fid);
+    showMsg("ok", `已保存为新版本 V${res.version}`);
   } catch (e) {
     showMsg("err", e instanceof Error ? e.message : String(e));
   } finally {
@@ -317,21 +563,13 @@ async function confirmSaveNewVersion() {
   }
 }
 
-async function newFlow() {
-  const id = prompt("新流程 id（字母、数字、下划线、短横线）", `flow_${Date.now()}`);
-  if (!id?.trim()) return;
-  try {
-    await store.createFlowOnServer(id.trim());
-    await refreshVersionList(id.trim());
-    selectedVersion.value = "draft";
-  } catch (e) {
-    alert(e instanceof Error ? e.message : String(e));
-  }
-}
-
 async function onNewFlowFromMenu() {
   closeMoreMenu();
-  await newFlow();
+  store.beginLocalNewFlow();
+  selectedVersion.value = "draft";
+  versionList.value = [];
+  latestVersion.value = 0;
+  hasDraft.value = false;
 }
 
 function onDownloadFromMenu() {
@@ -339,19 +577,11 @@ function onDownloadFromMenu() {
   download();
 }
 
-function flowOptionLabel(f: unknown): string {
-  const item = f as { id: string; display_name?: string };
-  const dn = (item.display_name ?? "").trim();
-  // 当显示名与 id 相同（或缺失）时只显示一个值；否则 "显示名 (id)"。
-  if (!dn || dn === item.id) return item.id;
-  return `${dn} (${item.id})`;
-}
-
 function download() {
   const blob = new Blob([store.exportJson()], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  const base = (store.doc.display_name ?? "").trim() || store.activeFlowId || "flow";
+  const base = (store.doc.display_name ?? "").trim() || "flow";
   a.download = `${base}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
@@ -392,9 +622,12 @@ function onImport(ev: Event) {
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
-  backdrop-filter: blur(10px);
+  /* 不透明背景：避免 backdrop-filter 在部分浏览器下裁剪原生 <select> 下拉层，导致只能看到「草稿」一项 */
+  background: color-mix(in srgb, var(--surface) 96%, #f1f5f9);
   flex-wrap: wrap;
+  overflow: visible;
+  position: relative;
+  z-index: 5;
 }
 
 .brand {
@@ -445,6 +678,7 @@ function onImport(ev: Event) {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  overflow: visible;
 }
 
 .hint-text {
@@ -463,8 +697,8 @@ function onImport(ev: Event) {
 }
 
 .sel-ver {
-  min-width: 110px;
-  max-width: 160px;
+  min-width: 140px;
+  max-width: 220px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 8px;
@@ -495,19 +729,14 @@ function onImport(ev: Event) {
   cursor: not-allowed;
 }
 
-.btn.accent {
-  border-color: color-mix(in srgb, #10b981 35%, transparent);
-  background: #10b981;
-  color: #fff;
+.btn.danger {
+  border-color: color-mix(in srgb, #ef4444 45%, transparent);
+  color: #b91c1c;
+  background: #fff;
 }
 
-.btn.accent:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.btn.accent:hover:not(:disabled) {
-  background: #059669;
+.btn.danger:hover {
+  background: #fef2f2;
 }
 
 .btn.ghost:hover {
@@ -528,9 +757,22 @@ function onImport(ev: Event) {
   border-radius: 8px;
   box-shadow: var(--shadow);
   padding: 6px;
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   z-index: 5;
+}
+
+.menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.menu-group + .menu-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
 
 .menu-item {
@@ -544,6 +786,14 @@ function onImport(ev: Event) {
   text-align: left;
   white-space: nowrap;
   display: block;
+}
+
+.menu-item.danger {
+  color: #b91c1c;
+}
+
+.menu-item.danger:disabled {
+  color: var(--muted);
 }
 
 .menu-item:hover {

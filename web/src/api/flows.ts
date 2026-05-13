@@ -4,7 +4,7 @@ import type { FlowDocument } from "@/types/flow";
 
 export type FlowListItem = {
   id: string;
-  /** 展示名；为空字符串时前端应 fallback 到 id。 */
+  /** 流程名称（YAML display_name）；空串表示未填写。 */
   display_name: string;
   path: string;
   updated_at: number | null;
@@ -53,8 +53,33 @@ export async function createFlow(id: string, displayName?: string): Promise<void
   }
 }
 
+export type FlowDeletableResponse = {
+  deletable: boolean;
+  reasons: string[];
+};
+
+export async function fetchFlowDeletable(flowId: string): Promise<FlowDeletableResponse> {
+  const r = await fetch(`/api/flows/${encodeURIComponent(flowId)}/deletable`);
+  if (!r.ok) throw new Error(`deletable ${flowId}: ${r.status}`);
+  return r.json() as Promise<FlowDeletableResponse>;
+}
+
 export async function deleteFlow(flowId: string): Promise<void> {
   const r = await fetch(`/api/flows/${encodeURIComponent(flowId)}`, { method: "DELETE" });
+  if (r.status === 409) {
+    let msg = "无法删除该流程";
+    try {
+      const j = (await r.json()) as { detail?: string | { reasons?: string[] } };
+      const d = j?.detail;
+      if (typeof d === "string") msg = d;
+      else if (d && typeof d === "object" && Array.isArray(d.reasons) && d.reasons.length) {
+        msg = d.reasons.join("；");
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
   if (!r.ok) throw new Error(`delete ${flowId}: ${r.status}`);
 }
 
