@@ -17,6 +17,7 @@ import {
 } from "@/api/flows";
 import {
   NODE_ID_PATTERN,
+  allocateUniqueNodeDisplayName,
   defaultStrategies,
   displayName,
   emptyFlowDocument,
@@ -379,6 +380,32 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     return out;
   }
 
+  /**
+   * 收集当前文档中所有节点的 trim 后展示名（Task / Loop / Subflow），
+   * 可选排除某条 path（用于编辑中节点校验重名）。
+   */
+  function collectAllTrimmedNodeDisplayNamesExcludePath(excludePathKey: string | null): Set<string> {
+    const out = new Set<string>();
+    const walk = (ns: FlowNode[], prefix: number[]) => {
+      ns.forEach((n, i) => {
+        const p = [...prefix, i];
+        const key = pathKey(p);
+        const live = nodeDrafts.value[key] ?? n;
+        if (excludePathKey !== null && key === excludePathKey) {
+          if (live.type === "loop" || live.type === "subflow") walk(live.children, p);
+          return;
+        }
+        if (live.type === "task" || live.type === "loop" || live.type === "subflow") {
+          const t = (live.name ?? "").trim();
+          if (t) out.add(t);
+        }
+        if (n.type === "loop" || n.type === "subflow") walk(n.children, p);
+      });
+    };
+    walk(doc.value.nodes, []);
+    return out;
+  }
+
   /** 基于 prefix 生成全局唯一且符合 id 规则的 id，如 ``task_1``、``task_2``…… */
   function allocateNodeId(prefix: "task" | "loop" | "subflow"): string {
     const existing = collectAllNodeIds();
@@ -390,9 +417,23 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
 
   function makeFreshNode(kind: "task" | "loop" | "subflow"): FlowNode {
     const id = allocateNodeId(kind);
-    if (kind === "task") return emptyTask(id);
-    if (kind === "loop") return emptyLoop(id);
-    return emptySubflow(id);
+    if (kind === "task") {
+      const used = collectAllTrimmedNodeDisplayNamesExcludePath(null);
+      const tname = allocateUniqueNodeDisplayName(used, "新任务");
+      return emptyTask(id, tname);
+    }
+    if (kind === "loop") {
+      const used = collectAllTrimmedNodeDisplayNamesExcludePath(null);
+      const lname = allocateUniqueNodeDisplayName(used, "新循环");
+      used.add(lname);
+      const inner = allocateUniqueNodeDisplayName(used, "循环体");
+      return emptyLoop(id, lname, inner);
+    }
+    const used = collectAllTrimmedNodeDisplayNamesExcludePath(null);
+    const sname = allocateUniqueNodeDisplayName(used, "子流程");
+    used.add(sname);
+    const inner = allocateUniqueNodeDisplayName(used, "子流程步骤");
+    return emptySubflow(id, sname, inner);
   }
 
   /** 任何一次变更（编辑/重置/清空/切换流程）都会异步落到 ``localStorage``。 */
@@ -495,7 +536,22 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     };
     
     assignNewIds(nodeCopy);
-    
+
+    const usedNames = collectAllTrimmedNodeDisplayNamesExcludePath(null);
+    const uniquifyNodeDisplayNamesDeep = (n: FlowNode) => {
+      if (n.type === "task" || n.type === "loop" || n.type === "subflow") {
+        const raw = (n.name ?? "").trim();
+        const fallback = n.type === "task" ? "新任务" : n.type === "loop" ? "新循环" : "子流程";
+        const next = allocateUniqueNodeDisplayName(usedNames, raw || fallback);
+        usedNames.add(next);
+        n.name = next;
+      }
+      if (n.type === "loop" || n.type === "subflow") {
+        for (const c of n.children) uniquifyNodeDisplayNamesDeep(c);
+      }
+    };
+    uniquifyNodeDisplayNamesDeep(nodeCopy);
+
     // Insert after the original node
     r.list.splice(r.index + 1, 0, nodeCopy);
     touch();
@@ -705,6 +761,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     editableNode,
     updateNodeDraft,
     collectAllNodeIds,
+    collectAllTrimmedNodeDisplayNamesExcludePath,
     allocateNodeId,
     isValidNodeId,
     NODE_ID_PATTERN,

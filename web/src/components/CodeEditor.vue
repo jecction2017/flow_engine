@@ -1,7 +1,7 @@
 <template>
   <div
     class="wrap"
-    :class="{ 'is-fill': fill }"
+    :class="{ 'is-fill': fill, 'is-code-dark': appearance === 'code-dark' }"
     :data-readonly="readOnly ? 'true' : 'false'"
     :style="fill ? undefined : { height: heightPx }"
   >
@@ -24,7 +24,8 @@ import { json } from "@codemirror/lang-json";
 import { python } from "@codemirror/lang-python";
 import { yaml } from "@codemirror/lang-yaml";
 import { EditorState, type Extension, type Text } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, tooltips } from "@codemirror/view";
+import { oneDark } from "@codemirror/theme-one-dark";
 import type { RegistryDoc } from "@/api/starlark";
 import { flowRegistryAutocompletion } from "@/codemirror/flowRegistryAutocomplete";
 
@@ -38,15 +39,35 @@ const props = withDefaults(
     language?: "python" | "yaml" | "json";
     /** When set (python only), adds demo_add / dict_get / internal exports to completions. */
     registry?: RegistryDoc | null;
+    /** 当为 python 时，为 ``$.`` 上下文路径提供补全（每次打开菜单时重新拉取路径列表）。 */
+    pathSuggestions?: (() => readonly string[]) | null;
+    /** 将换行符剥掉，适合单行表达式 / 路径输入。 */
+    stripNewlines?: boolean;
+    /** 覆盖默认占位提示（如单行路径、条件表达式）。 */
+    placeholder?: string | null;
+    /** 暗色编辑区（如任务节点主脚本），与浅色表单区分。 */
+    appearance?: "default" | "code-dark";
   }>(),
-  { height: 280, fill: false, readOnly: false, language: "python", registry: null },
+  {
+    height: 280,
+    fill: false,
+    readOnly: false,
+    language: "python",
+    registry: null,
+    pathSuggestions: null,
+    stripNewlines: false,
+    placeholder: null,
+    appearance: "default",
+  },
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", v: string): void }>();
 
 function onCmUpdate(v?: string | Text) {
   if (props.readOnly) return;
-  emit("update:modelValue", typeof v === "string" ? v : (v?.toString() ?? ""));
+  let s = typeof v === "string" ? v : (v?.toString() ?? "");
+  if (props.stripNewlines) s = s.replace(/\r?\n/g, "");
+  emit("update:modelValue", s);
 }
 
 const heightPx = computed(() => `${props.height}px`);
@@ -79,22 +100,32 @@ const theme = EditorView.theme(
 );
 
 const placeholderText = computed(() => {
+  const custom = (props.placeholder ?? "").trim();
+  if (custom) return custom;
   if (props.language === "yaml") return "YAML";
   if (props.language === "json") return "JSON";
   return "Starlark / Python 风格脚本";
 });
 
+const tooltipParent =
+  typeof document !== "undefined" ? (document.body as HTMLElement) : undefined;
+
 const extensions = computed<Extension[]>(() => {
   const lang =
     props.language === "yaml" ? yaml() : props.language === "json" ? json() : python();
-  const reg =
-    props.language === "python" && props.registry ? flowRegistryAutocompletion(props.registry) : null;
+  const mergedCm =
+    props.language === "python" && (props.registry || props.pathSuggestions)
+      ? flowRegistryAutocompletion(props.registry ?? null, props.pathSuggestions ?? null)
+      : null;
+  const chrome: Extension =
+    props.appearance === "code-dark" ? oneDark : theme;
   return [
+    ...(tooltipParent ? [tooltips({ parent: tooltipParent })] : []),
     lang,
-    ...(reg ? [reg] : []),
+    ...(mergedCm ? [mergedCm] : []),
     EditorState.readOnly.of(props.readOnly),
     EditorView.editable.of(!props.readOnly),
-    theme,
+    chrome,
   ];
 });
 </script>
@@ -115,6 +146,11 @@ const extensions = computed<Extension[]>(() => {
   flex: 1 1 auto;
   height: 100%;
   min-height: 0;
+}
+
+.wrap.is-code-dark {
+  border-color: #3e4451;
+  background: #282c34;
 }
 
 .wrap[data-readonly="true"] {
@@ -140,5 +176,18 @@ const extensions = computed<Extension[]>(() => {
 
 .wrap :deep(.cm-gutters) {
   flex-shrink: 0;
+}
+</style>
+
+<!-- CodeMirror 将补全说明挂到 body 时，不受 scoped 主题影响，需单独保证层级与版式 -->
+<style>
+.cm-tooltip {
+  z-index: 5000;
+  max-width: min(420px, calc(100vw - 24px));
+}
+.cm-tooltip.cm-completionInfo {
+  padding: 8px 10px;
+  line-height: 1.45;
+  font-size: 12px;
 }
 </style>

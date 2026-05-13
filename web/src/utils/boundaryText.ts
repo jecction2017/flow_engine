@@ -47,6 +47,32 @@ function splitFirstColon(s: string): { key: string; value: string } | null {
   return { key: s.slice(0, idx).trim(), value: s.slice(idx + 1).trim() };
 }
 
+/** 供 UI 行编辑校验：inputs 为「上下文路径 → Starlark 变量名」。 */
+export function validateBoundaryInputMapping(ctxPath: string, starlarkVar: string): string | null {
+  const k = ctxPath.trim();
+  const v = starlarkVar.trim();
+  if (!k && !v) return null;
+  if (!k || !v) return "变量名与上下文路径需成对填写，或整行留空以删除。";
+  const inner = validatePair("inputs", k, v);
+  if (!inner) return null;
+  return inner
+    .replace("inputs 的 key", "上下文路径")
+    .replace("inputs 的 value", "Starlark 变量名");
+}
+
+/** 供 UI 行编辑校验：outputs 为「返回字段 → 上下文路径」。 */
+export function validateBoundaryOutputMapping(returnField: string, ctxPath: string): string | null {
+  const k = returnField.trim();
+  const v = ctxPath.trim();
+  if (!k && !v) return null;
+  if (!k || !v) return "字段名与上下文路径需成对填写，或整行留空以删除。";
+  const inner = validatePair("outputs", k, v);
+  if (!inner) return null;
+  return inner
+    .replace("outputs 的 key", "返回字段名")
+    .replace("outputs 的 value", "上下文路径");
+}
+
 function validatePair(section: Section, k: string, v: string): string | null {
   if (section === "inputs") {
     if (!CONTEXT_PATH_RE.test(k)) return `inputs 的 key 必须以 "$." 开头（上下文路径），收到 "${k}"`;

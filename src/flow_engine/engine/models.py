@@ -111,11 +111,11 @@ class BaseNode(BaseModel):
         pattern=NODE_ID_PATTERN,
         description="节点逻辑主键：字母开头 + 字母/数字/下划线；流程内唯一。",
     )
-    # 展示名。允许任意非空字符串（含中文）。仅用于 UI 可视化，
-    # 不得作为逻辑主键参与业务逻辑；留空（"" / 空白）时自动回落到 id。
+    # 展示名。Loop/Subflow：留空（"" / 空白）时自动回落到 id。
+    # Task：必填非空，流程内唯一（见 FlowDefinition 校验），不参与引擎 id 语义。
     name: str = Field(
         default="",
-        description="展示名，仅作可视化，不承载业务语义；留空则回落到 id。",
+        description="展示名；Task 必填且在流程内唯一；其它类型留空则回落到 id。",
     )
     strategy_ref: str = "default_sync"
     wait_before: bool = False
@@ -125,8 +125,10 @@ class BaseNode(BaseModel):
 
     @model_validator(mode="after")
     def _default_name_to_id(self) -> "BaseNode":
-        # 如果 name 为空或仅含空白字符，统一回落到 id，保证展示永远有值
-        # 且 name 永远不会作为歧义的逻辑键出现。
+        # Task 的 name 由 TaskNode / FlowDefinition 单独约束，不在此回落到 id。
+        if getattr(self, "type", None) == "task":
+            return self
+        # Loop / Subflow：name 为空时回落到 id，保证展示永远有值。
         if not isinstance(self.name, str) or not self.name.strip():
             object.__setattr__(self, "name", self.id)
         return self
@@ -140,6 +142,15 @@ class TaskNode(BaseNode):
     # 与系统默认；None / 空列表 = 无覆盖。
     # 现有 YAML 不含此字段，反序列化保持 None，向后兼容。
     capability_overrides: list[CapabilityRule] | None = None
+
+    @model_validator(mode="after")
+    def _task_requires_display_name(self) -> "TaskNode":
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError(
+                "Task node 'name' is required: use a non-empty display name "
+                "(unique among all Task nodes in the flow)."
+            )
+        return self
 
 
 class IterationCollect(BaseModel):
@@ -201,6 +212,43 @@ LoopNode.model_rebuild()
 SubflowNode.model_rebuild()
 
 
+def _migrate_raw_task_display_names(raw_nodes: Any) -> None:
+    """In-place: legacy Task dicts with blank ``name`` get ``name`` from ``id``."""
+
+    if not isinstance(raw_nodes, list):
+        return
+
+    def walk(children: list[Any]) -> None:
+        for item in children:
+            if not isinstance(item, dict):
+                continue
+            t = item.get("type")
+            if t == "task":
+                nm = item.get("name", "")
+                if not (isinstance(nm, str) and nm.strip()):
+                    tid = item.get("id", "")
+                    item["name"] = str(tid).strip() or "unnamed_task"
+            elif t in ("loop", "subflow") and isinstance(item.get("children"), list):
+                walk(item["children"])
+
+    walk(raw_nodes)
+
+
+def _all_tasks_flat(nodes: list[FlowMember]) -> list[TaskNode]:
+    out: list[TaskNode] = []
+
+    def walk(m: FlowMember) -> None:
+        if isinstance(m, TaskNode):
+            out.append(m)
+        elif isinstance(m, (LoopNode, SubflowNode)):
+            for ch in m.children:
+                walk(ch)
+
+    for n in nodes:
+        walk(n)
+    return out
+
+
 class FlowDefinition(BaseModel):
     # 注意：允许 extra="ignore" 仅为兼容历史 yaml 中残留的顶层 `name` 字段。
     # `name` 已迁移至 `display_name`；在 `_migrate_name_field` 中会擦除。
@@ -221,20 +269,38 @@ class FlowDefinition(BaseModel):
         """兼容历史 yaml：若只有顶层 ``name`` 而无 ``display_name``，将其迁移为 ``display_name``。
 
         只处理 mapping 形态的输入；其它类型原样返回，交由后续字段校验报错。
+        同时对 ``nodes`` 树内 Task 补全空白 ``name``（回落到 ``id``），以兼容旧定义。
         """
-        if isinstance(data, dict):
-            if "display_name" not in data and "name" in data:
-                new_data = dict(data)
-                legacy = new_data.pop("name", None)
-                if isinstance(legacy, str):
-                    new_data["display_name"] = legacy
-                return new_data
-            # 若同时存在，丢弃旧字段避免 extra 引发误解。
-            if "display_name" in data and "name" in data:
-                new_data = dict(data)
-                new_data.pop("name", None)
-                return new_data
-        return data
+        if not isinstance(data, dict):
+            return data
+        working = dict(data)
+        if isinstance(working.get("nodes"), list):
+            _migrate_raw_task_display_names(working["nodes"])
+        if "display_name" not in working and "name" in working:
+            new_data = dict(working)
+            legacy = new_data.pop("name", None)
+            if isinstance(legacy, str):
+                new_data["display_name"] = legacy
+            return new_data
+        if "display_name" in working and "name" in working:
+            new_data = dict(working)
+            new_data.pop("name", None)
+            return new_data
+        return working
+
+    @model_validator(mode="after")
+    def _task_display_names_unique(self) -> "FlowDefinition":
+        seen: dict[str, str] = {}
+        for t in _all_tasks_flat(self.nodes):
+            key = t.name.strip()
+            if not key:
+                raise ValueError(f"Task node {t.id!r} has an empty display name.")
+            if key in seen:
+                raise ValueError(
+                    f"Duplicate task display name {key!r}: nodes {seen[key]!r} and {t.id!r}."
+                )
+            seen[key] = t.id
+        return self
 
 
 def iter_member_ids(member: FlowMember) -> list[str]:

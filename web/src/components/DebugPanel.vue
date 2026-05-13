@@ -1,80 +1,136 @@
 <template>
-  <section class="card">
-    <div class="head">
+  <section :class="embedded ? 'debug-embedded' : 'card'">
+    <div v-if="!hideToolbar" class="head">
       <div class="head-title">
         <span class="h">节点调试</span>
-        <InfoTip
-          wide
-          text="每个节点拥有独立的调试上下文。顶层 key 会直接绑定为 Starlark 全局变量（不走边界映射），仅前端保存，不写回流程定义。"
-        />
-        <span class="badge suppressed" title="临时调试入口，副作用类 builtin（HTTP/DB/MQ）默认全部 SUPPRESS，不会触发真实生产副作用">
-          副作用已抑制
-          <InfoTip
-            wide
-            text="节点调试是临时仿真路径，固定为调试模式：带副作用的内置函数（如 HTTP、写库、发消息等）默认会被安全抑制。若需联调沙箱，可在下方「本次附加策略」中放行或配置重定向参数。"
-          />
-        </span>
       </div>
       <button type="button" class="btn" :disabled="pending" @click="run">
         {{ pending ? "请求中…" : "▶ 调试" }}
       </button>
     </div>
 
-    <div class="lbl row">
-      <span class="lbl-row">调试上下文 (JSON)</span>
-      <span class="actions">
-        <select v-model="profileText" class="mini sel-mini mono" title="调试使用的字典 profile">
-          <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
-        </select>
-        <button type="button" class="mini" @click="resetFromInitialContext">重置</button>
-        <button type="button" class="mini" @click="clearCtx">清空</button>
-      </span>
-    </div>
-    <textarea
-      v-model="ctxText"
-      class="area mono"
-      :class="{ invalid: !ctxValid }"
-      rows="4"
-      spellcheck="false"
-      placeholder="{}"
-    />
-    <div class="ctx-hint" :class="{ err: !ctxValid }">
-      {{ ctxValid ? ctxHint : "JSON 无法解析，调试时会被视为空对象" }}
-    </div>
+    <div class="debug-settings">
+      <div class="settings-panel">
+        <header class="settings-panel-hd">
+          <div class="settings-panel-titles">
+            <span class="settings-panel-title">调试设置</span>
+            <span class="settings-panel-sub">上下文、Profile 与抑制规则仅作用于本次请求，不写回流程 YAML。</span>
+          </div>
+        </header>
 
-    <details class="cap-details">
-      <summary class="cap-summary">本次附加策略（可选，仅本次调试）</summary>
-      <div class="cap-hint">
-        仅作用于当前这次调试请求，不写回流程。在默认「抑制副作用」之上，可
-        <strong>显式放行</strong>（allow）或
-        <strong>指定重定向参数</strong>（redirect + redirect_params，由具体内置函数识别）。
-        与节点上配置的「节点能力策略」会一并发送；仍无法切换为生产运行模式。
+        <div class="settings-stack">
+          <div class="ctx-json-block">
+            <div class="ctx-json-head">
+              <span class="field-line-lbl">
+                调试上下文 (JSON)
+                <InfoTip
+                  wide
+                  text="每个节点独立保存。JSON 最外层的字段名会作为 Starlark 全局变量直接注入脚本（不经过节点边界映射），仅保存在浏览器本地，不会写回流程 YAML。"
+                />
+              </span>
+              <div class="ctx-json-actions">
+                <button type="button" class="mini mini-strong" @click="resetFromInitialContext">重置</button>
+                <button type="button" class="mini mini-strong" @click="clearCtx">清空</button>
+              </div>
+            </div>
+            <textarea
+              v-model="ctxText"
+              class="area mono area-ctx"
+              :class="{ invalid: !ctxValid }"
+              rows="11"
+              spellcheck="false"
+              placeholder="{}"
+            />
+            <div v-if="ctxValid" class="ctx-hint-line">
+              <template v-if="ctxInjectKeys.length">
+                <span class="ctx-hint-text">注入变量</span>
+                <template v-for="(k, i) in ctxInjectKeys" :key="k">
+                  <span class="ctx-hint-token mono">{{ k }}</span>
+                  <span v-if="i < ctxInjectKeys.length - 1" class="ctx-hint-sep">、</span>
+                </template>
+                <span class="ctx-hint-text">可在脚本中按全局名直接读取。</span>
+              </template>
+              <template v-else>
+                <span class="ctx-hint-text">注入变量</span>
+                <span class="ctx-hint-text ctx-hint-weak">暂无（空对象表示无可注入名）。</span>
+              </template>
+            </div>
+            <div v-else class="ctx-hint-line err">JSON 无法解析，调试时会被视为空对象。</div>
+          </div>
+
+          <div class="profile-block-standalone">
+            <div class="field-line field-line--tight">
+              <span class="field-line-lbl">
+                调试 Profile
+                <InfoTip text="本次请求使用的数据字典 profile，由服务端 profiles 配置决定；与流程属性里的默认 profile 可能不同。" />
+              </span>
+            </div>
+            <div class="profile-select-shell">
+              <select v-model="profileText" class="inp inp-profile mono">
+                <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+              </select>
+            </div>
+          </div>
+
+          <details class="cap-details">
+            <summary class="cap-summary">
+              <span class="cap-summary-lbl">副作用函数抑制（仅本次请求）</span>
+              <span class="cap-summary-tip" @click.stop>
+                <InfoTip
+                  wide
+                  text="调试模式，默认抑制副作用函数（suppress），可在此配置规则：放行（allow）或重定向（redirect + redirect_params）；此配置规则仅随本次调试发送，并与节点已保存的抑制规则合并，不写回流程。"
+                />
+              </span>
+            </summary>
+            <CapabilityRulesEditor v-model="capabilityPolicy" />
+          </details>
+        </div>
       </div>
-      <CapabilityRulesEditor v-model="capabilityPolicy" />
-    </details>
-
-    <div class="lbl row">
-      <span class="lbl-row">响应</span>
-      <span class="hint">{{ hint }}</span>
     </div>
-    <pre class="out mono">{{ responseText }}</pre>
 
-    <div v-if="logs.length" class="lbl row">
-      <span class="lbl-row">
-        运行日志
-        <InfoTip text="脚本中调用 log / log_info / log_warn / log_error 产生。" />
-      </span>
-      <span class="hint">{{ logs.length }} 条</span>
+    <div class="debug-split" role="presentation" />
+
+    <div class="debug-results">
+      <div class="results-head">
+        <div class="results-head-main">
+          <span class="results-title">调试结果</span>
+          <InfoTip text="包含脚本返回值（响应体）与 Starlark 运行期日志；与上方调试设置相互独立。" />
+        </div>
+        <div class="result-status-wrap">
+          <span class="result-status" :class="resultStatusClass">{{ resultStatusText }}</span>
+        </div>
+      </div>
+
+      <div class="results-body">
+        <div class="result-block">
+          <div class="lbl row result-block-hd">
+            <span class="lbl-row">响应</span>
+          </div>
+          <pre class="out mono">{{ responseText }}</pre>
+        </div>
+
+        <div class="result-block">
+          <div class="lbl row result-block-hd">
+            <span class="lbl-row">
+              运行日志
+              <InfoTip text="脚本中调用 log / log_info / log_warn / log_error 产生。" />
+            </span>
+            <span v-if="logs.length" class="hint">{{ logs.length }} 条</span>
+            <span v-else class="hint muted">暂无</span>
+          </div>
+          <ul v-if="logs.length" class="logs mono">
+            <li v-for="(entry, i) in logs" :key="i" class="log-row" :class="`lvl-${entry.level}`">
+              <span class="log-ts">+{{ entry.ts_ms }}ms</span>
+              <span class="log-lvl">{{ entry.level }}</span>
+              <span class="log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
+              <span class="log-msg">{{ entry.message }}</span>
+              <span v-if="entry.truncated" class="log-trunc" title="达到日志上限，后续条目被丢弃">…</span>
+            </li>
+          </ul>
+          <div v-else class="logs-empty mono">执行成功后，日志会显示在此处。</div>
+        </div>
+      </div>
     </div>
-    <ul v-if="logs.length" class="logs mono">
-      <li v-for="(entry, i) in logs" :key="i" class="log-row" :class="`lvl-${entry.level}`">
-        <span class="log-ts">+{{ entry.ts_ms }}ms</span>
-        <span class="log-lvl">{{ entry.level }}</span>
-        <span class="log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
-        <span class="log-msg">{{ entry.message }}</span>
-        <span v-if="entry.truncated" class="log-trunc" title="达到日志上限，后续条目被丢弃">…</span>
-      </li>
-    </ul>
   </section>
 </template>
 
@@ -87,15 +143,24 @@ import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import InfoTip from "./InfoTip.vue";
 import { fetchProfileConfig } from "@/api/profiles";
 
-const props = defineProps<{
-  path: number[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    path: number[];
+    /** 抽屉内嵌：去掉外层卡片边框，由容器负责布局。 */
+    embedded?: boolean;
+    /** 隐藏顶部标题栏与主「调试」按钮（由外层工具栏触发 run）。 */
+    hideToolbar?: boolean;
+  }>(),
+  { embedded: false, hideToolbar: false },
+);
 
 const store = useFlowStudioStore();
 const ctxText = ref("{}");
 const responseText = ref("// 等待调试输出");
 const pending = ref(false);
-const hint = ref("");
+/** 调试执行状态：用于结果区醒目展示，与旧版右侧小字 hint 分离。 */
+type ResultPhase = "idle" | "pending" | "ok" | "http_err" | "starlark_err" | "offline" | "blocked";
+const resultPhase = ref<ResultPhase>("idle");
 const logs = ref<LogEntry[]>([]);
 const profileOptions = ref<string[]>(["default"]);
 const profileText = ref("default");
@@ -127,10 +192,42 @@ const parsedCtx = computed<{ ok: boolean; value: Record<string, unknown> }>(() =
 
 const ctxValid = computed(() => parsedCtx.value.ok);
 
-const ctxHint = computed(() => {
-  const keys = Object.keys(parsedCtx.value.value);
-  if (keys.length === 0) return "无顶层变量（等价于空环境）。";
-  return `顶层变量：${keys.join(", ")}`;
+const resultStatusText = computed(() => {
+  switch (resultPhase.value) {
+    case "idle":
+      return "未执行";
+    case "pending":
+      return "执行中…";
+    case "ok":
+      return "成功";
+    case "http_err":
+      return "请求失败";
+    case "starlark_err":
+      return "脚本失败";
+    case "offline":
+      return "离线预览";
+    case "blocked":
+      return "无法调试";
+    default:
+      return "";
+  }
+});
+
+const resultStatusClass = computed(() => ({
+  "is-idle": resultPhase.value === "idle",
+  "is-pending": resultPhase.value === "pending",
+  "is-ok": resultPhase.value === "ok",
+  "is-warn": resultPhase.value === "offline",
+  "is-err":
+    resultPhase.value === "http_err" ||
+    resultPhase.value === "starlark_err" ||
+    resultPhase.value === "blocked",
+}));
+
+/** JSON 顶层 key，用于「注入变量」提示区展示。 */
+const ctxInjectKeys = computed(() => {
+  if (!ctxValid.value) return [] as string[];
+  return Object.keys(parsedCtx.value.value);
 });
 
 function defaultCtxText(): string {
@@ -143,6 +240,9 @@ watch(
   () => {
     const saved = store.getDebugContextText(props.path);
     ctxText.value = saved !== undefined ? saved : defaultCtxText();
+    resultPhase.value = "idle";
+    responseText.value = "// 等待调试输出";
+    logs.value = [];
   },
   { immediate: true },
 );
@@ -162,12 +262,14 @@ function clearCtx() {
 
 async function run() {
   if (!task.value) {
-    hint.value = "仅 Task 节点可调试";
+    resultPhase.value = "blocked";
+    responseText.value = "// 仅 Task 节点可调试";
+    logs.value = [];
     return;
   }
 
   pending.value = true;
-  hint.value = "";
+  resultPhase.value = "pending";
   responseText.value = "";
   logs.value = [];
 
@@ -192,7 +294,7 @@ async function run() {
     const text = await res.text();
     if (!res.ok) {
       responseText.value = text || `HTTP ${res.status}`;
-      hint.value = "后端返回错误";
+      resultPhase.value = "http_err";
       return;
     }
     try {
@@ -209,10 +311,10 @@ async function run() {
       const { logs: _logs, ...rest } = parsed;
       void _logs;
       responseText.value = JSON.stringify(rest, null, 2);
-      hint.value = parsed.ok === false ? "Starlark 执行失败" : "后端执行成功";
+      resultPhase.value = parsed.ok === false ? "starlark_err" : "ok";
     } catch {
       responseText.value = text;
-      hint.value = "后端执行成功";
+      resultPhase.value = "ok";
     }
   } catch {
     responseText.value = JSON.stringify(
@@ -223,7 +325,7 @@ async function run() {
       null,
       2,
     );
-    hint.value = "离线模式";
+    resultPhase.value = "offline";
   } finally {
     pending.value = false;
   }
@@ -240,28 +342,446 @@ onMounted(async () => {
     // keep defaults
   }
 });
+
+defineExpose({ run, pending });
 </script>
 
 <style scoped>
 .card {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--surface);
-  padding: 10px 14px 12px;
+  padding: 8px 10px 10px;
   box-shadow: var(--shadow);
+}
+
+.debug-embedded {
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.debug-settings {
+  padding-bottom: 0;
+}
+
+.settings-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.settings-panel-hd {
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 10%, #fafafa);
+}
+
+.settings-panel-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.settings-panel-sub {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.settings-stack {
+  padding: 8px 10px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.field-line {
+  margin: 0 0 5px;
+}
+
+.field-line--tight {
+  margin-bottom: 4px;
+}
+
+.field-line-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0.01em;
+}
+
+.ctx-json-block {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 2px;
+}
+
+.ctx-json-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 8px;
+  margin-bottom: 5px;
+}
+
+.ctx-json-head .field-line-lbl {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ctx-json-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.profile-block-standalone {
+  margin-top: 8px;
+  padding-top: 0;
+}
+
+@media (max-width: 520px) {
+  .ctx-json-head {
+    align-items: flex-start;
+  }
+
+  .ctx-json-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+.profile-select-shell {
+  border-radius: 7px;
+  padding: 1px;
+  background: color-mix(in srgb, var(--border) 88%, var(--accent) 12%);
+  max-width: min(400px, 100%);
+}
+
+.inp-profile {
+  width: 100%;
+  margin: 0;
+  border-radius: 6px;
+  font-size: 11.5px;
+  padding: 6px 8px;
+  border: none;
+  background: #fff;
+  box-shadow: none;
+}
+
+.inp-profile:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.area-ctx {
+  width: 100%;
+  margin-top: 0;
+  min-height: 220px;
+}
+
+.mono {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.ctx-hint-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 5px;
+  margin-top: 6px;
+  padding: 0 1px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.ctx-hint-line.err {
+  color: #b91c1c;
+  font-weight: 500;
+}
+
+.ctx-hint-text {
+  color: #64748b;
+  font-size: 10.5px;
+}
+
+.ctx-hint-weak {
+  color: #94a3b8;
+}
+
+.ctx-hint-token {
+  display: inline-block;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 35%, #f1f5f9);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, #94a3b8);
+  color: #0f172a;
+  line-height: 1.35;
+  vertical-align: baseline;
+}
+
+.ctx-hint-sep {
+  color: #64748b;
+  font-weight: 500;
+  user-select: none;
+}
+
+.debug-split {
+  height: 0;
+  margin: 10px 0 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, var(--accent) 18%);
+}
+
+.debug-results {
+  margin-top: 8px;
+  padding: 10px 10px 9px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent) 14%);
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 52%, #fff 100%);
+  box-shadow:
+    0 4px 14px rgba(15, 23, 42, 0.045),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.results-head-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.results-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.result-status-wrap {
+  flex-shrink: 0;
+}
+
+.result-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 12px;
+  min-width: 76px;
+  text-align: center;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.result-status.is-idle {
+  background: linear-gradient(180deg, #f1f5f9, #e2e8f0);
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.result-status.is-pending {
+  background: color-mix(in srgb, var(--accent) 14%, #fff);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: dbg-pulse 1.1s ease-in-out infinite;
+}
+
+.result-status.is-ok {
+  background: linear-gradient(180deg, #ecfccb, #dcfce7);
+  color: #14532d;
+  border: 1px solid #86efac;
+}
+
+.result-status.is-warn {
+  background: linear-gradient(180deg, #fffbeb, #fef3c7);
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.result-status.is-err {
+  background: linear-gradient(180deg, #fef2f2, #fee2e2);
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+@keyframes dbg-pulse {
+  50% {
+    opacity: 0.75;
+  }
+}
+
+.results-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-block {
+  padding: 7px 9px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  box-shadow: none;
+}
+
+.result-block-hd {
+  margin: 0 0 5px;
+}
+
+.result-block .lbl {
+  margin-top: 0;
+}
+
+.mini-strong {
+  min-width: 44px;
+  font-weight: 600;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+
+.mini-strong:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, #cbd5e1);
+  background: #fff;
+}
+
+.cap-details {
+  margin-top: 8px;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.cap-details[open] {
+  padding-bottom: 0;
+}
+
+.cap-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0 6px;
+  list-style: none;
+}
+
+.cap-summary-lbl {
+  min-width: 0;
+}
+
+.cap-summary-tip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.cap-summary-tip :deep(.info-tip) {
+  color: #64748b;
+}
+
+.cap-summary-tip :deep(.info-tip:hover),
+.cap-summary-tip :deep(.info-tip:focus-visible) {
+  color: var(--accent);
+}
+
+.cap-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cap-summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 5px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #64748b;
+  transform: translateY(-1px);
+  transition: transform 0.15s ease;
+}
+
+.cap-details[open] > .cap-summary::before {
+  transform: rotate(90deg) translate(1px, 0);
+}
+
+.cap-summary:hover {
+  color: var(--accent);
+}
+
+.cap-details[open] .cap-summary {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.cap-summary:hover::before {
+  border-left-color: var(--accent);
+}
+
+.logs-empty {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  color: #94a3b8;
+  border: 1px dashed color-mix(in srgb, var(--border) 92%, transparent);
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.hint.muted {
+  color: #94a3b8;
+  font-weight: 400;
 }
 
 .head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .head-title {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
 }
 
 .h {
@@ -310,26 +830,21 @@ onMounted(async () => {
 .lbl .lbl-row {
   font-weight: 500;
   color: #475569;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .hint {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--muted);
-}
-
-.actions {
-  display: inline-flex;
-  gap: 6px;
 }
 
 .mini {
   border: 1px solid var(--border);
   background: #fff;
   color: var(--muted);
-  border-radius: 6px;
-  padding: 3px 8px;
-  font-size: 11px;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10.5px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -339,76 +854,6 @@ onMounted(async () => {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-.sel-mini {
-  max-width: 150px;
-}
-
-.ctx-hint {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 4px 2px 0;
-}
-
-.ctx-hint.err {
-  color: #b91c1c;
-}
-
-.cap-details {
-  margin-top: 8px;
-  border-top: 1px dashed var(--border);
-  padding-top: 8px;
-}
-
-.cap-summary {
-  font-size: 11.5px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-}
-
-.cap-summary:hover {
-  color: var(--accent);
-}
-
-.cap-details[open] .cap-summary {
-  margin-bottom: 6px;
-  color: var(--text);
-}
-
-.cap-hint {
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 6px;
-}
-
-.cap-hint strong {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.badge.suppressed {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 999px;
-  letter-spacing: 0.02em;
-  background: color-mix(in srgb, #f59e0b 18%, transparent);
-  color: #92400e;
-  margin-left: 6px;
-}
-
-.badge.suppressed :deep(.info-tip) {
-  color: #92400e;
-}
-
 .area.invalid {
   border-color: #fca5a5;
   background: #fff7f7;
@@ -416,11 +861,11 @@ onMounted(async () => {
 
 .area {
   width: 100%;
-  border-radius: 8px;
+  border-radius: 7px;
   border: 1px solid var(--border);
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.55;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
   resize: vertical;
   outline: none;
   background: #fbfdff;
@@ -430,21 +875,21 @@ onMounted(async () => {
 
 .area:focus {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .out {
   margin: 0;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  padding: 8px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, #1e293b 55%, var(--border));
   background: #0f172a;
   color: #e2e8f0;
-  min-height: 72px;
+  min-height: 56px;
   max-height: 200px;
   overflow: auto;
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 1.45;
 }
 
 .logs {
@@ -452,21 +897,21 @@ onMounted(async () => {
   padding: 0;
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  max-height: 180px;
+  border-radius: 7px;
+  max-height: 140px;
   overflow: auto;
   background: #fff;
 }
 
 .log-row {
   display: grid;
-  grid-template-columns: 62px 46px 92px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 58px 44px 88px 1fr auto;
+  gap: 6px;
   align-items: baseline;
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 10.5px;
+  line-height: 1.4;
 }
 
 .log-row:last-child {

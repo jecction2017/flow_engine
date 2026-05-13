@@ -2,7 +2,7 @@
   <div class="page">
     <header class="hd">
       <div>
-        <div class="t">运行策略</div>
+        <div class="t">并发策略</div>
         <div class="s mono">{{ key }}</div>
       </div>
       <button v-if="key !== 'default_sync'" type="button" class="danger" @click="remove">删除策略</button>

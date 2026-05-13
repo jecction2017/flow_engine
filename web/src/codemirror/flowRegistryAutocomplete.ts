@@ -5,8 +5,10 @@ import {
   completeAnyWord,
   type Completion,
   type CompletionContext,
+  type CompletionSource,
 } from "@codemirror/autocomplete";
 import type { RegistryDoc } from "@/api/starlark";
+import { contextPathCompletionSource } from "@/codemirror/contextPathAutocomplete";
 
 function formatSignature(
   signature: Array<{ name: string; type: string; required?: boolean }>,
@@ -60,14 +62,15 @@ function completionSource(registry: RegistryDoc) {
   };
 }
 
-/** CodeMirror extension; pass null to skip (no extra completions). */
-export function flowRegistryAutocompletion(registry: RegistryDoc | null) {
-  const sources = [completeAnyWord];
+/** CodeMirror extension：可选上下文路径（``$.``）+ registry + 词内补全。 */
+export function flowRegistryAutocompletion(
+  registry: RegistryDoc | null,
+  getPaths?: (() => readonly string[]) | null,
+) {
+  const sources: CompletionSource[] = [completeAnyWord];
   if (registry) sources.unshift(completionSource(registry));
+  if (getPaths) sources.unshift(contextPathCompletionSource(getPaths));
   return autocompletion({
-    // include both:
-    // 1) registry-driven builtins/internal exports
-    // 2) in-document identifiers (variables/functions defined above)
     override: sources,
     activateOnTyping: true,
     maxRenderedOptions: 120,

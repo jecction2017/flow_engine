@@ -45,7 +45,7 @@
           <summary class="cap-sum">本次附加策略（可选，仅本次试运行）</summary>
           <div class="cap-hint">
             试运行固定为调试模式，副作用类内置函数默认抑制。此处仅对<strong>这一次试运行请求</strong>追加规则，可放行或填写重定向参数（由具体内置函数使用）。
-            节点上的「节点能力策略」在流程里已持久化；此处为临时叠加。正式生产运行请创建部署。
+            节点上的「副作用函数抑制规则」在流程里已持久化；此处为临时叠加。正式生产运行请创建部署。
           </div>
           <CapabilityRulesEditor v-model="capabilityPolicy" />
         </details>

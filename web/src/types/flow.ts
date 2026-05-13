@@ -36,9 +36,15 @@ export interface CapabilityRule {
 
 export interface TaskNode {
   type: "task";
-  /** 逻辑主键：流程内唯一，字母开头 + 字母/数字/下划线。 */
+  /**
+   * 引擎用稳定逻辑主键（字母开头 + 字母/数字/下划线），流程内唯一。
+   * Studio 对 Task 自动生成并持久化，不向用户展示。
+   */
   id: string;
-  /** 展示名，仅可视化使用；留空时 UI 回落到 id。 */
+  /**
+   * 用户可见的节点名称：必填、去空白后在全流程节点（含 Loop / Subflow）中唯一。
+   * Studio 树与编排页仅展示此名称；引擎内部 id 由系统自动分配。
+   */
   name: string;
   strategy_ref: string;
   wait_before: boolean;
@@ -62,7 +68,11 @@ export interface IterationCollect {
 
 export interface LoopNode {
   type: "loop";
+  /**
+   * 引擎用稳定逻辑主键；Studio 自动生成并持久化，不向用户展示。
+   */
   id: string;
+  /** 用户可见的节点名称：必填、trim 后在全流程节点中唯一。 */
   name: string;
   strategy_ref: string;
   wait_before: boolean;
@@ -80,7 +90,11 @@ export interface LoopNode {
 
 export interface SubflowNode {
   type: "subflow";
+  /**
+   * 引擎用稳定逻辑主键；Studio 自动生成并持久化，不向用户展示。
+   */
   id: string;
+  /** 用户可见的节点名称：必填、trim 后在全流程节点中唯一。 */
   name: string;
   strategy_ref: string;
   wait_before: boolean;
@@ -136,11 +150,10 @@ export type Selection =
   | { kind: "node"; path: number[] };
 
 // ---------------------------------------------------------------------------
-// 节点 id / name 规则（与后端 `flow_engine.engine.models.BaseNode` 保持一致）
-//   * id：逻辑主键，必填，字母开头 + 字母/数字/下划线；在一个流程内全局唯一。
-//   *      所有业务逻辑（跳转、父子关系、调试面板、运行态指标等）都以 id 为准。
-//   * name：仅作显示用途，允许中文 / 空格 / 特殊字符。不参与任何业务逻辑。
-//   *      留空时 UI 自动回落到 id（与后端 model_validator 行为一致）。
+// 节点 id / name（与后端 `flow_engine.engine.models` 对齐）
+//   * id：引擎逻辑主键，字母开头 + 字母/数字/下划线，流程内全局唯一。
+//        Studio 自动生成并持久化，不向用户展示。
+//   * name：用户可见主标识，必填，trim 后全流程节点（Task / Loop / Subflow）唯一。
 // ---------------------------------------------------------------------------
 
 /** id 格式：字母开头，字母/数字/下划线。 */
@@ -175,13 +188,23 @@ export function nodeId(n: FlowNode): string {
 }
 
 /**
- * 返回节点的展示名：优先使用 name；name 为空/空白时回落到 id。
- * 仅用于 UI 渲染，不参与业务逻辑。
+ * 返回节点的展示名：仅用 name，不向用户暴露 id；空则占位「（未命名）」。
  */
 export function displayName(n: FlowNode): string {
   const nm = (n.name ?? "").trim();
-  if (nm) return nm;
-  return nodeId(n);
+  return nm || "（未命名）";
+}
+
+/**
+ * 在已占用的节点展示名集合中，为 ``preferred`` 分配一个不重复的名称
+ * （trim 后比较；若冲突则追加 ``_2``、``_3``…）。
+ */
+export function allocateUniqueNodeDisplayName(used: Set<string>, preferred: string): string {
+  const base = (preferred ?? "").trim() || "新任务";
+  if (!used.has(base)) return base;
+  let i = 2;
+  while (used.has(`${base}_${i}`)) i += 1;
+  return `${base}_${i}`;
 }
 
 export function defaultStrategies(): Record<string, ExecutionStrategy> {
@@ -201,11 +224,11 @@ export function emptyFlowDocument(): FlowDocument {
   };
 }
 
-export function emptyTask(id = "new_task", name?: string): TaskNode {
+export function emptyTask(id: string, name: string): TaskNode {
   return {
     type: "task",
     id,
-    name: name ?? id,
+    name,
     strategy_ref: "default_sync",
     wait_before: false,
     script: '{\n  "ok": True\n}\n',
@@ -213,27 +236,29 @@ export function emptyTask(id = "new_task", name?: string): TaskNode {
   };
 }
 
-export function emptyLoop(id = "new_loop", name?: string): LoopNode {
+export function emptyLoop(id: string, name: string, innerDefaultTaskName: string): LoopNode {
+  const innerId = `${id}_body`;
   return {
     type: "loop",
     id,
-    name: name ?? id,
+    name,
     strategy_ref: "default_sync",
     wait_before: false,
     iterable: "[]",
     alias: "it",
-    children: [emptyTask("loop_body")],
+    children: [emptyTask(innerId, innerDefaultTaskName)],
   };
 }
 
-export function emptySubflow(id = "new_subflow", name?: string): SubflowNode {
+export function emptySubflow(id: string, name: string, innerDefaultTaskName: string): SubflowNode {
+  const innerId = `${id}_step`;
   return {
     type: "subflow",
     id,
-    name: name ?? id,
+    name,
     strategy_ref: "default_sync",
     wait_before: false,
     alias: "sf",
-    children: [emptyTask("step_1")],
+    children: [emptyTask(innerId, innerDefaultTaskName)],
   };
 }

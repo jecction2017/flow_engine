@@ -26,7 +26,7 @@
           </span>
           <span v-else class="fold-arrow placeholder"></span>
           <div class="meta">
-            <div class="name" :title="store.nodeId(n)">
+            <div class="name" :title="store.displayName(n)">
               {{ store.displayName(n) }}
               <span v-if="store.isNodeDirty([...pathPrefix, i])" class="dirty-dot" title="该节点有未保存修改">●</span>
             </div>
@@ -192,14 +192,12 @@ function toggleFold(path: number[]) {
 function isNodeMatched(path: number[]) {
   const q = store.searchQuery.toLowerCase();
   if (!q) return false;
-  
+
   const node = store.getNode(path);
   if (!node) return false;
-  
-  const id = store.nodeId(node) || "";
+
   const name = store.displayName(node) || "";
-  
-  return id.toLowerCase().includes(q) || name.toLowerCase().includes(q);
+  return name.toLowerCase().includes(q);
 }
 
 function isChildMatched(path: number[]) {
@@ -213,10 +211,9 @@ function isChildMatched(path: number[]) {
     if (n.type !== "loop" && n.type !== "subflow") return false;
     
     for (const child of n.children) {
-      const id = store.nodeId(child) || "";
       const name = store.displayName(child) || "";
-      if (id.toLowerCase().includes(q) || name.toLowerCase().includes(q)) return true;
-      
+      if (name.toLowerCase().includes(q)) return true;
+
       if (checkChildren(child)) return true;
     }
     return false;

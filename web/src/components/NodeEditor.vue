@@ -4,7 +4,7 @@
       <div class="hd-main">
         <span class="hd-title">{{ title }}</span>
         <span class="chip" :data-type="node.type">{{ node.type }}</span>
-        <span class="chip strategy-chip" :title="`策略：${node.strategy_ref}`">{{ node.strategy_ref }}</span>
+        <span class="chip strategy-chip" :title="`并发策略：${node.strategy_ref}`">{{ node.strategy_ref }}</span>
       </div>
       <div class="hd-path mono" :title="path.join(' → ')">{{ path.join(" → ") }}</div>
     </header>
@@ -15,108 +15,85 @@
           <div class="sec-title">
             <span>基础信息</span>
           </div>
-          <div class="grid">
-            <label class="field">
+          <div class="grid grid-task-basic">
+            <label class="field full">
               <span class="lbl-row">
-                id<span class="req">*</span>
-                <InfoTip text="逻辑主键，字母开头，仅允许字母 / 数字 / 下划线。流程内唯一。" />
-              </span>
-              <input
-                v-model="idText"
-                class="inp mono"
-                :class="{ invalid: idError !== null }"
-                placeholder="例如：ingest_alert"
-                spellcheck="false"
-                autocomplete="off"
-                @input="onIdInput"
-                @blur="onIdBlur"
-              />
-              <span v-if="idError" class="err">{{ idError }}</span>
-            </label>
-
-            <label class="field">
-              <span class="lbl-row">
-                name
-                <InfoTip text="显示名，支持中文 / 任意字符；留空自动回落到 id。" />
+                名称<span class="req">*</span>
+                <InfoTip
+                  text="流程内必填且唯一（与其它节点去空白后不可重名）。树与编排页仅展示此名称；引擎内部 id 由系统自动分配。"
+                />
               </span>
               <input
                 v-model="nameText"
                 class="inp"
+                :class="{ invalid: nameErrorNode !== null }"
                 placeholder="例如：告警归一化"
                 @input="onNameInput"
-                @blur="onNameBlur"
               />
+              <span v-if="nameErrorNode" class="err">{{ nameErrorNode }}</span>
             </label>
 
-            <label class="field">
+            <div class="field full task-strategy-row">
               <span class="lbl-row">
-                strategy_ref<span class="req">*</span>
-                <InfoTip text="引用流程属性中定义的运行策略。" />
+                并发策略<span class="req">*</span>
+                <InfoTip
+                  wide
+                  text="策略键引用流程属性中的执行方式（同步 / 异步派发 / 线程池等）。勾选「同步屏障」时，进入本节点前会等待同层已派发的异步任务结束。"
+                />
               </span>
-              <select v-model="node.strategy_ref" class="inp" @change="commit">
-                <option v-for="k in store.strategiesList" :key="k" :value="k">{{ k }}</option>
-              </select>
-            </label>
-
-            <label class="field check">
-              <input v-model="node.wait_before" type="checkbox" @change="commit" />
-              <span class="lbl-row">
-                wait_before
-                <InfoTip text="滑动窗口同步屏障：等待同层已派发的异步节点完成后再进入本节点。" />
-              </span>
-            </label>
+              <div class="task-strategy-inner">
+                <select v-model="node.strategy_ref" class="inp strat-sel" @change="commit">
+                  <option v-for="k in store.strategiesList" :key="k" :value="k">{{ k }}</option>
+                </select>
+                <label class="wait-inline">
+                  <input v-model="node.wait_before" type="checkbox" @change="commit" />
+                  <span>同步屏障</span>
+                </label>
+              </div>
+            </div>
 
             <label class="field full">
               <span class="lbl-row">
-                condition
+                执行条件
                 <InfoTip text="Starlark 表达式，可选。为 False 时跳过本节点。" />
               </span>
-              <input
-                class="inp mono"
-                placeholder="例如：True"
-                :value="node.condition ?? ''"
-                @input="onConditionInput"
-              />
+              <div class="cond-editor-wrap">
+                <CodeEditor
+                  :model-value="node.condition ?? ''"
+                  :height="conditionEditorHeight"
+                  :registry="starlarkRegistry"
+                  :path-suggestions="conditionPathSuggestionsGetter"
+                  placeholder="True"
+                  @update:model-value="onConditionCodeUpdate"
+                />
+              </div>
             </label>
           </div>
         </section>
 
-        <section v-if="node.type === 'task'" class="card">
-          <div class="sec-title">
-            <span>边界映射</span>
+        <section v-if="node.type === 'task'" class="card card-compact">
+          <div class="sec-title sec-title-tight">
+            <span>参数映射</span>
             <InfoTip
               wide
-              text="YAML 风格文本。inputs：$.上下文路径 → Starlark 变量名；outputs：脚本返回字段 → $.上下文路径。空行与 # 开头行视为注释。"
+              text="声明本任务如何从流程上下文取数、如何把返回值写回上下文。左侧表：变量名 ← 上下文路径（注入 Starlark 的 inputs）；右侧表：返回字段 → 上下文路径（outputs）。空映射表示由脚本自行读写 $.global 等，可不填。"
             />
-            <button
-              type="button"
-              class="mini ghost"
-              :disabled="!boundaryDirty"
-              @click="resetBoundaryText"
-            >
-              重置
-            </button>
+            <button type="button" class="mini ghost" @click="resetBoundaryMapping">重置</button>
           </div>
-          <textarea
-            v-model="boundaryText"
-            class="area mono"
-            :class="{ invalid: boundaryErrors.length > 0 }"
-            rows="6"
-            spellcheck="false"
-            :placeholder="boundaryPlaceholder"
+          <BoundaryMappingEditor
+            :key="`${path.join('/')}-${boundaryMappingLayoutEpoch}`"
+            :model-value="(node as TaskNode).boundary"
+            :sync-key="path.join('/')"
+            @update:model-value="onBoundaryUpdate"
           />
-          <div v-if="boundaryErrors.length > 0" class="err-block">
-            <div v-for="(msg, i) in boundaryErrors" :key="'b-err-' + i">{{ msg }}</div>
-          </div>
-          <div v-else class="ctx-hint">{{ boundaryCountHint }}</div>
         </section>
 
-        <section v-if="node.type === 'task'" class="card">
+        <section v-if="node.type === 'task'" class="card card-cap-rules">
           <div class="sec-title">
-            <span>节点能力策略（仅此节点）</span>
+            <span>副作用函数抑制规则（本节点）</span>
             <InfoTip
               wide
-              text="写入流程定义，仅对本任务节点生效；优先级高于「环境能力策略」与部署/测试时的附加策略。空 = 不额外覆盖。常用于演练时抑制某节点的 HTTP/写库，或把调用重定向到沙箱（REDIRECT + redirect_params）。技术字段名：capability_overrides。"
+              text="写入流程定义，仅对本任务节点生效；按类目或具体副作用函数（Starlark 注册名）匹配后执行放行 / 抑制 / 改写。优先级高于环境级策略与部署、测试时的附加策略；空表示不额外覆盖。技术字段名：capability_overrides。"
             />
           </div>
           <CapabilityRulesEditor
@@ -223,51 +200,139 @@
       </div>
 
       <div v-if="node.type === 'task'" class="col col-right">
-        <section class="card script-card">
-          <div class="sec-title">
-            <span>Starlark 脚本</span>
-            <InfoTip text="节点执行逻辑。通过 inputs 注入变量，结果经由 outputs 写回上下文。" />
+        <section class="card script-card script-card--dark">
+          <div class="script-sec-head">
+            <div class="script-sec-head-left">
+              <span class="script-sec-title">Starlark 脚本</span>
+              <InfoTip text="节点执行逻辑。通过 inputs 注入变量，结果经由 outputs 写回上下文。" />
+            </div>
+            <div class="script-sec-actions">
+              <button
+                type="button"
+                class="btn primary sm"
+                title="打开节点调试：编辑上下文、附加策略并执行脚本"
+                @click="openDebugDrawer"
+              >
+                调试
+              </button>
+            </div>
           </div>
           <div class="script-body">
             <CodeEditor
               v-model="node.script"
               fill
+              appearance="code-dark"
               :registry="starlarkRegistry"
               @update:model-value="commit"
             />
           </div>
         </section>
-
-        <DebugPanel :path="path" />
       </div>
     </div>
+
+    <Teleport to="body">
+      <template v-if="node && node.type === 'task'">
+        <div
+          v-show="debugDrawerOpen"
+          class="nde-backdrop"
+          @click.self="debugDrawerOpen = false"
+        />
+        <aside
+          class="nde-drawer"
+          :class="{ 'nde-drawer--open': debugDrawerOpen }"
+          role="dialog"
+          aria-modal="true"
+          aria-label="节点调试"
+          @click.stop
+        >
+          <div class="nde-drawer-hd">
+            <span class="nde-drawer-title">节点调试</span>
+            <div class="nde-drawer-hd-actions">
+              <button
+                type="button"
+                class="btn primary sm"
+                :disabled="debugPending"
+                @click="runNodeDebug"
+              >
+                {{ debugPending ? "请求中…" : "▶ 调试" }}
+              </button>
+              <button type="button" class="btn ghost sm" @click="debugDrawerOpen = false">关闭</button>
+            </div>
+          </div>
+          <div class="nde-drawer-body">
+            <DebugPanel ref="debugPanelRef" :path="path" embedded hide-toolbar />
+          </div>
+        </aside>
+      </template>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import type {
+  Boundary,
+  CapabilityRule,
   FlowNode,
   LoopCopyItem,
   LoopIterationIsolation,
   LoopNode,
   TaskNode,
 } from "@/types/flow";
-import type { CapabilityRule } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
+import BoundaryMappingEditor from "./BoundaryMappingEditor.vue";
 import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import CodeEditor from "./CodeEditor.vue";
 import DebugPanel from "./DebugPanel.vue";
 import InfoTip from "./InfoTip.vue";
-import { parseBoundaryDoc, serializeBoundaryDoc } from "@/utils/boundaryText";
+import { collectContextPathSuggestions } from "@/utils/contextPathSuggestions";
 
 const props = defineProps<{ path: number[] }>();
 const store = useFlowStudioStore();
+/** 重置参数映射时递增，强制子组件 remount，避免边界 JSON 未变时 UI 仍保留多行空草稿。 */
+const boundaryMappingLayoutEpoch = ref(0);
 const { registry: starlarkRegistry, ensureRegistry } = useStarlarkRegistryCache();
+
+const debugDrawerOpen = ref(false);
+const debugPanelRef = shallowRef<InstanceType<typeof DebugPanel> | null>(null);
+
+const debugPending = computed(() => {
+  const inst = debugPanelRef.value as unknown as { pending?: { value?: boolean } | boolean } | null;
+  if (!inst?.pending) return false;
+  return typeof inst.pending === "object" && inst.pending !== null && "value" in inst.pending
+    ? !!inst.pending.value
+    : !!inst.pending;
+});
+
+function runNodeDebug() {
+  const inst = debugPanelRef.value as unknown as { run?: () => void | Promise<void> } | null;
+  void inst?.run?.();
+}
+
+function openDebugDrawer() {
+  debugDrawerOpen.value = true;
+}
+
+watch(
+  () => props.path.join("/"),
+  () => {
+    debugDrawerOpen.value = false;
+  },
+);
+
+function onDebugEscape(ev: KeyboardEvent) {
+  if (ev.key !== "Escape" || !debugDrawerOpen.value) return;
+  debugDrawerOpen.value = false;
+}
 
 onMounted(() => {
   void ensureRegistry();
+  document.addEventListener("keydown", onDebugEscape);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", onDebugEscape);
 });
 
 const node = computed(() => store.editableNode(props.path) as FlowNode | null);
@@ -279,54 +344,41 @@ const title = computed(() => {
   return "Subflow 节点";
 });
 
+/** 执行条件：按换行数增高编辑器（单行约一行高，上限避免占满屏）。 */
+const conditionEditorHeight = computed(() => {
+  const n = node.value;
+  if (!n) return 40;
+  const raw = (n.condition ?? "").replace(/\r\n/g, "\n");
+  const lines = Math.max(1, raw.split("\n").length);
+  const perLine = 21;
+  const pad = 18;
+  return Math.min(440, Math.max(38, lines * perLine + pad));
+});
+
 // ---------------------------------------------------------------------------
-// 基础信息：id（严格主键）、name（显示名）
+// 基础信息：name（用户可见）；id 由系统自动分配，不向用户展示
 // ---------------------------------------------------------------------------
 
-const idText = ref("");
 const nameText = ref("");
 
 watch(
-  () => props.path.join("/"),
+  () => `${props.path.join("/")}|${node.value?.type ?? ""}|${node.value?.name ?? ""}`,
   () => {
-    idText.value = node.value?.id ?? "";
-    nameText.value = node.value?.name ?? "";
+    const n = node.value;
+    if (!n) return;
+    nameText.value = n.name ?? "";
   },
   { immediate: true },
 );
 
-const otherIds = computed(() => {
-  const all = store.collectAllNodeIds();
-  const own = (node.value?.id ?? "").trim();
-  if (own) all.delete(own);
-  return all;
-});
-
-const idError = computed<string | null>(() => {
-  const v = idText.value.trim();
-  if (!v) return "id 必填";
-  if (!store.isValidNodeId(v)) return "只允许字母开头，字母/数字/下划线";
-  if (otherIds.value.has(v)) return "与其它节点 id 冲突";
+const nameErrorNode = computed<string | null>(() => {
+  if (!node.value) return null;
+  const v = nameText.value.trim();
+  if (!v) return "名称必填";
+  const taken = store.collectAllTrimmedNodeDisplayNamesExcludePath(props.path.join("/"));
+  if (taken.has(v)) return "名称与其它节点重复";
   return null;
 });
-
-function onIdInput() {
-  if (!node.value) return;
-  const v = idText.value.trim();
-  // 输入过程中的实时校验只显示提示，不回写非法值，避免把流程弄脏。
-  if (idError.value) return;
-  if (node.value.id !== v) {
-    node.value.id = v;
-    commit();
-  }
-}
-
-function onIdBlur() {
-  if (idError.value) {
-    // 非法 id 失焦时把当前值回退为最后一次有效 id，避免污染持久化数据。
-    idText.value = node.value?.id ?? "";
-  }
-}
 
 function onNameInput() {
   if (!node.value) return;
@@ -337,23 +389,33 @@ function onNameInput() {
   }
 }
 
-function onNameBlur() {
-  // 失焦时若 name 为空白，回落为 id（与后端 model_validator 行为一致）。
+function onConditionCodeUpdate(v: string) {
   if (!node.value) return;
-  if (!nameText.value.trim()) {
-    const fallback = (node.value.id ?? "").trim();
-    nameText.value = fallback;
-    if (node.value.name !== fallback) {
-      node.value.name = fallback;
-      commit();
-    }
-  }
+  const t = v.replace(/\r\n/g, "\n").trim();
+  node.value.condition = t === "" ? null : t;
+  commit();
 }
 
-function onConditionInput(ev: Event) {
-  if (!node.value) return;
-  const v = (ev.target as HTMLInputElement).value;
-  node.value.condition = v.trim() === "" ? null : v;
+function conditionPathSuggestionsGetter(): readonly string[] {
+  const extra: string[] = [];
+  const n = node.value;
+  if (n?.type === "task") {
+    const b = (n as TaskNode).boundary;
+    extra.push(...Object.keys(b.inputs ?? {}), ...Object.values(b.outputs ?? {}));
+  }
+  return collectContextPathSuggestions(store.doc, extra);
+}
+
+function onBoundaryUpdate(b: Boundary) {
+  if (!node.value || node.value.type !== "task") return;
+  (node.value as TaskNode).boundary = { inputs: { ...b.inputs }, outputs: { ...b.outputs } };
+  commit();
+}
+
+function resetBoundaryMapping() {
+  if (!node.value || node.value.type !== "task") return;
+  (node.value as TaskNode).boundary = { inputs: {}, outputs: {} };
+  boundaryMappingLayoutEpoch.value += 1;
   commit();
 }
 
@@ -421,61 +483,6 @@ function onCollectAppendTo(v: string) {
   }
   loop.iteration_collect.append_to = v;
   commit();
-}
-
-// ---------------------------------------------------------------------------
-// 边界映射
-// ---------------------------------------------------------------------------
-
-const boundaryText = ref("");
-const boundaryErrors = ref<string[]>([]);
-
-const boundaryPlaceholder = `inputs:
-  $.global.alert: alert
-outputs:
-  summary: $.global.summary`;
-
-function currentBoundarySerialized(): string {
-  if (!node.value || node.value.type !== "task") return "";
-  const b = (node.value as TaskNode).boundary;
-  return serializeBoundaryDoc({ inputs: b.inputs ?? {}, outputs: b.outputs ?? {} });
-}
-
-const boundaryDirty = computed(() => boundaryText.value !== currentBoundarySerialized());
-
-const boundaryCountHint = computed(() => {
-  if (!node.value || node.value.type !== "task") return "";
-  const b = (node.value as TaskNode).boundary;
-  const nin = Object.keys(b.inputs ?? {}).length;
-  const nout = Object.keys(b.outputs ?? {}).length;
-  if (nin === 0 && nout === 0) return "尚未配置边界映射";
-  return `inputs ${nin} 条 · outputs ${nout} 条`;
-});
-
-watch(
-  () => props.path.join("/"),
-  () => {
-    boundaryText.value = currentBoundarySerialized();
-    boundaryErrors.value = [];
-  },
-  { immediate: true },
-);
-
-watch(boundaryText, (txt) => {
-  if (!node.value || node.value.type !== "task") return;
-  const res = parseBoundaryDoc(txt);
-  boundaryErrors.value = res.errors;
-  if (res.errors.length === 0) {
-    const b = (node.value as TaskNode).boundary;
-    b.inputs = res.data.inputs;
-    b.outputs = res.data.outputs;
-    commit();
-  }
-});
-
-function resetBoundaryText() {
-  boundaryText.value = currentBoundarySerialized();
-  boundaryErrors.value = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -561,7 +568,7 @@ function commit() {
 }
 
 .col-right {
-  /* 右栏：Starlark 卡弹性撑满，调试卡保持自然高度。 */
+  /* 右栏仅脚本编辑器，纵向铺满 */
 }
 
 .script-card {
@@ -570,6 +577,152 @@ function commit() {
   flex: 1 1 auto;
   min-height: 260px;
   overflow: hidden;
+}
+
+.script-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  margin: -2px 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+}
+
+.card-cap-rules {
+  background: linear-gradient(180deg, #fafbfd 0%, #f4f7fb 100%);
+  border-color: color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.script-sec-head-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.script-sec-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.script-sec-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn.sm {
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+
+.btn.ghost {
+  background: #fff;
+  box-shadow: none;
+}
+
+.btn.ghost:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.btn.primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nde-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+}
+
+.nde-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 51;
+  width: min(480px, calc(100vw - 12px));
+  max-width: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.22s ease-out, visibility 0.22s;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.nde-drawer--open {
+  transform: translateX(0);
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.nde-drawer-hd {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nde-drawer-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.nde-drawer-hd-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.nde-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
 }
 
 .script-body {
@@ -645,6 +798,33 @@ function commit() {
   box-shadow: var(--shadow);
 }
 
+/* 写在 .card 之后：浅色 .card 背景会覆盖 .script-card--dark，导致标题浅色字落在白底上 */
+.card.script-card.script-card--dark {
+  background: #1e222a;
+  border-color: #3e4451;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.card.script-card.script-card--dark .script-sec-head {
+  border-bottom-color: rgba(255, 255, 255, 0.14);
+}
+
+.card.script-card.script-card--dark .script-sec-title {
+  color: #f8fafc;
+  letter-spacing: 0.02em;
+}
+
+.card.script-card.script-card--dark :deep(.info-tip) {
+  color: #94a3b8;
+}
+
+.card.script-card.script-card--dark :deep(.info-tip:hover),
+.card.script-card.script-card--dark :deep(.info-tip:focus-visible) {
+  color: #e2e8f0;
+}
+
 .sec-title {
   display: flex;
   align-items: center;
@@ -668,6 +848,60 @@ function commit() {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px 12px;
+}
+
+.grid-task-basic {
+  grid-template-columns: 1fr;
+}
+
+.task-strategy-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.strat-sel {
+  flex: 1 1 160px;
+  min-width: 140px;
+  max-width: 320px;
+}
+
+.wait-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.wait-inline input[type="checkbox"] {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+.cond-editor-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 38px;
+}
+
+.cond-editor-wrap :deep(.wrap) {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.card-compact {
+  padding: 8px 12px 10px;
+}
+
+.sec-title-tight {
+  margin-bottom: 6px;
 }
 
 .field {

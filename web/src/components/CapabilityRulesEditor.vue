@@ -9,10 +9,11 @@
       <div v-for="(rule, idx) in rules" :key="idx" class="rule-row">
         <div class="rule-grid">
           <label class="field">
-            <span class="lbl">类目</span>
+            <span class="lbl">匹配类目</span>
             <select
               :value="rule.builtin_category ?? ''"
-              class="inp"
+              class="inp inp-sel"
+              :title="rule.builtin_category || '任意类目'"
               @change="updateField(idx, 'builtin_category', ($event.target as HTMLSelectElement).value || null)"
             >
               <option value="">（任意）</option>
@@ -20,10 +21,11 @@
             </select>
           </label>
           <label class="field">
-            <span class="lbl">名称</span>
+            <span class="lbl">副作用函数</span>
             <select
               :value="rule.builtin_name ?? ''"
-              class="inp mono"
+              class="inp inp-sel mono"
+              :title="rule.builtin_name || nameSelectTitle(rule.builtin_category)"
               @change="updateField(idx, 'builtin_name', ($event.target as HTMLSelectElement).value || null)"
             >
               <option value="">（按类目匹配）</option>
@@ -32,19 +34,27 @@
               </option>
             </select>
           </label>
-          <label class="field">
-            <span class="lbl">动作</span>
+          <label class="field field-action">
+            <span class="lbl lbl-inline">
+              匹配后动作
+              <InfoTip
+                wide
+                text="allow：真实执行；suppress：不触发外部副作用；redirect：仍调用但可由 redirect_params 改写目标（如沙箱 URL）。"
+              />
+            </span>
             <select
               :value="rule.action"
-              class="inp"
+              class="inp inp-sel"
               @change="updateField(idx, 'action', ($event.target as HTMLSelectElement).value)"
             >
-              <option value="allow">allow（放行）</option>
-              <option value="suppress">suppress（抑制）</option>
-              <option value="redirect">redirect（改写）</option>
+              <option value="allow">allow</option>
+              <option value="suppress">suppress</option>
+              <option value="redirect">redirect</option>
             </select>
           </label>
-          <button type="button" class="mini ghost danger" @click="removeRule(idx)">删除</button>
+          <div class="rule-actions">
+            <button type="button" class="mini ghost danger" @click="removeRule(idx)">删除</button>
+          </div>
         </div>
         <div v-if="rule.action === 'redirect'" class="redirect-row">
           <span class="lbl">redirect_params (JSON)</span>
@@ -69,6 +79,7 @@
 import { computed, ref, watch } from "vue";
 import type { CapabilityRule } from "@/types/flow";
 import { fetchStarlarkRegistry, type RegistryPythonFn } from "@/api/starlark";
+import InfoTip from "./InfoTip.vue";
 
 const props = defineProps<{
   modelValue: CapabilityRule[] | null | undefined;
@@ -112,6 +123,11 @@ function nameOptionsFor(category: string | null | undefined): string[] {
     .filter((f) => f.category === category)
     .map((f) => f.starlark_name)
     .sort();
+}
+
+function nameSelectTitle(category: string | null | undefined): string {
+  if (!category) return "未选类目时列出全部注册名；选中后悬停可看完整名称";
+  return "按类目筛选；悬停可看完整函数名";
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +226,33 @@ watch(
 
 .rule-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.6fr 1.2fr auto;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 10px;
   align-items: end;
+}
+
+.field-action {
+  min-width: 0;
+}
+
+.rule-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-end;
+  padding-bottom: 1px;
+}
+
+.inp-sel {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.lbl-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
 }
 
 .field {

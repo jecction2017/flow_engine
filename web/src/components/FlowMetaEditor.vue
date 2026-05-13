@@ -5,14 +5,14 @@
         <span class="hd-title">流程属性</span>
         <InfoTip
           wide
-          text="流程名称用于列表与导出文件名；服务端以内部 id 区分流程。initial_context 为运行前注入的全局上下文。"
+          text="流程名称用于列表与导出文件名；服务端以内部 id 区分流程。上下文内容为运行前注入的全局上下文（存储字段仍为 initial_context）。"
         />
       </div>
     </header>
 
     <section class="card">
       <div class="grid">
-        <label class="field">
+        <label class="field full">
           <span class="lbl-row">
             流程名称<span class="req">*</span>
             <InfoTip text="在流程列表等处展示；保存草稿或新版本前必填。" />
@@ -20,14 +20,14 @@
           <input v-model="displayName" class="inp" placeholder="例如：订单履约主流程" />
         </label>
 
-        <label class="field">
+        <label class="field full">
           <span class="lbl-row">默认 Profile</span>
           <input class="inp mono" value="由全局环境配置决定" disabled />
         </label>
 
         <label class="field full">
           <span class="lbl-row">
-            initial_context (JSON)
+            上下文内容 (JSON)
             <InfoTip wide text="流程启动前注入的全局上下文。顶层字段会被写入 $.global，可在节点 Starlark 中直接读写。" />
           </span>
           <textarea v-model="ctx" class="area mono" rows="6" spellcheck="false" />
@@ -38,7 +38,7 @@
     <section class="card">
       <div class="card-hd">
         <div class="card-hd-main">
-          <span class="card-title">运行策略</span>
+          <span class="card-title">并发策略</span>
           <InfoTip
             wide
             text="定义节点的执行模式（同步 / 异步 / 线程 / 进程）、并发、超时与重试。相邻节点引用非 sync 策略且未设置 wait_before 时，拓扑会出现隐式并行提示。"
@@ -81,7 +81,7 @@
           class="st-drawer"
           role="dialog"
           aria-modal="true"
-          aria-label="运行策略"
+          aria-label="并发策略"
           @click.stop
         >
           <div class="strategy-editor-inline">
