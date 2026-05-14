@@ -396,6 +396,16 @@ def create_app() -> FastAPI:
             "flows_dir": registry.directory,
         }
 
+    @app.post("/api/flow-definition/validate")
+    def validate_flow_definition_standalone(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Validate a decoded flow mapping (JSON / YAML→dict) without persisting. Used by Studio import."""
+        try:
+            compiled = compile_flow(FlowDefinition.model_validate(body))
+            data = compiled.model_dump(mode="json", exclude_none=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Validation failed: {e}") from e
+        return {"ok": True, "definition": data}
+
     @app.get("/api/flows/{flow_id}")
     def get_flow(flow_id: str) -> dict[str, Any]:
         _resolve_flow_id(flow_id)

@@ -27,7 +27,7 @@ import {
   isValidNodeId,
   nodeId,
 } from "@/types/flow";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { stringify as stringifyYaml } from "yaml";
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
@@ -595,38 +595,28 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     select({ kind: "node", path: newPath });
   }
 
-  function exportYaml(): string {
-    return stringifyYaml(doc.value, { indent: 2, lineWidth: 0 });
+  /**
+   * 将任意流程快照（通常为服务端 JSON）序列化为 YAML；
+   * 先 JSON 深拷贝再写 YAML，与后端形状对齐、避免序列化异常。
+   */
+  function snapshotToYaml(data: unknown): string {
+    const plain = JSON.parse(JSON.stringify(data));
+    return stringifyYaml(plain, { indent: 2, lineWidth: 0 });
   }
 
-  /** 解析导出的 YAML；仍兼容旧版 `.json` 导出（JSON 为 YAML 子集，多数情况下由 YAML 解析即可）。 */
-  function importYaml(text: string) {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      throw new Error("文件为空");
-    }
-    let parsed: unknown;
-    try {
-      parsed = parseYaml(text);
-    } catch {
-      try {
-        parsed = JSON.parse(text) as unknown;
-      } catch {
-        throw new Error("YAML/JSON 解析失败");
-      }
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("流程文件格式无效：根必须是对象");
-    }
-    doc.value = parsed as FlowDocument;
+  /**
+   * 将已通过服务端校验的流程定义载入为「未写库的新流程」
+   * （与「新建流程」一致：须保存草稿才持久化）。
+   */
+  function applyImportAsUnpersistedNewFlow(data: FlowDocument) {
+    doc.value = clone(data);
     ensureDefaultStrategies();
     touch();
     select({ kind: "flow" });
+    pendingNewFlowId.value = allocateServerFlowId();
     activeFlowId.value = null;
-    pendingNewFlowId.value = null;
     clearAllNodeDrafts();
-    // 导入外部文件时丢弃本地 ``_local`` 桶的旧调试数据。
-    nodeDebugContexts.value = {};
+    nodeDebugContexts.value = readPersistedDebugContexts(null);
   }
 
   function loadDocument(data: FlowDocument, flowId: string | null = null) {
@@ -798,8 +788,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     copyNode,
     moveNodeUp,
     moveNodeDown,
-    exportYaml,
-    importYaml,
+    snapshotToYaml,
+    applyImportAsUnpersistedNewFlow,
     loadDocument,
     activeFlowId,
     serverFlowsDir,

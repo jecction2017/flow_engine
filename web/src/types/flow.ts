@@ -144,6 +144,33 @@ export function flowListItemLabel(item: { id: string; display_name?: string | nu
   return item.id;
 }
 
+/**
+ * 与已有流程的 ``display_name``（trim 后大小写不敏感）去重。
+ * 冲突时依次使用 ``{base} copy``、``{base} copy 2``、``{base} copy 3``…（即 copyn）。
+ * 源名为空时以 ``导入的流程`` 为基底再 uniquify。
+ */
+export function allocateUniqueFlowDisplayName(
+  existingDisplayNames: readonly string[],
+  sourceName: string | null | undefined,
+): string {
+  const norm = (s: string) => s.trim().toLowerCase();
+  const used = new Set(
+    existingDisplayNames
+      .filter((x): x is string => typeof x === "string")
+      .map((n) => norm(n))
+      .filter((n) => n.length > 0),
+  );
+  let base = (sourceName ?? "").trim();
+  if (!base) base = "导入的流程";
+  if (!used.has(norm(base))) return base;
+  let n = 1;
+  while (true) {
+    const candidate = n === 1 ? `${base} copy` : n === 2 ? `${base} copy 2` : `${base} copy ${n}`;
+    if (!used.has(norm(candidate))) return candidate;
+    n += 1;
+  }
+}
+
 export type Selection =
   | { kind: "flow" }
   | { kind: "strategy"; key: string }
