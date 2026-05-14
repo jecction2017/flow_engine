@@ -151,7 +151,8 @@ class StarlarkWarmupBody(BaseModel):
 
 class RunFlowBody(BaseModel):
     initial_context: dict[str, Any] | None = None
-    merge: bool = True
+    # 试运行 UI 以「编辑框内容即请求体」为准；默认不与流程文档 initial_context 再合并。
+    merge: bool = False
     timeout_sec: float = Field(default=30.0, ge=0.1, le=600.0)
     profile: str | None = None
     runtime_patch: dict[str, Any] | None = None

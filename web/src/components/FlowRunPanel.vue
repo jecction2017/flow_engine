@@ -1,172 +1,339 @@
 <template>
-  <div class="run-panel" :class="{ open: visible }">
-    <header class="bar">
-      <div class="title">
-        <span>流程试运行</span>
-        <span class="badge suppressed-inline" title="试运行固定为调试模式，副作用类内置函数默认抑制，不会触发真实生产副作用">
-          副作用已抑制
-        </span>
-        <span v-if="response" class="badge" :class="stateClass(response.state)">{{ response.state }}</span>
-        <span v-if="response" class="muted">· {{ response.elapsed_ms }}ms</span>
-        <template v-if="summary">
-          <span class="chip ok" :title="'成功节点'">✓ {{ summary.ok }}</span>
-          <span v-if="summary.failed" class="chip bad" :title="'失败节点'">✗ {{ summary.failed }}</span>
-          <span v-if="summary.skipped" class="chip skipped" :title="'跳过节点'">⊘ {{ summary.skipped }}</span>
-          <span v-if="summary.running" class="chip running" :title="'未完成节点'">◌ {{ summary.running }}</span>
-        </template>
+  <Teleport to="body">
+    <div
+      v-show="visible"
+      class="frp-backdrop"
+      aria-hidden="true"
+      @click.self="$emit('close')"
+    />
+    <aside
+      class="frp-drawer"
+      :class="{ 'frp-drawer--open': visible }"
+      role="dialog"
+      aria-modal="true"
+      aria-label="流程试运行"
+      @click.stop
+    >
+      <div class="frp-drawer-hd">
+        <div class="frp-drawer-title-block">
+          <span class="frp-drawer-title">流程试运行</span>
+        </div>
+        <div class="frp-drawer-hd-actions">
+          <button
+            type="button"
+            class="btn primary sm"
+            :disabled="pending || !flowId"
+            @click="run"
+          >
+            {{ pending ? "运行中…" : "▶ 试运行" }}
+          </button>
+          <button type="button" class="btn ghost sm" @click="$emit('close')">关闭</button>
+        </div>
       </div>
-      <div class="actions">
-        <label class="opt">
-          <input v-model="merge" type="checkbox" /> 合并 initial_context
-        </label>
-        <label class="opt">
-          超时(s)
-          <input v-model.number="timeoutSec" type="number" min="1" max="600" step="1" />
-        </label>
-        <button class="btn primary" :disabled="pending || !flowId" @click="run">
-          {{ pending ? "运行中…" : "试运行" }}
-        </button>
-        <button class="btn ghost" @click="$emit('close')">关闭</button>
-      </div>
-    </header>
 
-    <div class="grid">
-      <section class="col">
-        <div class="lbl">Profile 覆盖（可留空）</div>
-        <select v-model="profileText" class="one-line mono">
-          <option value="">使用全局默认（{{ defaultProfile || "default" }}）</option>
-          <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
-        </select>
-        <div class="lbl">initial_context 覆盖（JSON，可留空）</div>
-        <textarea v-model="ctxText" class="area mono" rows="10" spellcheck="false" />
-        <div class="lbl">runtime_patch（JSON，可留空）</div>
-        <textarea v-model="runtimePatchText" class="area mono" rows="7" spellcheck="false" placeholder="{ }" />
-        <details class="cap-details">
-          <summary class="cap-sum">本次附加策略（可选，仅本次试运行）</summary>
-          <div class="cap-hint">
-            试运行固定为调试模式，副作用类内置函数默认抑制。此处仅对<strong>这一次试运行请求</strong>追加规则，可放行或填写重定向参数（由具体内置函数使用）。
-            节点上的「副作用函数抑制规则」在流程里已持久化；此处为临时叠加。正式生产运行请创建部署。
+      <div class="frp-drawer-body">
+        <div class="trial-run-stack">
+          <div class="trial-settings">
+            <div class="debug-settings">
+              <div class="settings-panel">
+                <header class="settings-panel-hd">
+                  <div class="settings-panel-titles">
+                    <span class="settings-panel-title">试运行设置</span>
+                    <span class="settings-panel-sub">
+                      Profile、试运行上下文、数据字典覆盖与附加策略仅作用于本次试运行请求，不写回流程 YAML。
+                    </span>
+                  </div>
+                </header>
+                <div class="settings-stack">
+                  <div class="trial-settings-grid">
+                    <div class="trial-settings-cell trial-settings-profile">
+                      <div class="trial-top-field profile-block-standalone">
+                        <div class="field-line field-line--tight">
+                          <span class="field-line-lbl">
+                            试运行 Profile
+                            <InfoTip
+                              text="对应请求字段 profile，决定数据字典从哪套 Profile 加载。留空时使用服务端全局默认（见选项首行）；与流程文档里的默认 profile 可能不同。技术名：profile。"
+                            />
+                          </span>
+                        </div>
+                        <div class="profile-select-shell">
+                          <select v-model="profileText" class="inp inp-profile mono">
+                            <option value="">使用全局默认（{{ defaultProfile || "default" }}）</option>
+                            <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="trial-settings-cell trial-settings-timeout">
+                      <div class="trial-top-field">
+                        <div class="field-line field-line--tight">
+                          <span class="field-line-lbl">
+                            超时（秒）
+                            <InfoTip text="单次试运行请求在服务端等待完成的最长时间（timeout_sec），超出可能返回错误或终止状态。" />
+                          </span>
+                        </div>
+                        <div class="profile-select-shell">
+                          <input
+                            v-model.number="timeoutSec"
+                            class="inp inp-profile mono trial-timeout-inp"
+                            type="number"
+                            min="1"
+                            max="600"
+                            step="1"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="trial-settings-cell trial-settings-context">
+                      <div class="ctx-json-block ctx-json-block--trial-fill">
+                        <div class="ctx-json-head">
+                          <span class="field-line-lbl">
+                            试运行上下文 (JSON)
+                            <InfoTip
+                              wide
+                              text="打开抽屉时默认填入流程文档中的 initial_context。可任意编辑；试运行时将该 JSON 对象作为请求体 initial_context 原样提交，不再与文档做合并或「覆盖」计算。须为 JSON 对象；空对象 {} 表示空上下文。与 Task 节点边界映射无关。"
+                            />
+                          </span>
+                          <div class="ctx-json-actions">
+                            <button type="button" class="mini mini-strong" @click="resetCtxFromFlow">重置</button>
+                            <button type="button" class="mini mini-strong" @click="clearCtx">清空</button>
+                          </div>
+                        </div>
+                        <textarea
+                          v-model="ctxText"
+                          class="area mono area-ctx area-ctx--trial-run"
+                          :class="{ invalid: !ctxJsonValid }"
+                          spellcheck="false"
+                          placeholder="{}"
+                        />
+                        <div class="ctx-hint-footer">
+                          <template v-if="ctxJsonValid">
+                            <div class="ctx-hint-line">
+                              <span class="ctx-hint-text">顶层键</span>
+                              <template v-if="ctxTopKeys.length">
+                                <template v-for="(k, i) in ctxTopKeys" :key="k">
+                                  <span class="ctx-hint-token mono">{{ k }}</span>
+                                  <span v-if="i < ctxTopKeys.length - 1" class="ctx-hint-sep">、</span>
+                                </template>
+                                <span class="ctx-hint-text">将随本次请求一并提交。</span>
+                              </template>
+                              <template v-else>
+                                <span class="ctx-hint-text ctx-hint-weak">空对象：本次试运行以空 initial_context 提交。</span>
+                              </template>
+                            </div>
+                          </template>
+                          <div v-else class="ctx-hint-line err">JSON 无法解析，试运行前请修正或清空。</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="trial-settings-cell trial-settings-side">
+                      <div class="dict-yaml-block">
+                        <div class="ctx-json-head">
+                          <span class="field-line-lbl">
+                            数据字典覆盖 (YAML)
+                            <InfoTip
+                              wide
+                              text="对应请求体字段 runtime_patch：在当前选择的 Profile 解析得到的数据字典树之上做深度合并，写法与数据字典 YAML 配置一致（根须为映射）。用于本次试运行临时调整字典模块/路径；留空表示不追加覆盖。填写错误可能导致服务端解析失败或执行异常。"
+                            />
+                          </span>
+                          <div class="ctx-json-actions">
+                            <button type="button" class="mini mini-strong" @click="clearDictOverrideYaml">清空</button>
+                          </div>
+                        </div>
+                        <textarea
+                          v-model="dictOverrideYaml"
+                          class="area mono area-ctx area-ctx--yaml"
+                          :class="{ invalid: !dictYamlValid }"
+                          rows="5"
+                          spellcheck="false"
+                          placeholder="# 可选，根须为映射；与数据字典 YAML 结构一致"
+                        />
+                        <div v-if="dictYamlValid" class="ctx-hint-line">
+                          <span class="ctx-hint-text ctx-hint-weak">留空则不对 Profile 字典做额外合并。</span>
+                        </div>
+                        <div v-else class="ctx-hint-line err">{{ dictYamlError || "YAML 无法解析" }}</div>
+                      </div>
+
+                      <details class="cap-details">
+                        <summary class="cap-summary">
+                          <span class="cap-summary-lbl">副作用函数抑制（仅本次试运行）</span>
+                          <span class="cap-summary-tip" @click.stop>
+                            <InfoTip
+                              wide
+                              text="试运行固定为调试模式，默认抑制副作用类内置函数。此处规则仅随本次请求发送，可放行或配置重定向参数；与流程节点上已保存的规则在服务端叠加。不写回 YAML。"
+                            />
+                          </span>
+                        </summary>
+                        <CapabilityRulesEditor v-model="capabilityPolicy" />
+                      </details>
+                    </div>
+                  </div>
+                  <p v-if="error" class="err">{{ error }}</p>
+                </div>
+              </div>
+            </div>
           </div>
-          <CapabilityRulesEditor v-model="capabilityPolicy" />
-        </details>
-        <p v-if="error" class="err">{{ error }}</p>
-      </section>
-      <section class="col timeline-col">
-        <div class="lbl timeline-lbl">
-          <span>节点执行时间线</span>
-          <span v-if="response" class="muted">{{ rawRuns.length }} 条执行记录</span>
-        </div>
-        <div v-if="!response" class="hint">未运行</div>
-        <div v-else-if="rawRuns.length === 0" class="hint">没有节点被调度</div>
-        <ExecutionLinkTree
-          v-else
-          :rows="trialLinkRows"
-          :timeline-min-ms="0"
-          :timeline-max-ms="maxMs"
-          :collapsed="collapsed"
-          :secondary-open-key="openLogsFor"
-          :detail-on-row-click="false"
-          :log-button="true"
-          :show-node-meta="false"
-          @toggle-collapsed="toggleCollapsed"
-          @toggle-secondary="toggleLogDrawer"
-        >
-          <template #toolbar>
-            <button class="link" type="button" @click="expandAll">全部展开</button>
-            <span class="sep">·</span>
-            <button class="link" type="button" @click="collapseAll">全部折叠</button>
-            <span class="sep">·</span>
-            <span class="rt-filter-lbl">日志级别</span>
-            <button
-              v-for="lvl in LOG_LEVELS"
-              :key="lvl"
-              type="button"
-              class="rt-chip-btn"
-              :class="[`lvl-${lvl}`, { active: levelFilter.has(lvl) }]"
-              @click="toggleLevelFilter(lvl)"
-            >
-              {{ lvl }}
-            </button>
-            <button v-if="levelFilter.size > 0" type="button" class="link" @click="clearLevelFilter">清除</button>
-            <span v-if="levelFilter.size > 0" class="muted">命中 {{ filterHitCount }} / 总计 {{ rawRuns.length }}</span>
-          </template>
-          <template #secondary="{ row }">
-            <div class="rt-logs-drawer">
-              <div class="rt-logs-head">
-                <span>{{ row.nodeId }} 日志</span>
-                <span class="muted">
-                  共 {{ logCountsByRunOrder.get(row.key) ?? 0 }} 条
-                  <template v-if="levelFilter.size > 0">· 已过滤 {{ filteredLogsFor(row.key).length }} 条</template>
-                </span>
+
+          <div class="trial-results debug-results">
+            <div class="results-head">
+              <div class="results-head-main">
+                <span class="results-title">试运行结果</span>
+                <InfoTip
+                  text="包含流程状态、节点时间线、全局上下文 global_ns 与流程级日志；与上方试运行设置相互独立。"
+                />
               </div>
-              <ul v-if="filteredLogsFor(row.key).length" class="rt-logs-list mono">
-                <li
-                  v-for="(entry, i) in filteredLogsFor(row.key)"
-                  :key="i"
-                  class="rt-log-row"
-                  :class="`lvl-${entry.level}`"
-                >
-                  <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
-                  <span class="rt-log-lvl">{{ entry.level }}</span>
-                  <span class="rt-log-src" :title="`来源: ${entry.source}`">
-                    {{ entry.source }}<span v-if="entry.attempt" class="rt-log-attempt">#{{ entry.attempt }}</span>
-                  </span>
-                  <span class="rt-log-msg">{{ entry.message }}</span>
-                  <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限，后续条目被丢弃">...</span>
-                </li>
-              </ul>
-              <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
-            </div>
-          </template>
-          <template #footer>
-            <div v-if="trialLinkRows.length === 0" class="rt-filter-empty muted">
-              当前日志级别筛选下没有执行记录
-            </div>
-            <section v-if="flowLogs.length" class="rt-flow-logs">
-              <div class="rt-flow-logs-head">
-                <span>流程级日志</span>
-                <span class="muted">{{ flowLogs.length }} 条 · on_start / on_complete / on_failure</span>
+              <div class="result-status-wrap">
+                <span class="result-status" :class="trialResultStatusClass">{{ trialResultStatusText }}</span>
               </div>
-              <ul v-if="filteredFlowLogs.length" class="rt-logs-list mono">
-                <li
-                  v-for="(entry, i) in filteredFlowLogs"
-                  :key="i"
-                  class="rt-log-row"
-                  :class="`lvl-${entry.level}`"
-                >
-                  <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
-                  <span class="rt-log-lvl">{{ entry.level }}</span>
-                  <span class="rt-log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
-                  <span class="rt-log-msg">{{ entry.message }}</span>
-                  <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限">...</span>
-                </li>
-              </ul>
-              <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
-            </section>
-          </template>
-        </ExecutionLinkTree>
-      </section>
-      <section class="col">
-        <div class="lbl">全局上下文（global_ns）</div>
-        <div v-if="response" class="dict-meta">
-          <span>profile: <code class="mono">{{ response.resolved_profile ?? "—" }}</code></span>
-          <span>hash: <code class="mono">{{ response.resolved_hash ?? "—" }}</code></span>
-          <span>modules: {{ response.resolved_modules?.length ?? 0 }}</span>
+            </div>
+            <div v-if="response" class="results-meta">
+              <span class="badge meta-badge" :class="stateClass(response.state)">{{ response.state }}</span>
+              <span class="muted">· {{ response.elapsed_ms }}ms</span>
+              <template v-if="summary">
+                <span class="chip ok" title="成功节点">✓ {{ summary.ok }}</span>
+                <span v-if="summary.failed" class="chip bad" title="失败节点">✗ {{ summary.failed }}</span>
+                <span v-if="summary.skipped" class="chip skipped" title="跳过节点">⊘ {{ summary.skipped }}</span>
+                <span v-if="summary.running" class="chip running" title="未完成节点">◌ {{ summary.running }}</span>
+              </template>
+              <span v-if="response" class="muted">· {{ rawRuns.length }} 条执行记录</span>
+            </div>
+
+            <div class="results-body">
+              <div v-if="trialRunAlertVisible" class="trial-flow-alert" :class="trialRunAlertToneClass" role="alert">
+                <span class="trial-flow-alert-title">{{ trialRunAlertTitle }}</span>
+                <span class="trial-flow-alert-msg">{{ trialRunAlertBody }}</span>
+              </div>
+              <div class="results-inner-grid">
+                <div class="result-block result-block--timeline">
+                  <div class="lbl row result-block-hd">
+                    <span class="lbl-row">
+                      节点执行时间线
+                      <InfoTip text="各节点起止时间与状态；可展开子节点、按日志级别筛选后查看节点内日志。" />
+                    </span>
+                  </div>
+                  <div v-if="!response" class="hint">未运行</div>
+                  <div v-else-if="rawRuns.length === 0" class="hint">没有节点被调度</div>
+                  <ExecutionLinkTree
+                    v-else
+                    class="trial-exec-tree"
+                    :rows="trialLinkRows"
+                    :timeline-min-ms="0"
+                    :timeline-max-ms="maxMs"
+                    :collapsed="collapsed"
+                    :secondary-open-key="openLogsFor"
+                    :detail-on-row-click="false"
+                    :log-button="true"
+                    :show-node-meta="false"
+                    @toggle-collapsed="toggleCollapsed"
+                    @toggle-secondary="toggleLogDrawer"
+                  >
+                    <template #toolbar>
+                      <button class="link" type="button" @click="expandAll">全部展开</button>
+                      <span class="sep">·</span>
+                      <button class="link" type="button" @click="collapseAll">全部折叠</button>
+                      <span class="sep">·</span>
+                      <span class="rt-filter-lbl">日志级别</span>
+                      <button
+                        v-for="lvl in LOG_LEVELS"
+                        :key="lvl"
+                        type="button"
+                        class="rt-chip-btn"
+                        :class="[`lvl-${lvl}`, { active: levelFilter.has(lvl) }]"
+                        @click="toggleLevelFilter(lvl)"
+                      >
+                        {{ lvl }}
+                      </button>
+                      <button v-if="levelFilter.size > 0" type="button" class="link" @click="clearLevelFilter">清除</button>
+                      <span v-if="levelFilter.size > 0" class="muted">命中 {{ filterHitCount }} / 总计 {{ rawRuns.length }}</span>
+                    </template>
+                    <template #secondary="{ row }">
+                      <div class="rt-logs-drawer">
+                        <div class="rt-logs-head">
+                          <span>{{ row.nodeId }} 日志</span>
+                          <span class="muted">
+                            共 {{ logCountsByRunOrder.get(row.key) ?? 0 }} 条
+                            <template v-if="levelFilter.size > 0">· 已过滤 {{ filteredLogsFor(row.key).length }} 条</template>
+                          </span>
+                        </div>
+                        <ul v-if="filteredLogsFor(row.key).length" class="rt-logs-list mono">
+                          <li
+                            v-for="(entry, i) in filteredLogsFor(row.key)"
+                            :key="i"
+                            class="rt-log-row"
+                            :class="`lvl-${entry.level}`"
+                          >
+                            <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
+                            <span class="rt-log-lvl">{{ entry.level }}</span>
+                            <span class="rt-log-src" :title="`来源: ${entry.source}`">
+                              {{ entry.source }}<span v-if="entry.attempt" class="rt-log-attempt">#{{ entry.attempt }}</span>
+                            </span>
+                            <span class="rt-log-msg">{{ entry.message }}</span>
+                            <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限，后续条目被丢弃">...</span>
+                          </li>
+                        </ul>
+                        <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
+                      </div>
+                    </template>
+                    <template #footer>
+                      <div v-if="trialLinkRows.length === 0" class="rt-filter-empty muted">
+                        当前日志级别筛选下没有执行记录
+                      </div>
+                      <section v-if="flowLogs.length" class="rt-flow-logs">
+                        <div class="rt-flow-logs-head">
+                          <span>流程级日志</span>
+                          <span class="muted">{{ flowLogs.length }} 条 · on_start / on_complete / on_failure</span>
+                        </div>
+                        <ul v-if="filteredFlowLogs.length" class="rt-logs-list mono">
+                          <li
+                            v-for="(entry, i) in filteredFlowLogs"
+                            :key="i"
+                            class="rt-log-row"
+                            :class="`lvl-${entry.level}`"
+                          >
+                            <span class="rt-log-ts">+{{ entry.ts_ms }}ms</span>
+                            <span class="rt-log-lvl">{{ entry.level }}</span>
+                            <span class="rt-log-src" :title="`来源: ${entry.source}`">{{ entry.source }}</span>
+                            <span class="rt-log-msg">{{ entry.message }}</span>
+                            <span v-if="entry.truncated" class="rt-log-trunc" title="达到日志上限">...</span>
+                          </li>
+                        </ul>
+                        <div v-else class="muted rt-logs-empty">当前过滤条件下没有可显示的日志</div>
+                      </section>
+                    </template>
+                  </ExecutionLinkTree>
+                </div>
+
+                <div class="result-block result-block--globals">
+                  <div class="lbl row result-block-hd">
+                    <span class="lbl-row">
+                      全局上下文 (global_ns)
+                      <InfoTip text="试运行完成后的流程全局命名空间快照；技术字段名 global_ns。" />
+                    </span>
+                  </div>
+                  <pre class="out mono">{{ globalsText }}</pre>
+                  <p v-if="response?.message && !responseMessageAsFailureNotice" class="msg">{{ response.message }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <pre class="out mono">{{ globalsText }}</pre>
-        <p v-if="response?.message" class="msg">{{ response.message }}</p>
-      </section>
-    </div>
-  </div>
+      </div>
+    </aside>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onUnmounted, reactive, ref, watch } from "vue";
+import { parseDocument } from "yaml";
 import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
 import { fetchProfileConfig } from "@/api/profiles";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import ExecutionLinkTree, { type ExecutionLinkRow } from "@/components/ExecutionLinkTree.vue";
+import InfoTip from "@/components/InfoTip.vue";
 import type { CapabilityRule } from "@/types/flow";
 
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
@@ -194,14 +361,32 @@ const props = defineProps<{
   visible: boolean;
   initialContext: Record<string, unknown> | null | undefined;
 }>();
-defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{ (e: "close"): void }>();
+
+function onRunEscape(ev: KeyboardEvent) {
+  if (ev.key !== "Escape" || !props.visible) return;
+  emit("close");
+}
+
+watch(
+  () => props.visible,
+  (v) => {
+    if (v) document.addEventListener("keydown", onRunEscape);
+    else document.removeEventListener("keydown", onRunEscape);
+  },
+  { immediate: true },
+);
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", onRunEscape);
+});
 
 const ctxText = ref("");
 const profileText = ref("");
 const profileOptions = ref<string[]>(["default"]);
 const defaultProfile = ref("default");
-const runtimePatchText = ref("");
-const merge = ref(true);
+/** 数据字典覆盖：YAML → 解析为对象后作为 runtime_patch 提交 */
+const dictOverrideYaml = ref("");
 const timeoutSec = ref(30);
 const pending = ref(false);
 const response = ref<RunFlowResponse | null>(null);
@@ -213,6 +398,143 @@ const collapsed = reactive(new Set<string>());
 const openLogsFor = ref<string | null>(null);
 /** Active log-level filter. Empty set = show all. */
 const levelFilter = reactive(new Set<KnownLogLevel>());
+
+function parseJsonObject(text: string): { ok: boolean; keys: string[] } {
+  const raw = text.trim();
+  if (!raw) return { ok: true, keys: [] };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ok: true, keys: Object.keys(parsed as Record<string, unknown>) };
+    }
+    return { ok: false, keys: [] };
+  } catch {
+    return { ok: false, keys: [] };
+  }
+}
+
+const ctxJsonParsed = computed(() => parseJsonObject(ctxText.value));
+const ctxJsonValid = computed(() => ctxJsonParsed.value.ok);
+const ctxTopKeys = computed(() => ctxJsonParsed.value.keys);
+
+function parseYamlRootMapping(text: string): { ok: boolean; value: Record<string, unknown> | null; err: string } {
+  const raw = text.trim();
+  if (!raw) return { ok: true, value: null, err: "" };
+  try {
+    const doc = parseDocument(raw);
+    if (doc.errors.length) {
+      return { ok: false, value: null, err: doc.errors[0]!.message };
+    }
+    const js = doc.toJS();
+    if (js === null || js === undefined) return { ok: true, value: null, err: "" };
+    if (typeof js !== "object" || Array.isArray(js)) {
+      return { ok: false, value: null, err: "根节点须为 YAML 映射（对象），不能为序列或标量" };
+    }
+    return { ok: true, value: js as Record<string, unknown>, err: "" };
+  } catch (e) {
+    return { ok: false, value: null, err: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+const dictYamlResult = computed(() => parseYamlRootMapping(dictOverrideYaml.value));
+const dictYamlValid = computed(() => dictYamlResult.value.ok);
+const dictYamlError = computed(() => dictYamlResult.value.err);
+
+type TrialResultPhase = "idle" | "pending" | "blocked" | "ok" | "flow_err" | "warn";
+
+const trialResultPhase = computed<TrialResultPhase>(() => {
+  if (pending.value) return "pending";
+  if (error.value && !response.value) return "blocked";
+  const r = response.value;
+  if (!r) return "idle";
+  const st = (r.state ?? "").toUpperCase();
+  if (st === "COMPLETED") return "ok";
+  if (st === "FAILED") return "flow_err";
+  if (st === "TERMINATED") return "warn";
+  return "warn";
+});
+
+const trialResultStatusText = computed(() => {
+  switch (trialResultPhase.value) {
+    case "idle":
+      return "未运行";
+    case "pending":
+      return "执行中…";
+    case "blocked":
+      return "无法执行";
+    case "ok":
+      return "已完成";
+    case "flow_err":
+      return "失败";
+    case "warn":
+      return response.value?.state?.trim() || "已结束";
+    default:
+      return "";
+  }
+});
+
+const trialResultStatusClass = computed(() => ({
+  "is-idle": trialResultPhase.value === "idle",
+  "is-pending": trialResultPhase.value === "pending",
+  "is-ok": trialResultPhase.value === "ok",
+  "is-warn": trialResultPhase.value === "warn",
+  "is-err": trialResultPhase.value === "blocked" || trialResultPhase.value === "flow_err",
+}));
+
+const responseFlowMessageTrimmed = computed(() => {
+  const m = response.value?.message;
+  return typeof m === "string" && m.trim() ? m.trim() : null;
+});
+
+/** 流程 FAILED / TERMINATED：服务端 message 在结果区顶部横幅展示，避免埋在 global_ns 下方 */
+const responseMessageAsFailureNotice = computed(() => {
+  const r = response.value;
+  if (!r) return false;
+  const st = (r.state ?? "").toUpperCase();
+  return st === "FAILED" || st === "TERMINATED";
+});
+
+const trialRunAlertVisible = computed(() => {
+  if (error.value?.trim() && !response.value) return true;
+  if (response.value && responseMessageAsFailureNotice.value) return true;
+  return false;
+});
+
+const trialRunAlertBody = computed(() => {
+  if (error.value?.trim() && !response.value) return error.value.trim();
+  const msg = responseFlowMessageTrimmed.value;
+  if (msg) return msg;
+  if (response.value && responseMessageAsFailureNotice.value) {
+    return "未返回具体说明；请查看节点时间线与流程级日志。";
+  }
+  return "";
+});
+
+const trialRunAlertTitle = computed(() => {
+  if (error.value?.trim() && !response.value) return "无法执行";
+  const st = response.value?.state?.trim();
+  return st && st.length ? st : "流程提示";
+});
+
+const trialRunAlertToneClass = computed(() => {
+  if (error.value?.trim() && !response.value) return "trial-flow-alert--err";
+  const st = (response.value?.state ?? "").toUpperCase();
+  if (st === "FAILED") return "trial-flow-alert--err";
+  return "trial-flow-alert--warn";
+});
+
+function resetCtxFromFlow() {
+  const v = props.initialContext;
+  ctxText.value = v ? JSON.stringify(v, null, 2) : "";
+}
+
+function clearCtx() {
+  ctxText.value = "{}";
+}
+
+function clearDictOverrideYaml() {
+  dictOverrideYaml.value = "";
+}
 
 watch(
   () => props.initialContext,
@@ -227,6 +549,7 @@ watch(
   () => {
     response.value = null;
     error.value = null;
+    dictOverrideYaml.value = "";
     collapsed.clear();
     openLogsFor.value = null;
   },
@@ -412,7 +735,7 @@ const trialLinkRows = computed<ExecutionLinkRow[]>(() => {
     if (tr.started_ms != null) prevStartedMs = tr.started_ms;
     const badges: { label: string; title?: string }[] = [];
     if (tr.iterations != null) badges.push({ label: `×${tr.iterations}`, title: "迭代次数" });
-    else     if (tr.execution_count && tr.execution_count > 1) {
+    else if (tr.execution_count && tr.execution_count > 1) {
       badges.push({ label: `×${tr.execution_count}`, title: "执行次数" });
     }
     const logCount = filteredLogsFor(String(tr.order)).length;
@@ -532,39 +855,38 @@ function stateClass(state: string): string {
 async function run() {
   if (!props.flowId) return;
   error.value = null;
-  let override: Record<string, unknown> | null = null;
-  let runtimePatch: Record<string, unknown> | null = null;
+  if (!ctxJsonValid.value) {
+    error.value = "试运行上下文 JSON 格式不正确";
+    response.value = null;
+    return;
+  }
+  if (!dictYamlValid.value) {
+    error.value = dictYamlError.value || "数据字典覆盖 YAML 格式不正确";
+    response.value = null;
+    return;
+  }
+  let initialContext: Record<string, unknown>;
   const raw = ctxText.value.trim();
-  if (raw) {
-    try {
+  try {
+    if (!raw) {
+      initialContext = {};
+    } else {
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("initial_context 必须是一个 JSON 对象");
+        throw new Error("须为 JSON 对象");
       }
-      override = parsed as Record<string, unknown>;
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
-      return;
+      initialContext = parsed as Record<string, unknown>;
     }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    return;
   }
-  const patchRaw = runtimePatchText.value.trim();
-  if (patchRaw) {
-    try {
-      const parsed: unknown = JSON.parse(patchRaw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("runtime_patch 必须是一个 JSON 对象");
-      }
-      runtimePatch = parsed as Record<string, unknown>;
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
-      return;
-    }
-  }
+  const runtimePatch = dictYamlResult.value.value;
   pending.value = true;
   try {
     response.value = await runFlow(props.flowId, {
-      initial_context: override,
-      merge: merge.value,
+      initial_context: initialContext,
+      merge: false,
       timeout_sec: timeoutSec.value,
       profile: profileText.value.trim() || null,
       runtime_patch: runtimePatch,
@@ -572,6 +894,7 @@ async function run() {
     });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    response.value = null;
   } finally {
     pending.value = false;
   }
@@ -579,43 +902,825 @@ async function run() {
 </script>
 
 <style scoped>
-.run-panel {
+.frp-backdrop {
   position: fixed;
-  left: 0;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+}
+
+.frp-drawer {
+  position: fixed;
+  top: 0;
   right: 0;
   bottom: 0;
+  z-index: 51;
+  width: min(980px, calc(100vw - 16px));
+  max-width: 100%;
   background: var(--surface);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -12px 28px rgba(15, 23, 42, 0.08);
-  transform: translateY(100%);
-  transition: transform 0.22s ease;
-  max-height: 62vh;
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(15, 23, 42, 0.14);
   display: flex;
   flex-direction: column;
-  z-index: 40;
+  transform: translateX(100%);
+  transition: transform 0.22s ease-out, visibility 0.22s;
+  pointer-events: none;
+  visibility: hidden;
 }
 
-.run-panel.open {
-  transform: translateY(0);
+.frp-drawer--open {
+  transform: translateX(0);
+  pointer-events: auto;
+  visibility: visible;
 }
 
-.bar {
+.frp-drawer-hd {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.frp-drawer-title-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.frp-drawer-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.frp-drawer-hd-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.frp-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+  display: flex;
+  flex-direction: column;
+}
+
+.trial-run-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.trial-settings {
+  flex: 0 0 auto;
+}
+
+.trial-results.debug-results {
+  margin-top: 0;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(52vh, 560px);
+  overflow: hidden;
+}
+
+.debug-settings {
+  padding-bottom: 0;
+}
+
+.settings-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0;
+  overflow: visible;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.settings-panel-hd {
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 10%, #fafafa);
+}
+
+.settings-panel-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.settings-panel-sub {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.settings-stack {
+  padding: 8px 10px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.trial-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 10px 14px;
+  align-items: stretch;
+}
+
+.trial-settings-profile {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+}
+
+.trial-settings-profile .trial-top-field,
+.trial-settings-timeout .trial-top-field {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.trial-settings-timeout {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: stretch;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+}
+
+.trial-settings-context {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  width: 100%;
+  min-height: 0;
+}
+
+.trial-settings-context .ctx-json-block--trial-fill {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.trial-settings-context .ctx-json-block--trial-fill .area-ctx {
+  flex: 0 1 auto;
+  min-height: 0;
+  align-self: stretch;
+  box-sizing: border-box;
+}
+
+.trial-settings-context .ctx-json-block--trial-fill .ctx-hint-footer {
+  flex-shrink: 0;
+}
+
+.trial-settings-side {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  align-self: start;
+  width: 100%;
+}
+
+.trial-settings-side > .cap-details {
+  margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .trial-settings-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .trial-settings-profile,
+  .trial-settings-timeout,
+  .trial-settings-context,
+  .trial-settings-side {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .trial-settings-timeout {
+    justify-self: stretch;
+  }
+}
+
+.trial-settings-cell {
+  min-width: 0;
+}
+
+.profile-block-standalone {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.dict-yaml-block {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.field-line {
+  margin: 0 0 5px;
+}
+
+.field-line--tight {
+  margin-bottom: 4px;
+}
+
+.field-line-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0.01em;
+}
+
+.ctx-json-block {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 2px;
+}
+
+.ctx-json-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 8px;
+  margin-bottom: 5px;
+}
+
+.ctx-json-head .field-line-lbl {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ctx-json-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 520px) {
+  .ctx-json-head {
+    align-items: flex-start;
+  }
+
+  .ctx-json-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+.profile-select-shell {
+  border-radius: 7px;
+  padding: 1px;
+  background: color-mix(in srgb, var(--border) 88%, var(--accent) 12%);
+  max-width: 100%;
+}
+
+.inp-profile {
+  width: 100%;
+  margin: 0;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  padding: 6px 8px;
+  border: none;
+  background: #fff;
+  box-shadow: none;
+  min-height: 30px;
+  box-sizing: border-box;
+}
+
+.inp-profile:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+input.inp-profile.trial-timeout-inp {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input.inp-profile.trial-timeout-inp::-webkit-outer-spin-button,
+input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.area {
+  width: 100%;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  padding: 7px 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  background: #fbfdff;
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.area.invalid {
+  border-color: #fca5a5;
+  background: #fff7f7;
+}
+
+.area:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.area-ctx {
+  width: 100%;
+  margin-top: 0;
+  min-height: 88px;
+}
+
+.area-ctx--yaml {
+  min-height: 88px;
+}
+
+/* 与节点调试一致：标题与框 5px（ctx-json-head），框与提示 6px（.ctx-hint-line） */
+.area-ctx--trial-run {
+  height: 130px;
+  min-height: 130px;
+  box-sizing: border-box;
+}
+
+.mono {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
+
+.ctx-hint-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 5px;
+  margin-top: 6px;
+  padding: 0 1px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.ctx-hint-line.err {
+  color: #b91c1c;
+  font-weight: 500;
+}
+
+.ctx-hint-text {
+  color: #64748b;
+  font-size: 10.5px;
+}
+
+.ctx-hint-weak {
+  color: #94a3b8;
+}
+
+.ctx-hint-token {
+  display: inline-block;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 35%, #f1f5f9);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, #94a3b8);
+  color: #0f172a;
+  line-height: 1.35;
+  vertical-align: baseline;
+}
+
+.ctx-hint-sep {
+  color: #64748b;
+  font-weight: 500;
+  user-select: none;
+}
+
+.mini {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mini:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.mini-strong {
+  min-width: 44px;
+  font-weight: 600;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+
+.mini-strong:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, #cbd5e1);
+  background: #fff;
+}
+
+.cap-details {
+  margin-top: 8px;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.cap-details[open] {
+  padding-bottom: 0;
+}
+
+.cap-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0 6px;
+  list-style: none;
+}
+
+.cap-summary-lbl {
+  min-width: 0;
+}
+
+.cap-summary-tip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.cap-summary-tip :deep(.info-tip) {
+  color: #64748b;
+}
+
+.cap-summary-tip :deep(.info-tip:hover),
+.cap-summary-tip :deep(.info-tip:focus-visible) {
+  color: var(--accent);
+}
+
+.cap-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cap-summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 5px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #64748b;
+  transform: translateY(-1px);
+  transition: transform 0.15s ease;
+}
+
+.cap-details[open] > .cap-summary::before {
+  transform: rotate(90deg) translate(1px, 0);
+}
+
+.cap-summary:hover {
+  color: var(--accent);
+}
+
+.cap-details[open] .cap-summary {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.cap-summary:hover::before {
+  border-left-color: var(--accent);
+}
+
+.debug-results {
+  margin-top: 0;
+  padding: 10px 10px 9px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent) 14%);
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 52%, #fff 100%);
+  box-shadow:
+    0 4px 14px rgba(15, 23, 42, 0.045),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(52vh, 560px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.results-head-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.results-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.result-status-wrap {
+  flex-shrink: 0;
+}
+
+.result-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 12px;
+  min-width: 76px;
+  text-align: center;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.result-status.is-idle {
+  background: linear-gradient(180deg, #f1f5f9, #e2e8f0);
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.result-status.is-pending {
+  background: color-mix(in srgb, var(--accent) 14%, #fff);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: trial-pulse 1.1s ease-in-out infinite;
+}
+
+.result-status.is-ok {
+  background: linear-gradient(180deg, #ecfccb, #dcfce7);
+  color: #14532d;
+  border: 1px solid #86efac;
+}
+
+.result-status.is-warn {
+  background: linear-gradient(180deg, #fffbeb, #fef3c7);
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.result-status.is-err {
+  background: linear-gradient(180deg, #fef2f2, #fee2e2);
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+@keyframes trial-pulse {
+  50% {
+    opacity: 0.75;
+  }
+}
+
+.results-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: -2px 0 8px;
+  font-size: 11px;
+}
+
+.results-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.trial-flow-alert {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid;
+  font-size: 11.5px;
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+
+.trial-flow-alert-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: inherit;
+}
+
+.trial-flow-alert-msg {
+  font-weight: 500;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: inherit;
+  opacity: 0.95;
+}
+
+.trial-flow-alert--err {
+  background: linear-gradient(180deg, #fef2f2, #fee2e2);
+  border-color: #fca5a5;
+  color: #7f1d1d;
+}
+
+.trial-flow-alert--warn {
+  background: linear-gradient(180deg, #fffbeb, #fef3c7);
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+.results-inner-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+@media (max-width: 920px) {
+  .results-inner-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.result-block {
+  padding: 7px 9px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  box-shadow: none;
+  min-width: 0;
+}
+
+.result-block-hd {
+  margin: 0 0 5px;
+}
+
+.result-block .lbl {
+  margin-top: 0;
+}
+
+.result-block--timeline {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.result-block--timeline .trial-exec-tree {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: none;
+  overflow: auto;
+}
+
+.result-block--globals {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.result-block--globals .out {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.lbl {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 8px 0 4px;
+}
+
+.lbl.row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.title {
-  display: flex;
+.lbl .lbl-row {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 13px;
-  flex-wrap: wrap;
+  gap: 5px;
+  font-weight: 500;
+  color: #475569;
+  font-size: 11px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px;
+}
+
+.out {
+  margin: 0;
+  padding: 8px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, #1e293b 55%, var(--border));
+  background: #0f172a;
+  color: #e2e8f0;
+  min-height: 56px;
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.err {
+  color: #b91c1c;
+  font-size: 11px;
+  margin: 6px 0 0;
+}
+
+.msg {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 6px 0 0;
 }
 
 .badge {
@@ -624,6 +1729,11 @@ async function run() {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
+}
+
+.badge.meta-badge {
+  font-size: 10px;
+  padding: 1px 7px;
 }
 
 .badge.ok {
@@ -644,52 +1754,10 @@ async function run() {
   border-color: color-mix(in srgb, #f59e0b 35%, transparent);
 }
 
-.badge.suppressed-inline {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 2px 7px;
-  background: color-mix(in srgb, #f59e0b 18%, transparent);
-  color: #92400e;
-  border-color: color-mix(in srgb, #f59e0b 35%, transparent);
-}
-
-.cap-details {
-  margin-top: 8px;
-  border-top: 1px dashed var(--border);
-  padding-top: 6px;
-}
-
-.cap-sum {
-  font-size: 11px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-}
-
-.cap-sum:hover {
-  color: var(--accent);
-}
-
-.cap-details[open] .cap-sum {
-  margin-bottom: 6px;
-  color: var(--text);
-}
-
-.cap-hint {
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 6px;
-}
-
-.cap-hint strong {
-  color: var(--text);
-  font-weight: 600;
+.badge.info {
+  background: color-mix(in srgb, #3b82f6 12%, transparent);
+  color: #1d4ed8;
+  border-color: color-mix(in srgb, #3b82f6 30%, transparent);
 }
 
 .chip {
@@ -731,29 +1799,6 @@ async function run() {
   font-size: 11px;
 }
 
-.actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.opt {
-  font-size: 11px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.opt input[type="number"] {
-  width: 64px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 11px;
-}
-
 .btn {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -762,6 +1807,13 @@ async function run() {
   padding: 6px 12px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.btn.sm {
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .btn.primary {
@@ -775,580 +1827,13 @@ async function run() {
   cursor: not-allowed;
 }
 
-.grid {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.8fr) minmax(0, 1fr);
-  gap: 12px;
-  padding: 12px;
-  overflow: hidden;
+.btn.ghost {
+  background: #fff;
 }
 
-.col {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.lbl {
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-
-.timeline-lbl {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.hint {
-  font-size: 12px;
-  color: var(--muted);
-  padding: 8px;
-}
-
-.area,
-.out {
-  flex: 1;
-  min-height: 0;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.one-line {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fbfdff;
-  padding: 8px 10px;
-  font-size: 12px;
-  margin-bottom: 10px;
-  outline: none;
-}
-
-.area {
-  padding: 10px;
-  border: 1px solid var(--border);
-  background: #fbfdff;
-  resize: none;
-  outline: none;
-}
-
-.area:focus {
+.btn.ghost:hover {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.out {
-  margin: 0;
-  padding: 10px;
-  border: 1px dashed var(--border);
-  background: #0b1220;
-  color: #e2e8f0;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.dict-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: -2px 0 8px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.err {
-  color: #b91c1c;
-  font-size: 11px;
-  margin: 6px 0 0;
-}
-
-.msg {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 6px 0 0;
-}
-
-.timeline-col {
-  min-width: 0;
-}
-
-.timeline {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.tl-axis {
-  display: grid;
-  grid-template-columns: 22px 14px minmax(110px, 1.4fr) minmax(0, 3fr) 70px;
-  gap: 8px;
-  align-items: center;
-  padding: 4px 10px;
-  border-bottom: 1px dashed var(--border);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.tl-axis-pad {
-  min-width: 0;
-}
-
-.tl-axis-ticks {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-axis-ticks > span:nth-child(1) {
-  text-align: left;
-}
-
-.tl-axis-ticks > span:nth-child(2) {
-  text-align: center;
-}
-
-.tl-axis-ticks > span:nth-child(3) {
-  text-align: right;
-}
-
-.tl-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-bottom: 1px dashed var(--border);
-  font-size: 11px;
-}
-
-.tl-toolbar .link {
-  background: none;
-  border: none;
-  color: var(--accent, #2563eb);
-  cursor: pointer;
-  padding: 0;
-  font-size: 11px;
-}
-
-.tl-toolbar .link:hover {
-  text-decoration: underline;
-}
-
-.tl-toolbar .sep {
-  color: var(--muted);
-}
-
-.tl-rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  flex: 1;
-  min-height: 0;
-}
-
-.tl-row {
-  display: grid;
-  grid-template-columns: 22px 14px minmax(110px, 1.4fr) minmax(0, 3fr) 70px;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-
-.tl-row:last-child {
-  border-bottom: none;
-}
-
-.tl-order {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--muted);
-  text-align: center;
-  background: #f1f5f9;
-  border-radius: 999px;
-  padding: 1px 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: #cbd5e1;
-  justify-self: center;
-}
-
-.tl-row.ok .tl-dot {
-  background: #10b981;
-}
-
-.tl-row.bad .tl-dot {
-  background: #ef4444;
-}
-
-.tl-row.skipped .tl-dot {
-  background: #94a3b8;
-}
-
-.tl-row.running .tl-dot {
-  background: #3b82f6;
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.85); }
-}
-
-.tl-name {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  overflow: hidden;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.tl-indent {
-  display: inline-flex;
-  align-items: stretch;
-  flex: 0 0 auto;
-  height: 16px;
-}
-
-.tl-guide {
-  width: 12px;
-  display: inline-flex;
-  justify-content: center;
-  align-items: center;
-  position: relative;
-  color: var(--border, #e2e8f0);
-  font-size: 10px;
-  line-height: 1;
-}
-
-.tl-guide.on::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: 1px;
-  background: color-mix(in srgb, var(--border, #e2e8f0) 80%, transparent);
-}
-
-.tl-guide.elbow {
-  color: color-mix(in srgb, var(--border, #e2e8f0) 80%, transparent);
-  font-family: ui-monospace, monospace;
-}
-
-.tl-caret {
-  background: none;
-  border: none;
-  padding: 0;
-  width: 14px;
-  height: 14px;
-  font-size: 9px;
-  color: var(--muted);
-  cursor: pointer;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.tl-caret:hover {
-  color: var(--text, #0f172a);
-}
-
-.tl-caret-spacer {
-  display: inline-block;
-  width: 14px;
-  flex: 0 0 auto;
-}
-
-.tl-id {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.tl-row.is-branch .tl-id {
-  font-weight: 600;
-}
-
-.tl-meta {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 600;
-  color: #1d4ed8;
-  background: color-mix(in srgb, #3b82f6 10%, transparent);
-  border-radius: 4px;
-  padding: 1px 5px;
-  margin-left: 4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-track {
-  position: relative;
-  height: 18px;
-  background: linear-gradient(
-    to right,
-    rgba(15, 23, 42, 0.04) 0 1px,
-    transparent 1px 25%,
-    rgba(15, 23, 42, 0.04) 25% calc(25% + 1px),
-    transparent calc(25% + 1px) 50%,
-    rgba(15, 23, 42, 0.04) 50% calc(50% + 1px),
-    transparent calc(50% + 1px) 75%,
-    rgba(15, 23, 42, 0.04) 75% calc(75% + 1px),
-    transparent calc(75% + 1px) 100%
-  );
-  border-radius: 4px;
-}
-
-.tl-bar {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  min-width: 4px;
-  border-radius: 3px;
-  background: #cbd5e1;
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
-  overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
-}
-
-.tl-bar-label {
-  font-size: 10px;
-  color: #fff;
-  white-space: nowrap;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-row.ok .tl-bar {
-  background: linear-gradient(180deg, #34d399, #10b981);
-}
-
-.tl-row.bad .tl-bar {
-  background: linear-gradient(180deg, #f87171, #ef4444);
-}
-
-.tl-row.skipped .tl-bar {
-  background: repeating-linear-gradient(
-    45deg,
-    #cbd5e1 0 6px,
-    #e2e8f0 6px 12px
-  );
-}
-
-.tl-row.skipped .tl-bar-label {
-  color: #475569;
-  text-shadow: none;
-}
-
-.tl-row.running .tl-bar {
-  background: linear-gradient(180deg, #60a5fa, #3b82f6);
-}
-
-.tl-status {
-  font-size: 10px;
-  color: var(--muted);
-  text-align: right;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.tl-logs-btn {
-  flex: 0 0 auto;
-  margin-left: 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #1d4ed8;
-  background: color-mix(in srgb, #3b82f6 10%, transparent);
-  border: 1px solid color-mix(in srgb, #3b82f6 25%, transparent);
-  border-radius: 4px;
-  padding: 1px 6px;
-  cursor: pointer;
-  font-variant-numeric: tabular-nums;
-}
-
-.tl-logs-btn:hover {
-  background: color-mix(in srgb, #3b82f6 18%, transparent);
-}
-
-.tl-row.has-logs .tl-id {
-  color: color-mix(in srgb, var(--text, #0f172a) 90%, #1d4ed8);
-}
-
-.tl-logs-drawer {
-  padding: 8px 10px 10px;
-  background: #f8fafc;
-  border-bottom: 1px solid var(--border);
-}
-
-.tl-logs-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.tl-logs-empty {
-  font-size: 11px;
-  padding: 6px 0;
-}
-
-.logs-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fff;
-  max-height: 240px;
-  overflow: auto;
-}
-
-.log-row {
-  display: grid;
-  grid-template-columns: 62px 46px 110px 1fr auto;
-  gap: 8px;
-  align-items: baseline;
-  padding: 4px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.log-row:last-child {
-  border-bottom: none;
-}
-
-.log-ts {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.log-lvl {
-  text-transform: uppercase;
-  font-weight: 700;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  border-radius: 4px;
-  padding: 1px 6px;
-  background: #e2e8f0;
-  color: #475569;
-  text-align: center;
-}
-
-.log-row.lvl-info .log-lvl { background: color-mix(in srgb, #3b82f6 15%, transparent); color: #1d4ed8; }
-.log-row.lvl-warn .log-lvl { background: color-mix(in srgb, #f59e0b 20%, transparent); color: #92400e; }
-.log-row.lvl-error .log-lvl { background: color-mix(in srgb, #ef4444 18%, transparent); color: #b91c1c; }
-.log-row.lvl-debug .log-lvl { background: color-mix(in srgb, #94a3b8 20%, transparent); color: #475569; }
-
-.log-src {
-  color: var(--muted);
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-attempt {
-  color: #b45309;
-  margin-left: 3px;
-}
-
-.log-msg {
-  color: var(--text, #0f172a);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.log-trunc {
-  color: #b45309;
-  font-weight: 700;
-}
-
-.flow-logs {
-  padding: 8px 10px 10px;
-  border-top: 1px dashed var(--border);
-  background: #f8fafc;
-}
-
-.flow-logs-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.tl-filter-lbl {
-  color: var(--muted);
-  margin-left: 4px;
-}
-
-.chip-btn {
-  text-transform: uppercase;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border-radius: 999px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.chip-btn.active.lvl-info { background: color-mix(in srgb, #3b82f6 18%, transparent); color: #1d4ed8; border-color: color-mix(in srgb, #3b82f6 35%, transparent); }
-.chip-btn.active.lvl-warn { background: color-mix(in srgb, #f59e0b 22%, transparent); color: #92400e; border-color: color-mix(in srgb, #f59e0b 40%, transparent); }
-.chip-btn.active.lvl-error { background: color-mix(in srgb, #ef4444 20%, transparent); color: #b91c1c; border-color: color-mix(in srgb, #ef4444 35%, transparent); }
-.chip-btn.active.lvl-debug { background: color-mix(in srgb, #94a3b8 22%, transparent); color: #475569; border-color: color-mix(in srgb, #94a3b8 40%, transparent); }
-
-.tl-row.ok .tl-status {
-  color: #047857;
-}
-
-.tl-row.bad .tl-status {
-  color: #b91c1c;
-}
-
-.tl-row.running .tl-status {
-  color: #1d4ed8;
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-@media (max-width: 960px) {
-  .grid {
-    grid-template-columns: 1fr;
-  }
+  color: var(--accent);
 }
 </style>
+

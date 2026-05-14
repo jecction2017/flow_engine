@@ -1,9 +1,5 @@
 <template>
   <div class="bmap">
-    <datalist :id="pathDatalistId">
-      <option v-for="p in pathOptions" :key="p" :value="p" />
-    </datalist>
-
     <div class="bmap-grid">
       <section
         class="bmap-pane bmap-pane--in"
@@ -26,6 +22,7 @@
               :class="{
                 'bmap-row--err': inputRowHasError(i),
                 'bmap-row--draft': isScratchInputRow(i),
+                'bmap-row--lift': pathSuggestOpenFor('in', i),
               }"
             >
               <span class="bmap-idx mono">{{ i + 1 }}</span>
@@ -40,35 +37,45 @@
                 @input="onRowInput"
               />
               <span class="bmap-flow" aria-hidden="true">←</span>
-              <input
-                v-model="row.right"
-                class="bmap-inp mono"
-                spellcheck="false"
-                autocomplete="off"
-                placeholder="$.global…"
-                :list="pathDatalistId"
-                :aria-invalid="inputRowHasError(i)"
-                aria-label="入参上下文路径"
-                @input="onRowInput"
-              />
-              <div class="bmap-col-act">
-                <button
-                  type="button"
-                  class="bmap-ibtn"
-                  title="在下方插入一行"
-                  aria-label="在下方插入入参行"
-                  @click.stop="addInputRowBelow(i)"
+              <div class="bmap-path-wrap">
+                <input
+                  v-model="row.right"
+                  class="bmap-inp mono bmap-path-inp"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="$.global…"
+                  :aria-invalid="inputRowHasError(i)"
+                  aria-label="入参上下文路径"
+                  :aria-expanded="pathSuggestOpenFor('in', i)"
+                  :aria-controls="pathSuggestOpenFor('in', i) ? pathSuggestListId('in', i) : undefined"
+                  aria-autocomplete="list"
+                  @focus="onPathFocus('in', i)"
+                  @blur="onPathBlur"
+                  @keydown.escape.prevent="closePathSuggest"
+                  @input="onRowInput"
+                />
+                <div
+                  v-if="pathSuggestOpenFor('in', i)"
+                  :id="pathSuggestListId('in', i)"
+                  class="bmap-suggest"
+                  role="listbox"
+                  aria-label="路径补全建议"
+                  @mousedown.prevent
                 >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M8 3.5v9M3.5 8h9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.35"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                </button>
+                  <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
+                  <button
+                    v-for="opt in activePathSuggestions"
+                    :key="opt"
+                    type="button"
+                    class="bmap-suggest-item"
+                    role="option"
+                    @mousedown.prevent="applyPathSuggestion('in', i, opt)"
+                  >
+                    {{ opt }}
+                  </button>
+                </div>
+              </div>
+              <div class="bmap-col-act">
                 <button
                   v-if="canRemoveInputRow(i)"
                   type="button"
@@ -87,6 +94,24 @@
                       stroke-linejoin="round"
                     />
                     <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <span v-else class="bmap-act-spacer" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="bmap-ibtn"
+                  title="在下方插入一行"
+                  aria-label="在下方插入入参行"
+                  @click.stop="addInputRowBelow(i)"
+                >
+                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d="M8 3.5v9M3.5 8h9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.35"
+                      stroke-linecap="round"
+                    />
                   </svg>
                 </button>
               </div>
@@ -116,6 +141,7 @@
               :class="{
                 'bmap-row--err': outputRowHasError(i),
                 'bmap-row--draft': isScratchOutputRow(i),
+                'bmap-row--lift': pathSuggestOpenFor('out', i),
               }"
             >
               <span class="bmap-idx mono">{{ i + 1 }}</span>
@@ -130,35 +156,45 @@
                 @input="onRowInput"
               />
               <span class="bmap-flow" aria-hidden="true">→</span>
-              <input
-                v-model="row.right"
-                class="bmap-inp mono"
-                spellcheck="false"
-                autocomplete="off"
-                placeholder="$.global…"
-                :list="pathDatalistId"
-                :aria-invalid="outputRowHasError(i)"
-                aria-label="出参上下文路径"
-                @input="onRowInput"
-              />
-              <div class="bmap-col-act">
-                <button
-                  type="button"
-                  class="bmap-ibtn"
-                  title="在下方插入一行"
-                  aria-label="在下方插入出参行"
-                  @click.stop="addOutputRowBelow(i)"
+              <div class="bmap-path-wrap">
+                <input
+                  v-model="row.right"
+                  class="bmap-inp mono bmap-path-inp"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="$.global…"
+                  :aria-invalid="outputRowHasError(i)"
+                  aria-label="出参上下文路径"
+                  :aria-expanded="pathSuggestOpenFor('out', i)"
+                  :aria-controls="pathSuggestOpenFor('out', i) ? pathSuggestListId('out', i) : undefined"
+                  aria-autocomplete="list"
+                  @focus="onPathFocus('out', i)"
+                  @blur="onPathBlur"
+                  @keydown.escape.prevent="closePathSuggest"
+                  @input="onRowInput"
+                />
+                <div
+                  v-if="pathSuggestOpenFor('out', i)"
+                  :id="pathSuggestListId('out', i)"
+                  class="bmap-suggest"
+                  role="listbox"
+                  aria-label="路径补全建议"
+                  @mousedown.prevent
                 >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M8 3.5v9M3.5 8h9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.35"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                </button>
+                  <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
+                  <button
+                    v-for="opt in activePathSuggestions"
+                    :key="opt"
+                    type="button"
+                    class="bmap-suggest-item"
+                    role="option"
+                    @mousedown.prevent="applyPathSuggestion('out', i, opt)"
+                  >
+                    {{ opt }}
+                  </button>
+                </div>
+              </div>
+              <div class="bmap-col-act">
                 <button
                   v-if="canRemoveOutputRow(i)"
                   type="button"
@@ -177,6 +213,24 @@
                       stroke-linejoin="round"
                     />
                     <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <span v-else class="bmap-act-spacer" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="bmap-ibtn"
+                  title="在下方插入一行"
+                  aria-label="在下方插入出参行"
+                  @click.stop="addOutputRowBelow(i)"
+                >
+                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d="M8 3.5v9M3.5 8h9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.35"
+                      stroke-linecap="round"
+                    />
                   </svg>
                 </button>
               </div>
@@ -214,9 +268,45 @@ const emit = defineEmits<{ (e: "update:modelValue", v: Boundary): void }>();
 
 const store = useFlowStudioStore();
 
-const pathDatalistId = computed(() =>
-  `fe-bmap-paths-${props.syncKey.replace(/[^\w-]/g, "_")}`,
-);
+const syncSlug = computed(() => props.syncKey.replace(/[^\w-]/g, "_"));
+
+type PathSuggestPane = "in" | "out";
+const pathSuggestTarget = ref<{ pane: PathSuggestPane; index: number } | null>(null);
+let pathSuggestBlurTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPathSuggestBlurTimer() {
+  if (pathSuggestBlurTimer !== null) {
+    clearTimeout(pathSuggestBlurTimer);
+    pathSuggestBlurTimer = null;
+  }
+}
+
+function pathSuggestListId(pane: PathSuggestPane, rowIndex: number): string {
+  return `fe-bmap-sug-${pane}-${syncSlug.value}-${rowIndex}`;
+}
+
+function pathSuggestOpenFor(pane: PathSuggestPane, rowIndex: number): boolean {
+  const t = pathSuggestTarget.value;
+  return !!t && t.pane === pane && t.index === rowIndex && activePathSuggestions.value.length > 0;
+}
+
+function onPathFocus(pane: PathSuggestPane, index: number) {
+  clearPathSuggestBlurTimer();
+  pathSuggestTarget.value = { pane, index };
+}
+
+function onPathBlur() {
+  clearPathSuggestBlurTimer();
+  pathSuggestBlurTimer = setTimeout(() => {
+    pathSuggestTarget.value = null;
+    pathSuggestBlurTimer = null;
+  }, 150);
+}
+
+function closePathSuggest() {
+  clearPathSuggestBlurTimer();
+  pathSuggestTarget.value = null;
+}
 
 type Row = { left: string; right: string };
 
@@ -307,6 +397,8 @@ watch(
       (rowErrs.length > 0 || semanticLocal === incomingStable);
 
     if (!echoFromSelf) {
+      pathSuggestTarget.value = null;
+      clearPathSuggestBlurTimer();
       inputRows.value = rowsFromInputs(props.modelValue.inputs ?? {});
       outputRows.value = rowsFromOutputs(props.modelValue.outputs ?? {});
       lastEmittedStable.value = incomingStable;
@@ -330,6 +422,27 @@ function gatherPathFragments(): string[] {
 const pathOptions = computed(() => [
   ...collectContextPathSuggestions(store.doc, gatherPathFragments()),
 ]);
+
+const activePathSuggestions = computed((): string[] => {
+  const t = pathSuggestTarget.value;
+  if (!t) return [];
+  const rows = t.pane === "in" ? inputRows.value : outputRows.value;
+  const row = rows[t.index];
+  if (!row) return [];
+  const q = row.right.trim().toLowerCase();
+  const opts = pathOptions.value;
+  if (opts.length === 0) return [];
+  if (!q) return opts.slice(0, 16);
+  const picked: { p: string; rank: number }[] = [];
+  for (const p of opts) {
+    const pl = p.toLowerCase();
+    if (!pl.includes(q)) continue;
+    const rank = pl.startsWith(q) ? 0 : 1;
+    picked.push({ p, rank });
+  }
+  picked.sort((a, b) => a.rank - b.rank || a.p.localeCompare(b.p));
+  return picked.slice(0, 20).map((x) => x.p);
+});
 
 function inputRowHasError(i: number): boolean {
   const prefix = `入参 第 ${i + 1} 行`;
@@ -391,6 +504,16 @@ function tryEmit() {
 }
 
 function onRowInput() {
+  tryEmit();
+}
+
+function applyPathSuggestion(pane: PathSuggestPane, index: number, value: string) {
+  clearPathSuggestBlurTimer();
+  const rows = pane === "in" ? inputRows : outputRows;
+  const row = rows.value[index];
+  if (!row) return;
+  row.right = value;
+  pathSuggestTarget.value = null;
   tryEmit();
 }
 
@@ -484,10 +607,10 @@ const countBrief = computed(() => {
 
 .bmap-cols {
   display: grid;
-  /* 路径列显著加宽：索引与箭头收窄，行内图标列 */
-  grid-template-columns: 16px minmax(56px, 0.85fr) 14px minmax(0, 2.35fr) 52px;
+  /* 变量名 / 返回字段列：足够 min 与 fr，避免长标识被挤得过窄；路径列仍略宽 */
+  grid-template-columns: 16px minmax(100px, 1.4fr) 14px minmax(72px, 1.9fr) 52px;
   align-items: center;
-  column-gap: 4px;
+  column-gap: 6px;
 }
 
 .bmap-head {
@@ -515,6 +638,14 @@ const countBrief = computed(() => {
   align-items: center;
   gap: 1px;
   flex-shrink: 0;
+}
+
+.bmap-act-spacer {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  pointer-events: none;
 }
 
 .bmap-rows {
@@ -560,6 +691,70 @@ const countBrief = computed(() => {
   color: #94a3b8;
   user-select: none;
   text-align: center;
+}
+
+.bmap-path-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.bmap-row--lift {
+  position: relative;
+  z-index: 8;
+}
+
+.bmap-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 3px);
+  z-index: 20;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  font-size: 11.5px;
+}
+
+.bmap-suggest-cap {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 2px 6px 6px;
+  line-height: 1.35;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  margin-bottom: 2px;
+}
+
+.bmap-suggest-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  border: 0;
+  border-radius: 5px;
+  margin: 0;
+  padding: 6px 8px;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 11.5px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.bmap-suggest-item:hover {
+  background: color-mix(in srgb, var(--accent-soft) 48%, #fff);
+}
+
+.bmap-suggest-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 0;
 }
 
 .bmap-inp {

@@ -85,6 +85,7 @@ export async function deleteFlow(flowId: string): Promise<void> {
 
 export type RunFlowRequest = {
   initial_context?: Record<string, unknown> | null;
+  /** 默认 false：试运行以请求体中的 initial_context 为准；true 时与流程文档 initial_context 深度合并后再执行。 */
   merge?: boolean;
   timeout_sec?: number;
   profile?: string | null;

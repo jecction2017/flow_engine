@@ -68,10 +68,15 @@
             </div>
             <div class="menu-group">
               <label class="menu-item">
-                导入 JSON
-                <input hidden type="file" accept="application/json" @change="onImport" />
+                导入 YAML
+                <input
+                  hidden
+                  type="file"
+                  accept=".yaml,.yml,text/yaml,application/yaml,application/x-yaml,application/json"
+                  @change="onImport"
+                />
               </label>
-              <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 JSON</button>
+              <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 YAML</button>
             </div>
             <div class="menu-group">
               <button
@@ -578,11 +583,11 @@ function onDownloadFromMenu() {
 }
 
 function download() {
-  const blob = new Blob([store.exportJson()], { type: "application/json" });
+  const blob = new Blob([store.exportYaml()], { type: "text/yaml;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   const base = (store.doc.display_name ?? "").trim() || "flow";
-  a.download = `${base}.json`;
+  a.download = `${base}.yaml`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -595,10 +600,10 @@ function onImport(ev: Event) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      store.importJson(String(reader.result));
+      store.importYaml(String(reader.result));
       selectedVersion.value = "draft";
-    } catch {
-      alert("JSON 解析失败");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "YAML 解析失败");
     }
   };
   reader.readAsText(file);

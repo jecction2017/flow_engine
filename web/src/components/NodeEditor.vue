@@ -412,9 +412,20 @@ function onBoundaryUpdate(b: Boundary) {
   commit();
 }
 
+function cloneBoundaryFromDoc(src: Boundary | undefined | null): Boundary {
+  return {
+    inputs: { ...(src?.inputs ?? {}) },
+    outputs: { ...(src?.outputs ?? {}) },
+  };
+}
+
+/** 恢复为 ``doc`` 中该节点的参数映射（未 flush 到文档的草稿改动会被丢弃）；新任务在文档里默认空映射，等价于清空。 */
 function resetBoundaryMapping() {
   if (!node.value || node.value.type !== "task") return;
-  (node.value as TaskNode).boundary = { inputs: {}, outputs: {} };
+  const base = store.getNode(props.path);
+  const next: Boundary =
+    base?.type === "task" ? cloneBoundaryFromDoc(base.boundary) : { inputs: {}, outputs: {} };
+  (node.value as TaskNode).boundary = next;
   boundaryMappingLayoutEpoch.value += 1;
   commit();
 }

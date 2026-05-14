@@ -37,7 +37,7 @@
               v-model="ctxText"
               class="area mono area-ctx"
               :class="{ invalid: !ctxValid }"
-              rows="11"
+              rows="9"
               spellcheck="false"
               placeholder="{}"
             />
@@ -87,8 +87,6 @@
         </div>
       </div>
     </div>
-
-    <div class="debug-split" role="presentation" />
 
     <div class="debug-results">
       <div class="results-head">
@@ -493,7 +491,7 @@ defineExpose({ run, pending });
 .area-ctx {
   width: 100%;
   margin-top: 0;
-  min-height: 220px;
+  min-height: 190px;
 }
 
 .mono {
@@ -543,13 +541,6 @@ defineExpose({ run, pending });
   color: #64748b;
   font-weight: 500;
   user-select: none;
-}
-
-.debug-split {
-  height: 0;
-  margin: 10px 0 0;
-  border: none;
-  border-top: 1px solid color-mix(in srgb, var(--border) 60%, var(--accent) 18%);
 }
 
 .debug-results {

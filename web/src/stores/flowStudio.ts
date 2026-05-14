@@ -27,6 +27,7 @@ import {
   isValidNodeId,
   nodeId,
 } from "@/types/flow";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
@@ -594,20 +595,37 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     select({ kind: "node", path: newPath });
   }
 
-  function exportJson(): string {
-    return JSON.stringify(doc.value, null, 2);
+  function exportYaml(): string {
+    return stringifyYaml(doc.value, { indent: 2, lineWidth: 0 });
   }
 
-  function importJson(text: string) {
-    const parsed = JSON.parse(text) as FlowDocument;
-    doc.value = parsed;
+  /** 解析导出的 YAML；仍兼容旧版 `.json` 导出（JSON 为 YAML 子集，多数情况下由 YAML 解析即可）。 */
+  function importYaml(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      throw new Error("文件为空");
+    }
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(text);
+    } catch {
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        throw new Error("YAML/JSON 解析失败");
+      }
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("流程文件格式无效：根必须是对象");
+    }
+    doc.value = parsed as FlowDocument;
     ensureDefaultStrategies();
     touch();
     select({ kind: "flow" });
     activeFlowId.value = null;
     pendingNewFlowId.value = null;
     clearAllNodeDrafts();
-    // 导入来历不明的 JSON，丢弃本地 ``_local`` 桶的旧调试数据。
+    // 导入外部文件时丢弃本地 ``_local`` 桶的旧调试数据。
     nodeDebugContexts.value = {};
   }
 
@@ -780,8 +798,8 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     copyNode,
     moveNodeUp,
     moveNodeDown,
-    exportJson,
-    importJson,
+    exportYaml,
+    importYaml,
     loadDocument,
     activeFlowId,
     serverFlowsDir,
