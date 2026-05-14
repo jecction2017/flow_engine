@@ -33,6 +33,20 @@
               <span v-if="nameErrorNode" class="err">{{ nameErrorNode }}</span>
             </label>
 
+            <label class="field full">
+              <span class="lbl-row">
+                描述
+                <InfoTip text="可选。说明本节点在流程中的作用；不参与执行与校验，仅用于文档与树状列表提示。" />
+              </span>
+              <textarea
+                class="inp node-desc"
+                rows="2"
+                placeholder="例如：将外部告警归一化为内部事件模型"
+                :value="nodeDescriptionText"
+                @input="onDescriptionInput($event)"
+              />
+            </label>
+
             <div class="field full task-strategy-row">
               <span class="lbl-row">
                 并发策略<span class="req">*</span>
@@ -385,6 +399,23 @@ function onNameInput() {
   const next = nameText.value;
   if (node.value.name !== next) {
     node.value.name = next;
+    commit();
+  }
+}
+
+const nodeDescriptionText = computed(() => {
+  const n = node.value;
+  if (!n) return "";
+  const d = n.description;
+  return typeof d === "string" ? d : "";
+});
+
+function onDescriptionInput(ev: Event) {
+  if (!node.value) return;
+  const raw = (ev.target as HTMLTextAreaElement).value.replace(/\r\n/g, "\n");
+  const next = raw.trim() === "" ? null : raw;
+  if (node.value.description !== next) {
+    node.value.description = next;
     commit();
   }
 }
@@ -966,6 +997,14 @@ function commit() {
 .inp.invalid {
   border-color: #fca5a5;
   background: #fff7f7;
+}
+
+textarea.inp.node-desc {
+  /* 约两行正文 + .inp 上下 padding(7px*2) */
+  min-height: calc(2 * 1.45em + 14px);
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
 }
 
 .err {

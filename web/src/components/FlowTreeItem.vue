@@ -26,7 +26,7 @@
           </span>
           <span v-else class="fold-arrow placeholder"></span>
           <div class="meta">
-            <div class="name" :title="store.displayName(n)">
+            <div class="name" :title="nodeRowTitle(n)">
               {{ store.displayName(n) }}
               <span v-if="store.isNodeDirty([...pathPrefix, i])" class="dirty-dot" title="该节点有未保存修改">●</span>
             </div>
@@ -88,6 +88,13 @@ const props = defineProps<{
 }>();
 
 const store = useFlowStudioStore();
+
+function nodeRowTitle(n: FlowNode): string {
+  const name = store.displayName(n);
+  const d = typeof n.description === "string" ? n.description.trim() : "";
+  if (!d) return name;
+  return `${name}\n\n${d}`;
+}
 
 type Rail = "none" | "first" | "middle" | "last";
 
@@ -197,7 +204,8 @@ function isNodeMatched(path: number[]) {
   if (!node) return false;
 
   const name = store.displayName(node) || "";
-  return name.toLowerCase().includes(q);
+  const desc = typeof node.description === "string" ? node.description : "";
+  return name.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
 }
 
 function isChildMatched(path: number[]) {
@@ -212,7 +220,8 @@ function isChildMatched(path: number[]) {
     
     for (const child of n.children) {
       const name = store.displayName(child) || "";
-      if (name.toLowerCase().includes(q)) return true;
+      const desc = typeof child.description === "string" ? child.description : "";
+      if (name.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) return true;
 
       if (checkChildren(child)) return true;
     }

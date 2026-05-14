@@ -120,6 +120,8 @@ class BaseNode(BaseModel):
     strategy_ref: str = "default_sync"
     wait_before: bool = False
     condition: str | None = None
+    # 可选说明；不参与调度与执行语义，仅供文档与界面展示。
+    description: str | None = None
     on_error: OnErrorConfig | None = None
     hooks: NodeHooks | LoopHooks | None = None
 

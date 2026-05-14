@@ -49,6 +49,8 @@ export interface TaskNode {
   strategy_ref: string;
   wait_before: boolean;
   condition?: string | null;
+  /** 可选说明；不参与执行，仅文档与协作。 */
+  description?: string | null;
   script: string;
   boundary: Boundary;
   /**
@@ -77,6 +79,8 @@ export interface LoopNode {
   strategy_ref: string;
   wait_before: boolean;
   condition?: string | null;
+  /** 可选说明；不参与执行，仅文档与协作。 */
+  description?: string | null;
   iterable: string;
   alias: string;
   children: FlowNode[];
@@ -99,6 +103,8 @@ export interface SubflowNode {
   strategy_ref: string;
   wait_before: boolean;
   condition?: string | null;
+  /** 可选说明；不参与执行，仅文档与协作。 */
+  description?: string | null;
   alias: string;
   children: FlowNode[];
 }
