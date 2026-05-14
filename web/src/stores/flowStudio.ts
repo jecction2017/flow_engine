@@ -136,7 +136,7 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
   const selection = ref<Selection>({ kind: "flow" });
   const nodeDrafts = ref<Record<string, FlowNode>>({});
   const dirtyNodePaths = ref<Set<string>>(new Set());
-  /** 当前绑定的服务端流程 id（对应 ``data/flows/{id}.yaml``） */
+  /** 当前绑定的服务端流程 id（HTTP API / MySQL 中的 flow_code） */
   const activeFlowId = ref<string | null>(null);
   /**
    * 新建流程尚未首次写库时，预先分配的 flow_id（仅用于首次 PUT draft，不在 UI 展示）。

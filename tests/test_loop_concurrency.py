@@ -19,6 +19,15 @@ from flow_engine.engine.loader import load_flow_from_yaml
 from flow_engine.engine.models import FlowDefinition, FlowState, NodeState
 from flow_engine.engine.orchestrator import FlowRuntime
 
+_CYBER_ALARM_DIAGNOSIS_YAML = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "db_seed"
+    / "flows"
+    / "cyber_alarm_diagnosis.yaml"
+)
+
 
 def _flow(y: str) -> FlowDefinition:
     data: dict[str, Any] = yaml.safe_load(y)
@@ -246,11 +255,10 @@ async def test_loop_iteration_collect_creates_list_when_missing() -> None:
 
 @pytest.mark.asyncio
 async def test_cyber_alarm_diagnosis_data_flow_demo() -> None:
-    """End-to-end: the curated ``data/flows/cyber_alarm_diagnosis.yaml``
+    """End-to-end: the curated ``tests/fixtures/db_seed/flows/cyber_alarm_diagnosis.yaml``
     demo must diagnose every alarm, isolate per-iteration context, and
     upgrade only CRITICAL verdicts."""
-    root = Path(__file__).resolve().parents[1]
-    flow = load_flow_from_yaml(root / "data" / "flows" / "cyber_alarm_diagnosis.yaml")
+    flow = load_flow_from_yaml(_CYBER_ALARM_DIAGNOSIS_YAML)
     res = await FlowRuntime(flow).run()
     assert res.state == FlowState.COMPLETED, res.message
     report = res.context.global_ns["final_report"]

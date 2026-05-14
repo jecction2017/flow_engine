@@ -1,7 +1,7 @@
-"""End-to-end coverage tests for the curated ``data/flows/example_*.yaml``.
+"""End-to-end coverage tests for the curated ``examples/example_*.yaml`` flows.
 
-Each test loads a canonical flow YAML from ``data/flows`` and runs it through
-``FlowRuntime``. Assertions focus on the orchestrator feature each flow is
+Each test loads a canonical flow YAML from the repository ``examples/`` directory
+and runs it through ``FlowRuntime``. Assertions focus on the orchestrator feature each flow is
 designed to exercise (sequential pipeline, parallel fan-out + barrier,
 condition branch + SKIPPED state, loop aggregation + $.item, subflow frame
 isolation, jump / on_error control flow, lifecycle hooks).

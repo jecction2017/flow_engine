@@ -40,6 +40,16 @@ flow-api
 
 默认监听 `http://127.0.0.1:8000`
 
+### 本地 MySQL 灌库种子
+
+仓库根目录的 `data/` 仅作占位（默认 `flow-db migrate-data` 不会导入业务数据）。将示例流程、字典、Lookup、用户脚本等写入数据库时，请显式指定夹具目录：
+
+```bash
+flow-db migrate-data --data-dir tests/fixtures/db_seed
+```
+
+说明见 [tests/fixtures/db_seed/README.md](tests/fixtures/db_seed/README.md)。
+
 ## Vue Flow Studio
 
 ```bash
