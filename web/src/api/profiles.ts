@@ -27,6 +27,14 @@ export async function createProfile(profile: string): Promise<void> {
   }
 }
 
+export async function deleteProfile(profile: string): Promise<void> {
+  const r = await fetch(`/api/profiles/${encodeURIComponent(profile)}`, { method: "DELETE" });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `delete profile: ${r.status}`);
+  }
+}
+
 export async function fetchProfileConfig(): Promise<ProfileConfigResponse> {
   const r = await fetch("/api/profiles/config");
   if (!r.ok) throw new Error(`profile config: ${r.status}`);

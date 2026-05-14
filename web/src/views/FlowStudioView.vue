@@ -57,6 +57,20 @@
           >
             {{ saving === "version" ? "保存中…" : "保存为新版本" }}
           </button>
+
+          <button
+            type="button"
+            class="btn ghost"
+            :disabled="!store.activeFlowId || store.pendingNewFlowId !== null"
+            :title="
+              !store.activeFlowId || store.pendingNewFlowId
+                ? '请先保存流程后再试运行'
+                : '临时仿真执行当前流程：固定调试模式，副作用默认抑制'
+            "
+            @click="openTrialRun"
+          >
+            流程试运行
+          </button>
         </div>
         <div class="grp menu-wrap" ref="moreMenuRef">
           <button type="button" class="btn ghost" :aria-expanded="moreMenuOpen" aria-haspopup="menu" @click="toggleMoreMenu">
@@ -77,21 +91,6 @@
                 />
               </label>
               <button type="button" class="menu-item" @click="onDownloadFromMenu">导出 YAML</button>
-            </div>
-            <div class="menu-group">
-              <button
-                type="button"
-                class="menu-item"
-                :disabled="!store.activeFlowId || store.pendingNewFlowId !== null"
-                :title="
-                  !store.activeFlowId || store.pendingNewFlowId
-                    ? '请先保存流程后再试运行'
-                    : '临时仿真执行当前流程：固定调试模式，副作用默认抑制'
-                "
-                @click="onTrialRunFromMenu"
-              >
-                流程试运行
-              </button>
             </div>
             <div class="menu-group">
               <button
@@ -312,8 +311,7 @@ function toggleRun() {
   runVisible.value = !runVisible.value;
 }
 
-function onTrialRunFromMenu() {
-  closeMoreMenu();
+function openTrialRun() {
   if (!store.activeFlowId || store.pendingNewFlowId) return;
   toggleRun();
 }

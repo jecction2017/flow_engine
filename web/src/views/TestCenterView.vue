@@ -864,13 +864,17 @@
             </tbody>
           </table>
 
-          <section v-if="selectedRunDetail" class="run-detail-wrap">
-            <header class="side-head">
-              <span class="side-title">用例运行详情</span>
-              <button type="button" class="btn ghost small" @click="selectedRunId = null">关闭</button>
-            </header>
-            <RunDetailPanel :detail="selectedRunDetail" />
-          </section>
+          <RunDetailDrawer
+            :open="selectedRunId != null"
+            title="用例运行详情"
+            :loading="loadingRunDetail"
+            :detail="selectedRunDetail"
+            @close="
+              selectedRunId = null;
+              selectedRunDetail = null;
+              loadingRunDetail = false;
+            "
+          />
         </section>
 
         <!-- 空状态 -->
@@ -901,7 +905,7 @@ import { fetchDraft, fetchVersion, fetchVersionList, sortFlowVersionsDesc, type 
 import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
 import InfoTip from "@/components/InfoTip.vue";
-import RunDetailPanel from "@/components/RunDetailPanel.vue";
+import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import type { CapabilityRule, FlowDocument, FlowNode } from "@/types/flow";
 import { displayName as displayNodeName, flowListItemLabel, nodeId as flowNodeLogicalId } from "@/types/flow";
@@ -1215,6 +1219,7 @@ const loadingRuns = ref(false);
 const runStatusFilter = ref("");
 const selectedRunId = ref<number | null>(null);
 const selectedRunDetail = ref<FlowRunDetail | null>(null);
+const loadingRunDetail = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let planBatchesPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1352,6 +1357,7 @@ async function selectPlan(planId: number) {
   selectedBatchId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  loadingRunDetail.value = false;
   stopPolling();
 
   // If we're in any creation/editing mode, switch back to list/detail mode.
@@ -1495,6 +1501,7 @@ async function selectBatch(id: number) {
   mode.value = "list";
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  loadingRunDetail.value = false;
   await refreshSelected();
   await loadBatchRuns();
   if (selectedBatch.value?.status === "running") {
@@ -1508,6 +1515,7 @@ function backToPlanRuns() {
   selectedBatchId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  loadingRunDetail.value = false;
   stopPolling();
   planTab.value = "runs";
   void loadPlanBatches();
@@ -1544,10 +1552,14 @@ async function loadBatchRuns() {
 async function selectRun(runId: number) {
   if (selectedBatchId.value == null) return;
   selectedRunId.value = runId;
+  loadingRunDetail.value = true;
+  selectedRunDetail.value = null;
   try {
     selectedRunDetail.value = await getBatchRun(selectedBatchId.value, runId);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingRunDetail.value = false;
   }
 }
 
@@ -2468,14 +2480,6 @@ void refreshPlans();
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.run-detail-wrap {
-  border-top: 1px dashed var(--border);
-  padding-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .mono {

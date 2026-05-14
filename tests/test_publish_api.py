@@ -581,3 +581,25 @@ def test_lookup_save_schema_keeps_existing_rows(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     assert len(r.json()["rows"]) == 2
     assert "status" in r.json()["schema"]["properties"]
+
+
+def test_delete_profile_blocked_when_dict_profile_layer_exists(client: TestClient) -> None:
+    r = client.post("/api/profiles", json={"profile": "delblock"})
+    assert r.status_code == 200, r.text
+    r = client.put(
+        "/api/dict/module?layer=profile&profile=delblock&module_id=app",
+        json={"yaml": "http:\n  timeout_sec: 1\n"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.delete("/api/profiles/delblock")
+    assert r.status_code == 400, r.text
+    assert "数据字典" in r.text
+
+
+def test_delete_profile_ok_when_unused(client: TestClient) -> None:
+    r = client.post("/api/profiles", json={"profile": "delok"})
+    assert r.status_code == 200, r.text
+    r = client.delete("/api/profiles/delok")
+    assert r.status_code == 200, r.text
+    cfg = client.get("/api/profiles/config").json()
+    assert "delok" not in cfg["profiles"]

@@ -1,158 +1,241 @@
 <template>
   <div class="profile-page">
     <header class="top">
-      <div>
-        <div class="title">全局环境 Profile</div>
-        <div class="subtitle">管理 dev / sit / prod 等环境，并设置运行默认值</div>
+      <div class="brand">
+        <span class="logo">◇</span>
+        <div>
+          <div class="title">环境配置</div>
+          <div class="subtitle">环境列表 · 默认项 · 副作用函数抑制规则</div>
+        </div>
       </div>
-      <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
 
-    <div class="panel">
-      <label class="field">
-        <span>默认 Profile</span>
-        <select v-model="defaultProfile" class="inp" :disabled="loading || savingDefault">
-          <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
-        </select>
-      </label>
-      <button type="button" class="btn primary" :disabled="savingDefault || !defaultProfile" @click="saveDefault">
-        {{ savingDefault ? "保存中…" : "保存默认值" }}
-      </button>
-    </div>
-
-    <div class="panel">
-      <div class="field">
-        <span>新增 Profile</span>
-        <div class="row">
-          <input v-model="newProfile" class="inp mono" placeholder="dev / sit / prod" />
-          <button type="button" class="btn ghost" :disabled="savingCreate || !newProfile.trim()" @click="create">
-            {{ savingCreate ? "创建中…" : "创建" }}
-          </button>
-        </div>
+    <div v-if="activeDialog" class="confirm-mask" @click.self="closeDialog">
+      <div
+        class="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="dialogAriaLabel"
+      >
+        <template v-if="activeDialog.type === 'clear'">
+          <div class="confirm-title">清空该环境的抑制规则覆盖？</div>
+          <p class="confirm-text">
+            将当前环境在 debug / shadow / production 三处 JSON 置为 <code class="mono">[]</code>。未保存的编辑会丢失；保存后沿用进程内置默认。
+          </p>
+          <div class="confirm-actions">
+            <button type="button" class="btn ghost" @click="closeDialog">取消</button>
+            <button type="button" class="btn ghost danger" @click="submitClear">确认清空</button>
+          </div>
+        </template>
+        <template v-else-if="activeDialog.type === 'setDefault'">
+          <div class="confirm-title">设为默认环境？</div>
+          <p class="confirm-text">
+            将 <code class="mono">{{ activeDialog.code }}</code> 设为全局默认；未显式指定环境时将使用该编码。
+          </p>
+          <div class="confirm-actions">
+            <button type="button" class="btn ghost" @click="closeDialog">取消</button>
+            <button
+              type="button"
+              class="btn small primary"
+              :disabled="!!defaultingEnv"
+              @click="submitSetDefault"
+            >
+              {{ defaultingEnv ? "保存中…" : "确认" }}
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="confirm-title">删除环境？</div>
+          <p class="confirm-text">
+            将删除环境 <code class="mono">{{ activeDialog.code }}</code>（软删除）。服务端会校验：若部署、测试、数据字典、Lookup
+            或流程定义中仍引用该环境编码，将拒绝删除。
+          </p>
+          <div class="confirm-actions">
+            <button type="button" class="btn ghost" @click="closeDialog">取消</button>
+            <button
+              type="button"
+              class="btn ghost danger"
+              :disabled="!!deletingEnv"
+              @click="submitDelete"
+            >
+              {{ deletingEnv ? "删除中…" : "删除" }}
+            </button>
+          </div>
+        </template>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="field"><span>Profiles</span></div>
-      <ul class="list">
-        <li
-          v-for="p in profiles"
-          :key="p"
-          :class="{ active: p === defaultProfile, selected: p === policyProfile }"
-          @click="loadPolicyFor(p)"
-        >
-          <span class="mono">{{ p }}</span>
-          <span v-if="p === defaultProfile" class="tag">default</span>
-          <span v-if="p === policyProfile" class="tag tag-edit">编辑中</span>
-        </li>
-      </ul>
-    </div>
+    <p class="hint-bar">
+      流程在不同环境下使用不同的副作用函数抑制规则；字段 <code class="mono">system_capability_policy</code>。
+    </p>
 
-    <div class="panel">
-      <div class="row sec-title">
-        <div>
-          <div class="title">环境能力策略</div>
-          <div class="subtitle">
-            按 RunMode（debug / shadow / production）分别配置规则列表。优先级低于「部署附加策略」「本次附加策略」「节点能力策略」，高于进程内置默认。
-            保存后对本环境（Profile）下的部署、试运行、测试、调试（选用该 Profile 时）均生效。
-          </div>
+    <div class="body">
+      <aside class="left" aria-label="环境列表与默认项">
+        <div class="side-head">
+          <div class="side-title">环境</div>
+          <div class="muted small">{{ profiles.length }} 个</div>
         </div>
-        <div class="row">
-          <select v-model="policyProfile" class="inp mono" @change="loadPolicyFor(policyProfile)">
-            <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
-          </select>
-          <button
-            type="button"
-            class="btn ghost"
-            :disabled="loading || !systemDefaultPolicy"
-            title="将进程内置的 debug / shadow / production 默认规则分别填入下方三个编辑框，便于在此基础上修改"
-            @click="fillFromSystemDefault"
-          >
-            用系统默认填充
-          </button>
-          <button
-            type="button"
-            class="btn ghost"
-            :disabled="loading"
-            title="清空环境覆盖层，回到仅使用系统内置默认策略"
-            @click="clearOverride"
-          >
-            清空覆盖
-          </button>
-          <button
-            type="button"
-            class="btn primary"
-            :disabled="savingPolicy || !policyProfile"
-            @click="savePolicy"
-          >
-            {{ savingPolicy ? "保存中…" : "保存策略" }}
-          </button>
-        </div>
-      </div>
 
-      <details class="sys-default" :open="false">
-        <summary class="sys-default-sum">
-          查看系统内置默认策略（只读）
-          <span class="muted small">debug/shadow 默认抑制 integration/db_write/mq_publish；production 默认放行</span>
-        </summary>
-        <div v-if="systemDefaultPolicy" class="sys-default-body">
-          <div class="sys-col">
-            <div class="sys-title">debug</div>
-            <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.debug, null, 2) }}</pre>
+        <div class="side-block">
+          <div class="lbl-row">
+            <span class="lbl">新增环境</span>
           </div>
-          <div class="sys-col">
-            <div class="sys-title">shadow</div>
-            <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.shadow, null, 2) }}</pre>
-          </div>
-          <div class="sys-col">
-            <div class="sys-title">production</div>
-            <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.production, null, 2) }}</pre>
+          <div class="add-row">
+            <input v-model="newProfile" class="inp sm mono" placeholder="dev、sit、prod" spellcheck="false" />
+            <button type="button" class="btn small ghost" :disabled="savingCreate || !newProfile.trim()" @click="create">
+              {{ savingCreate ? "…" : "创建" }}
+            </button>
           </div>
         </div>
-        <p v-else class="muted small">
-          系统默认策略加载失败或未就绪。可先刷新页面重试。
-        </p>
-      </details>
 
-      <div class="json-editor-section">
-        <div class="json-section-hint muted small">
-          以下三套分别对应 RunMode：<strong>debug</strong>（调试/试运行/测试）、<strong>shadow</strong>、<strong>production</strong>（部署）。
-          若页面被裁切，请在本区域内向下滚动。
+        <div class="section-title">
+          <span>已有环境</span>
         </div>
-        <div class="json-grid">
-          <div class="json-card">
-            <label class="field full">
-              <span class="json-card-title">debug · 调试 / 试运行 / 测试</span>
-              <span class="json-card-sub muted small">JSON 数组（技术类型 CapabilityRule[]）</span>
-              <textarea v-model="policyJsonDebug" class="ta mono" rows="8" spellcheck="false" />
-            </label>
+        <ul class="profile-list" role="listbox" aria-label="环境列表">
+          <li
+            v-for="p in profiles"
+            :key="p"
+            role="option"
+            :aria-selected="p === policyProfile"
+            :class="['profile-item', { active: p === policyProfile, 'is-default': p === defaultProfile }]"
+            @click="loadPolicyFor(p)"
+          >
+            <span class="mono name">{{ p }}</span>
+            <div class="profile-item-tail">
+              <span class="badges">
+                <span v-if="p === defaultProfile" class="pill">默认</span>
+              </span>
+              <button
+                v-if="p !== defaultProfile"
+                type="button"
+                class="set-default-btn"
+                :class="{ 'is-revealed': defaultingEnv === p }"
+                :disabled="loading || !!defaultingEnv || !!deletingEnv"
+                aria-label="设为默认环境"
+                @click.stop="openSetDefaultConfirm(p)"
+              >
+                {{ defaultingEnv === p ? "…" : "设为默认" }}
+              </button>
+              <button
+                v-if="p !== 'default'"
+                type="button"
+                class="delete-env-btn"
+                :class="{ 'is-revealed': deletingEnv === p }"
+                :disabled="loading || !!defaultingEnv || !!deletingEnv || p === defaultProfile"
+                :title="p === defaultProfile ? '请先将其他环境设为默认后再删除' : undefined"
+                aria-label="删除环境"
+                @click.stop="openDeleteConfirm(p)"
+              >
+                {{ deletingEnv === p ? "…" : "删除" }}
+              </button>
+            </div>
+          </li>
+        </ul>
+      </aside>
+
+      <main class="right" aria-label="当前环境配置">
+        <header v-if="policyProfile" class="env-focus">
+          <div class="env-focus-top">
+            <h2 class="env-focus-name mono">{{ policyProfile }}</h2>
+            <span v-if="policyProfile === defaultProfile" class="pill">默认</span>
           </div>
-          <div class="json-card">
-            <label class="field full">
-              <span class="json-card-title">shadow · 影子 / 预发类运行</span>
-              <span class="json-card-sub muted small">JSON 数组（技术类型 CapabilityRule[]）</span>
-              <textarea v-model="policyJsonShadow" class="ta mono" rows="8" spellcheck="false" />
-            </label>
+          <p class="muted small env-focus-line">环境编码 · 本区为该环境下的相关设置（当前可编辑抑制规则）。</p>
+        </header>
+
+        <section class="panel">
+          <header class="panel-head">
+            <div class="panel-intro">
+              <div class="panel-title-row">
+                <span class="panel-title">副作用函数抑制规则</span>
+                <InfoTip
+                  wide
+                  align-end
+                  text="流程运行模式（调试、灰度、生产）与 所选环境决定应用的规则。副作用函数规则匹配优先级：节点配置 → 运行时配置 → 环境配置 → 内置默认，先命中先生效；都无则放行。"
+                />
+              </div>
+            </div>
+            <div class="panel-actions">
+              <button
+                type="button"
+                class="btn small ghost"
+                :disabled="loading || !systemDefaultPolicy"
+                title="用内置默认填入三处编辑框"
+                @click="fillFromSystemDefault"
+              >
+                用内置默认填充
+              </button>
+              <button
+                type="button"
+                class="btn small ghost danger"
+                :disabled="loading"
+                title="三处均置为 []"
+                @click="askClearOverride"
+              >
+                清空覆盖
+              </button>
+              <button type="button" class="btn small primary" :disabled="savingPolicy || !policyProfile" @click="savePolicy">
+                {{ savingPolicy ? "保存中…" : "保存规则" }}
+              </button>
+            </div>
+          </header>
+
+          <div class="json-grid">
+            <div class="json-card">
+              <label class="field full">
+                <span class="json-card-title">debug</span>
+                <span class="json-card-sub muted small">调试 / 试运行 / 测试</span>
+                <textarea v-model="policyJsonDebug" class="ta mono" rows="10" spellcheck="false" />
+              </label>
+            </div>
+            <div class="json-card">
+              <label class="field full">
+                <span class="json-card-title">shadow</span>
+                <span class="json-card-sub muted small">影子 / 预发</span>
+                <textarea v-model="policyJsonShadow" class="ta mono" rows="10" spellcheck="false" />
+              </label>
+            </div>
+            <div class="json-card">
+              <label class="field full">
+                <span class="json-card-title">production</span>
+                <span class="json-card-sub muted small">生产</span>
+                <textarea v-model="policyJsonProduction" class="ta mono" rows="10" spellcheck="false" />
+              </label>
+            </div>
           </div>
-          <div class="json-card">
-            <label class="field full">
-              <span class="json-card-title">production · 生产部署</span>
-              <span class="json-card-sub muted small">JSON 数组（技术类型 CapabilityRule[]）</span>
-              <textarea v-model="policyJsonProduction" class="ta mono" rows="8" spellcheck="false" />
-            </label>
-          </div>
-        </div>
-      </div>
+
+          <details class="sys-default">
+            <summary>内置默认规则</summary>
+            <p class="muted small sys-sum">debug/shadow 抑制 integration、db_write、mq_publish；production 放行。</p>
+            <div v-if="systemDefaultPolicy" class="sys-default-body">
+              <div class="sys-col">
+                <div class="sys-title">debug</div>
+                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.debug, null, 2) }}</pre>
+              </div>
+              <div class="sys-col">
+                <div class="sys-title">shadow</div>
+                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.shadow, null, 2) }}</pre>
+              </div>
+              <div class="sys-col">
+                <div class="sys-title">production</div>
+                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.production, null, 2) }}</pre>
+              </div>
+            </div>
+            <p v-else class="muted small">内置默认未加载；离开本页再进入将重新请求。</p>
+          </details>
+        </section>
+      </main>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import InfoTip from "@/components/InfoTip.vue";
 import {
   createProfile,
+  deleteProfile,
   fetchProfileConfig,
   fetchProfileSystemPolicy,
   fetchSystemDefaultCapabilityPolicy,
@@ -160,13 +243,29 @@ import {
   saveProfileSystemPolicy,
 } from "@/api/profiles";
 
+type ActiveDialog =
+  | { type: "clear" }
+  | { type: "setDefault"; code: string }
+  | { type: "delete"; code: string };
+
 const profiles = ref<string[]>(["default"]);
 const defaultProfile = ref("default");
 const newProfile = ref("");
 const loading = ref(false);
-const savingDefault = ref(false);
+const defaultingEnv = ref<string | null>(null);
+const deletingEnv = ref<string | null>(null);
 const savingCreate = ref(false);
 const error = ref("");
+
+const activeDialog = ref<ActiveDialog | null>(null);
+
+const dialogAriaLabel = computed(() => {
+  const d = activeDialog.value;
+  if (!d) return "确认";
+  if (d.type === "clear") return "确认清空规则覆盖";
+  if (d.type === "setDefault") return "确认设为默认环境";
+  return "确认删除环境";
+});
 
 const policyProfile = ref<string>("");
 const policyJsonDebug = ref("[]");
@@ -181,6 +280,44 @@ type SysDefaultPolicy = {
 };
 const systemDefaultPolicy = ref<SysDefaultPolicy | null>(null);
 
+function closeDialog() {
+  activeDialog.value = null;
+}
+
+function askClearOverride() {
+  activeDialog.value = { type: "clear" };
+}
+
+function submitClear() {
+  if (activeDialog.value?.type !== "clear") return;
+  clearOverride();
+  closeDialog();
+}
+
+async function submitSetDefault() {
+  if (activeDialog.value?.type !== "setDefault") return;
+  const code = activeDialog.value.code;
+  closeDialog();
+  await doSetDefault(code);
+}
+
+async function submitDelete() {
+  if (activeDialog.value?.type !== "delete") return;
+  const code = activeDialog.value.code;
+  closeDialog();
+  await doDelete(code);
+}
+
+function openSetDefaultConfirm(code: string) {
+  if (!code || code === defaultProfile.value) return;
+  activeDialog.value = { type: "setDefault", code };
+}
+
+function openDeleteConfirm(code: string) {
+  if (!code || code === "default") return;
+  activeDialog.value = { type: "delete", code };
+}
+
 async function reload() {
   error.value = "";
   loading.value = true;
@@ -189,7 +326,6 @@ async function reload() {
     profiles.value = res.profiles.length ? res.profiles : ["default"];
     defaultProfile.value = res.default_profile || profiles.value[0] || "default";
     if (!policyProfile.value || !profiles.value.includes(policyProfile.value)) {
-      // 默认编辑当前默认 profile，避免空白页观感。
       policyProfile.value = defaultProfile.value;
       await loadPolicyFor(policyProfile.value);
     }
@@ -209,8 +345,7 @@ async function loadPolicyFor(profile: string) {
   error.value = "";
   try {
     const res = await fetchProfileSystemPolicy(profile);
-    // server returns map shape: {debug,shadow,production}; legacy list is normalized server-side
-    const m = (res.system_capability_policy || {}) as any;
+    const m = (res.system_capability_policy || {}) as Record<string, unknown>;
     policyJsonDebug.value = JSON.stringify(m.debug ?? [], null, 2);
     policyJsonShadow.value = JSON.stringify(m.shadow ?? [], null, 2);
     policyJsonProduction.value = JSON.stringify(m.production ?? [], null, 2);
@@ -234,8 +369,8 @@ async function savePolicy() {
       shadow: parseList(policyJsonShadow.value, "shadow"),
       production: parseList(policyJsonProduction.value, "production"),
     };
-    const res = await saveProfileSystemPolicy(policyProfile.value, payload as any);
-    const m = (res.system_capability_policy || {}) as any;
+    const res = await saveProfileSystemPolicy(policyProfile.value, payload as Record<string, unknown>);
+    const m = (res.system_capability_policy || {}) as Record<string, unknown>;
     policyJsonDebug.value = JSON.stringify(m.debug ?? [], null, 2);
     policyJsonShadow.value = JSON.stringify(m.shadow ?? [], null, 2);
     policyJsonProduction.value = JSON.stringify(m.production ?? [], null, 2);
@@ -259,16 +394,31 @@ function clearOverride() {
   policyJsonProduction.value = "[]";
 }
 
-async function saveDefault() {
-  savingDefault.value = true;
+async function doSetDefault(code: string) {
+  if (!code || code === defaultProfile.value || defaultingEnv.value) return;
+  defaultingEnv.value = code;
   error.value = "";
   try {
-    await saveDefaultProfile(defaultProfile.value);
+    await saveDefaultProfile(code);
     await reload();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    savingDefault.value = false;
+    defaultingEnv.value = null;
+  }
+}
+
+async function doDelete(code: string) {
+  if (!code || code === "default" || deletingEnv.value) return;
+  deletingEnv.value = code;
+  error.value = "";
+  try {
+    await deleteProfile(code);
+    await reload();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    deletingEnv.value = null;
   }
 }
 
@@ -292,55 +442,579 @@ void reload();
 </script>
 
 <style scoped>
-/* 父级 main-fill 为 flex 子项时，必须允许本页内部滚动，否则长内容（三套 JSON）会被裁切，只能看到第一个框 */
 .profile-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: linear-gradient(180deg, #fbfcff 0%, #f6f8fc 100%);
+}
+
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.logo {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: linear-gradient(145deg, var(--accent-soft), #fff);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 16px;
+}
+
+.title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.btn.small {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.btn.primary {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn.danger {
+  border-color: color-mix(in srgb, #dc2626 35%, var(--border));
+  color: #b91c1c;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.err {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #f87171 30%, transparent);
+  flex-shrink: 0;
+}
+
+.hint-bar {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.hint-bar code {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #fff8;
+}
+
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
+  z-index: 50;
+}
+
+.confirm-dialog {
+  width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.confirm-title {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.confirm-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+}
+
+.left {
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  overflow: auto;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.right {
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.env-focus {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+}
+
+.env-focus-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.env-focus-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.env-focus-line {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+
+.side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.side-title {
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.side-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.lbl-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lbl {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 4px 0 8px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
+.inp {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #fff;
+  min-width: 0;
+}
+
+.inp.sm {
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+.inp:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.add-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.add-row .inp {
+  flex: 1;
+}
+
+.btn.full {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profile-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.profile-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+}
+
+.profile-item.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.profile-item .name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-item-tail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.set-default-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fbfdff;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    background 0.14s ease;
+}
+
+.profile-item:hover .set-default-btn,
+.profile-item:focus-within .set-default-btn,
+.set-default-btn.is-revealed,
+.profile-item:hover .delete-env-btn,
+.profile-item:focus-within .delete-env-btn,
+.delete-env-btn.is-revealed {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.set-default-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 55%, #fbfdff);
+}
+
+.set-default-btn:disabled {
+  cursor: not-allowed;
+}
+
+.set-default-btn.is-revealed:disabled {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.set-default-btn:disabled:not(.is-revealed) {
+  opacity: 0.45;
+}
+
+.profile-item:hover .set-default-btn:disabled:not(.is-revealed),
+.profile-item:focus-within .set-default-btn:disabled:not(.is-revealed) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.delete-env-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #fecaca 55%, var(--border));
+  background: color-mix(in srgb, #fef2f2 75%, #fbfdff);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    background 0.14s ease;
+}
+
+.delete-env-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #dc2626 45%, var(--border));
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.delete-env-btn:disabled {
+  cursor: not-allowed;
+}
+
+.delete-env-btn.is-revealed:disabled {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.delete-env-btn:disabled:not(.is-revealed) {
+  opacity: 0.45;
+}
+
+.profile-item:hover .delete-env-btn:disabled:not(.is-revealed),
+.profile-item:focus-within .delete-env-btn:disabled:not(.is-revealed) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.badges {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pill {
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+  background: #fbfdff;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 0;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
 }
-.top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.title { font-size: 16px; font-weight: 700; }
-.subtitle { font-size: 12px; color: var(--muted); }
-.panel { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 12px; }
-.field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
-.row { display: flex; gap: 8px; align-items: center; }
-.inp { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; background: #fff; font-size: 12px; }
-.btn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; }
-.btn.primary { background: var(--accent); color: #fff; border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.err { margin: 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, #fecaca 30%, transparent); color: #b91c1c; font-size: 12px; }
-.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.list li { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #fff; }
-.list li.active { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
-.list li.selected { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); cursor: pointer; }
-.list li:not(.selected):hover { cursor: pointer; border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
-.tag { font-size: 10px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; color: var(--muted); }
-.tag-edit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.sec-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-.sec-title .title { font-size: 13px; font-weight: 700; }
-.sec-title .subtitle { font-size: 11.5px; color: var(--muted); }
 
-.sys-default { margin: 6px 0 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
-.sys-default-sum { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.sys-default-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
-.sys-col { border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 8px 10px; min-width: 0; }
-.sys-title { font-size: 11px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
-.sys-json { margin: 0; padding: 8px; border-radius: 8px; border: 1px dashed var(--border); background: #0b1220; color: #e2e8f0; font-size: 11px; overflow: auto; max-height: 240px; }
-.small { font-size: 11px; }
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 
-.json-editor-section { margin-top: 4px; }
-.json-section-hint { margin-bottom: 10px; line-height: 1.5; }
-.json-section-hint strong { color: var(--text); font-weight: 600; }
+.panel-intro {
+  min-width: 0;
+  flex: 1;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.panel-title {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 11px;
+}
+
+.sys-default {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface) 88%, #fff);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sys-default summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sys-sum {
+  margin: 6px 0 8px;
+}
+
+.sys-default-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.sys-col {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.sys-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.sys-json {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, #94a3b8);
+  background: color-mix(in srgb, #f1f5f9 92%, var(--surface));
+  color: #334155;
+  font-size: 11px;
+  overflow: auto;
+  max-height: 200px;
+  max-width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 .json-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
+  min-width: 0;
 }
 
 @media (min-width: 1100px) {
@@ -350,26 +1024,56 @@ void reload();
   }
 }
 
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .left {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 320px;
+  }
+
+  .right {
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .sys-default-body {
+    grid-template-columns: 1fr;
+  }
+}
+
 .json-card {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: color-mix(in srgb, var(--surface) 92%, #fff);
+  background: #fbfdff;
   min-width: 0;
 }
 
-.field.full { min-width: 0; width: 100%; }
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field.full {
+  min-width: 0;
+  width: 100%;
+}
 
 .json-card-title {
-  display: block;
   font-size: 12px;
   font-weight: 700;
   color: var(--text);
 }
 
 .json-card-sub {
-  display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .ta {
@@ -378,11 +1082,19 @@ void reload();
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
-  background: #fbfdff;
+  background: #fff;
   font-size: 12px;
   outline: none;
   resize: vertical;
-  min-height: 140px;
+  min-height: 160px;
 }
-.ta:focus { border-color: color-mix(in srgb, var(--accent) 35%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.ta:focus {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
 </style>

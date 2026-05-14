@@ -11,9 +11,18 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
-from flow_engine.db.models import FeEnvProfile
+from flow_engine.db.models import (
+    FeDictModule,
+    FeEnvProfile,
+    FeFlowDeployment,
+    FeFlowDraft,
+    FeFlowTestBatch,
+    FeFlowTestPlan,
+    FeFlowVersion,
+    FeLookupNs,
+)
 from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 
@@ -214,11 +223,66 @@ class GlobalProfileStore:
                     "production": list((policy or {}).get("production") or []),
                 }
 
+    def list_profile_usage_labels(self, profile_id: str) -> list[str]:
+        """Return human-readable dependency labels if ``profile_id`` is still referenced.
+
+        Covers: deployments, test plans/batches, profile-layer dict modules, lookup
+        namespaces, and flow draft/version bodies that embed ``profile_code`` for this id.
+        """
+        pid = validate_profile_id(profile_id)
+        labels: list[str] = []
+        with db_session() as s:
+
+            def _count(model: type, *conds: Any) -> int:
+                q = select(func.count()).select_from(model).where(*conds)
+                return int(s.execute(q).scalar_one() or 0)
+
+            if _count(FeFlowDeployment, FeFlowDeployment.env_profile_code == pid, FeFlowDeployment.deleted_at.is_(None)):
+                labels.append("部署")
+
+            if _count(FeFlowTestPlan, FeFlowTestPlan.profile_code == pid, FeFlowTestPlan.deleted_at.is_(None)):
+                labels.append("测试方案")
+
+            if _count(FeFlowTestBatch, FeFlowTestBatch.profile_code == pid, FeFlowTestBatch.deleted_at.is_(None)):
+                labels.append("测试批次")
+
+            if _count(
+                FeDictModule,
+                FeDictModule.layer == "profile",
+                FeDictModule.profile_code == pid,
+                FeDictModule.deleted_at.is_(None),
+            ):
+                labels.append("数据字典（环境覆盖）")
+
+            if _count(FeLookupNs, FeLookupNs.profile_code == pid, FeLookupNs.deleted_at.is_(None)):
+                labels.append("Lookup")
+
+            pat_compact = f'%"profile_code":"{pid}"%'
+            pat_spaced = f'%"profile_code": "{pid}"%'
+            if _count(
+                FeFlowDraft,
+                FeFlowDraft.deleted_at.is_(None),
+                or_(FeFlowDraft.body.like(pat_compact), FeFlowDraft.body.like(pat_spaced)),
+            ):
+                labels.append("流程（草稿）")
+            if _count(
+                FeFlowVersion,
+                FeFlowVersion.deleted_at.is_(None),
+                or_(FeFlowVersion.body.like(pat_compact), FeFlowVersion.body.like(pat_spaced)),
+            ):
+                labels.append("流程（已发布版本）")
+
+        return labels
+
     # DataDictStore / LookupStore 兼容接口（MySQL 后端无需创建目录）
     def delete_profile(self, profile_id: str) -> None:
         pid = validate_profile_id(profile_id)
         if pid == DEFAULT_PROFILE_ID:
-            raise ProfileConfigError("Cannot delete the default profile")
+            raise ProfileConfigError("无法删除内置 default 环境。")
+        blockers = self.list_profile_usage_labels(pid)
+        if blockers:
+            joined = "、".join(blockers)
+            raise ProfileConfigError(f"无法删除：该环境仍被以下模块使用：{joined}。请先解除引用后再删除。")
         now = datetime.now(timezone.utc)
         with db_session() as s:
             stmt = (
@@ -227,8 +291,13 @@ class GlobalProfileStore:
                 .where(FeEnvProfile.deleted_at.is_(None))
             )
             row = s.execute(stmt).scalar_one_or_none()
-            if row:
-                row.deleted_at = now
+            if not row:
+                return
+            if row.is_default == 1:
+                raise ProfileConfigError(
+                    "无法删除：该环境当前为默认环境，请先将其他环境设为默认后再删除。"
+                )
+            row.deleted_at = now
 
 
 # ---------------------------------------------------------------------------

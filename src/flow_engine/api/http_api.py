@@ -53,6 +53,7 @@ from flow_engine.stores import data_dict
 from flow_engine.stores.dict_store import DataDictError
 from flow_engine.stores.profile_store import (
     ProfileConfigError,
+    invalidate_profile_store_cache,
     profile_scope,
     store as profile_store,
 )
@@ -697,6 +698,16 @@ def create_app() -> FastAPI:
             pid = profile_store().create_profile(body.profile)
         except (ProfileConfigError, DataDictError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "profile": pid}
+
+    @app.delete("/api/profiles/{profile}")
+    def delete_profile_route(profile: str) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+            profile_store().delete_profile(pid)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        invalidate_profile_store_cache()
         return {"ok": True, "profile": pid}
 
     @app.get("/api/profiles/config")

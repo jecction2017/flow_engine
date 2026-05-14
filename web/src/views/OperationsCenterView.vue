@@ -643,14 +643,17 @@
                 </tbody>
               </table>
 
-              <section v-if="selectedDepRunDetail" class="run-embed-detail">
-                <header class="side-head">
-                  <span class="side-title">运行详情</span>
-                  <button type="button" class="btn ghost small" @click="selectedDepRunId=null; selectedDepRunDetail=null">关闭</button>
-                </header>
-                <RunDetailPanel :detail="selectedDepRunDetail" />
-              </section>
-              <p v-else-if="loadingSelectedDepRun" class="muted small pad">加载中…</p>
+              <RunDetailDrawer
+                :open="selectedDepRunId != null"
+                title="运行详情"
+                :loading="loadingSelectedDepRun"
+                :detail="selectedDepRunDetail"
+                @close="
+                  selectedDepRunId = null;
+                  selectedDepRunDetail = null;
+                  loadingSelectedDepRun = false;
+                "
+              />
             </section>
           </section>
 
@@ -752,14 +755,17 @@
         </tbody>
       </table>
 
-      <aside v-if="selectedRunDetail" class="side-panel wide">
-        <header class="side-head">
-          <div class="side-title">运行详情</div>
-          <button type="button" class="btn ghost small" @click="selectedRunId = null">关闭</button>
-        </header>
-        <RunDetailPanel :detail="selectedRunDetail" />
-      </aside>
-      <p v-else-if="loadingRunDetail" class="muted small pad">加载中…</p>
+      <RunDetailDrawer
+        :open="selectedRunId != null"
+        title="运行详情"
+        :loading="loadingRunDetail"
+        :detail="selectedRunDetail"
+        @close="
+          selectedRunId = null;
+          selectedRunDetail = null;
+          loadingRunDetail = false;
+        "
+      />
     </section>
 
     <!-- ===================== 工作节点 ===================== -->
@@ -814,7 +820,7 @@ import { fetchFlowList, type FlowListItem } from "@/api/flows";
 import { flowListItemLabel } from "@/types/flow";
 import { fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfiles } from "@/api/profiles";
-import RunDetailPanel from "@/components/RunDetailPanel.vue";
+import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
 
@@ -2147,32 +2153,6 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, #3b82f6 35%, transparent);
 }
 
-.side-panel {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.side-panel.wide {
-  padding: 12px;
-}
-
-.side-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-}
-
-.side-title {
-  font-weight: 700;
-  font-size: 13px;
-}
-
 .side-section {
   display: flex;
   flex-direction: column;
@@ -2868,14 +2848,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.run-embed-detail {
-  border-top: 1px dashed var(--border);
-  padding-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .icon-btn {
