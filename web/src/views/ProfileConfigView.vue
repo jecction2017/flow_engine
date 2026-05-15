@@ -741,23 +741,21 @@ void reload();
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 8px 10px;
-  background: var(--surface);
+  background: transparent;
   cursor: pointer;
   font-size: 12px;
 }
 
 .profile-item:hover {
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
 }
 
 .profile-item.active {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .profile-item .name {

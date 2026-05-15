@@ -1,6 +1,7 @@
 <template>
   <div class="lookup-page">
     <header class="top">
+      <div class="top-primary">
       <div class="brand">
         <span class="logo">◇</span>
         <div>
@@ -11,14 +12,20 @@
           </div>
         </div>
       </div>
-      <div class="actions">
-        <label class="lbl inline">
-          <span>Profile</span>
-          <select v-model="selectedProfile" class="sel sm" @change="reload">
+      <div class="top-actions">
+        <label class="env-block">
+          <span class="env-label">当前环境</span>
+          <select
+            v-model="selectedProfile"
+            class="inp-mini env-select mono"
+            :disabled="loading"
+            @change="reload"
+          >
             <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
           </select>
         </label>
         <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
+      </div>
       </div>
     </header>
 
@@ -1059,14 +1066,51 @@ void (async () => {
 }
 
 .top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.top-primary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   flex-wrap: wrap;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.env-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.env-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.env-select {
+  min-width: 120px;
+}
+
+.inp-mini {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
 }
 
 .brand {
@@ -1100,19 +1144,6 @@ void (async () => {
 
 .dir {
   word-break: break-all;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .btn {
