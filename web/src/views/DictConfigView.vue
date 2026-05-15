@@ -1,6 +1,7 @@
 <template>
   <div class="dict-page">
     <header class="top">
+      <div class="top-primary">
       <div class="brand">
         <span class="logo">◇</span>
         <div>
@@ -11,39 +12,48 @@
           </div>
         </div>
       </div>
-      <div class="actions">
-        <div class="page-tabs">
-          <button type="button" class="tab-btn" :class="{ active: activeTab === 'modules' }" @click="activeTab = 'modules'">
-            模块配置
-          </button>
-          <button type="button" class="tab-btn" :class="{ active: activeTab === 'secrets' }" @click="activeTab = 'secrets'">
-            密钥管理
-          </button>
-        </div>
-        <label class="profile-row">
-          <span>Profile</span>
-          <select
-            v-model="selectedProfile"
-            class="inp-mini"
-            :disabled="loading"
-            @change="onProfileChange"
-          >
-            <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
-          </select>
-        </label>
-        <button type="button" class="btn ghost" :disabled="loading" @click="reload">刷新</button>
+      <label class="env-block">
+        <span class="env-label">当前环境</span>
+        <select
+          v-model="selectedProfile"
+          class="inp-mini env-select mono"
+          :disabled="loading"
+          @change="onProfileChange"
+        >
+          <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
+        </select>
+      </label>
       </div>
+      <nav class="top-nav" aria-label="数据字典功能">
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ active: activeTab === 'modules' }"
+          @click="activeTab = 'modules'"
+        >
+          字典模块
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ active: activeTab === 'secrets' }"
+          @click="activeTab = 'secrets'"
+        >
+          密钥管理
+        </button>
+      </nav>
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
 
     <div v-if="activeTab === 'modules'" class="hint-bar">
-      模块按 dot 路径展开；密钥引用写 <code class="mono">secret://密钥名</code>（YAML 无需引号）。
-      <code class="mono">dict_get()</code> 返回引用字符串；仅在 Python 集成模块内显式解密。
+      模块以点分 ID 挂载到字典树；环境覆盖会深度合并到基础模块之上。敏感项写
+      <code class="mono">secret://密钥名</code>（YAML 中无需引号）。
+      <code class="mono">dict_get()</code> 在脚本中取得引用字符串，明文须在 Python 集成模块内显式解密。
     </div>
     <div v-else class="hint-bar">
-      密钥按当前 Profile 隔离；在数据字典 YAML 中用 <code class="mono">secret://密钥名</code> 引用。
-      加密需 <code class="mono">FLOW_SECRET_MASTER_KEY</code>；不提供在线解密，避免明文经接口泄露。
+      密钥按环境隔离存储；在字典 YAML 中用 <code class="mono">secret://密钥名</code> 引用。
+      加密依赖服务端 <code class="mono">FLOW_SECRET_MASTER_KEY</code>；页面不提供解密，避免明文经接口传出。
     </div>
 
     <SecretManagerPanel
@@ -53,6 +63,19 @@
       @error="onSecretError"
     />
 
+    <div v-if="confirmOpen" class="confirm-mask" @click.self="closeConfirmDialog">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="删除模块">
+        <div class="confirm-title">删除模块</div>
+        <p class="confirm-text">{{ confirmText }}</p>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="closeConfirmDialog">取消</button>
+          <button type="button" class="btn ghost danger" :disabled="deletingModule" @click="confirmRemoveModule">
+            {{ deletingModule ? "删除中…" : "确认删除" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div v-show="activeTab === 'modules'" class="body">
       <aside class="left">
         <div class="search-box">
@@ -60,7 +83,7 @@
             v-model="searchQuery"
             class="search-input mono"
             type="text"
-            placeholder="搜索模块ID或内容..."
+            placeholder="搜索模块 ID 或 YAML 内容…"
           />
           <button
             v-if="searchQuery.trim()"
@@ -73,71 +96,106 @@
           </button>
         </div>
         <div class="search-meta">
-          <span>base 命中 {{ filteredBaseModules.length }}</span>
-          <span>profile 命中 {{ filteredProfileModules.length }}</span>
+          <span>基础模块 {{ filteredBaseModules.length }}</span>
+          <span>环境覆盖 {{ filteredProfileModules.length }}</span>
         </div>
         <div class="section-title">
-          <span>Base Modules</span>
+          <span>基础模块</span>
           <button type="button" class="link" @click="startNew('base')">新增</button>
         </div>
-        <button
+        <div
           v-for="m in filteredBaseModules"
           :key="`base:${m.module_id}`"
-          type="button"
-          class="module-btn"
+          class="module-item"
           :class="{ active: selected?.layer === 'base' && selected.module_id === m.module_id }"
           @click="selectModule('base', m.module_id)"
         >
-          <span class="mono">{{ m.module_id }}</span>
-          <span v-if="m.module_id === 'core'" class="module-lock" title="核心模块（固定）" aria-label="core-locked">🔒</span>
-        </button>
-        <p v-if="filteredBaseModules.length === 0" class="empty">未找到匹配的 base 模块。</p>
+          <span class="mono module-name">{{ m.module_id }}</span>
+          <div class="module-item-tail">
+            <span v-if="m.module_id === 'core'" class="module-lock" title="系统内置模块，不可删除" aria-label="core-locked">🔒</span>
+            <button
+              v-else
+              type="button"
+              class="delete-module-btn"
+              :class="{ 'is-revealed': deletingModuleKey === moduleItemKey('base', m.module_id) }"
+              :disabled="loading || !!deletingModuleKey"
+              aria-label="删除模块"
+              @click.stop="requestRemoveModule('base', m.module_id)"
+            >
+              {{ deletingModuleKey === moduleItemKey('base', m.module_id) ? "…" : "删除" }}
+            </button>
+          </div>
+        </div>
+        <p v-if="filteredBaseModules.length === 0" class="empty">未找到匹配的基础模块。</p>
 
         <div class="section-title profile-title">
-          <span>Profile Overrides</span>
+          <span>环境覆盖</span>
           <button type="button" class="link" @click="startNew('profile')">新增</button>
         </div>
-        <button
+        <div
           v-for="m in filteredProfileModules"
           :key="`profile:${m.module_id}`"
-          type="button"
-          class="module-btn"
+          class="module-item"
           :class="{ active: selected?.layer === 'profile' && selected.module_id === m.module_id }"
           @click="selectModule('profile', m.module_id)"
         >
-          <span class="mono">{{ m.module_id }}</span>
-        </button>
-        <p v-if="!debouncedSearch && profileModules.length === 0" class="empty">当前 profile 暂无覆盖模块。</p>
-        <p v-if="debouncedSearch && filteredProfileModules.length === 0" class="empty">未找到匹配的 profile 模块。</p>
+          <span class="mono module-name">{{ m.module_id }}</span>
+          <div class="module-item-tail">
+            <button
+              type="button"
+              class="delete-module-btn"
+              :class="{ 'is-revealed': deletingModuleKey === moduleItemKey('profile', m.module_id) }"
+              :disabled="loading || !!deletingModuleKey"
+              aria-label="删除模块"
+              @click.stop="requestRemoveModule('profile', m.module_id)"
+            >
+              {{ deletingModuleKey === moduleItemKey('profile', m.module_id) ? "…" : "删除" }}
+            </button>
+          </div>
+        </div>
+        <p v-if="!debouncedSearch && profileModules.length === 0" class="empty">当前环境暂无覆盖模块。</p>
+        <p v-if="debouncedSearch && filteredProfileModules.length === 0" class="empty">未找到匹配的环境覆盖模块。</p>
       </aside>
 
       <div class="right">
-        <div class="meta">
-          <span class="lbl">当前模块</span>
-          <select v-model="editorLayer" class="inp-mini">
-            <option value="base">base</option>
-            <option value="profile">profile</option>
-          </select>
-          <input v-model="editorModuleId" class="inp-mini mono module-input" placeholder="app.feature" />
-          <button type="button" class="btn primary" :disabled="saving || !editorModuleId.trim()" @click="saveModule">
-            {{ saving ? "保存中…" : "保存模块" }}
-          </button>
-          <button
-            type="button"
-            class="btn ghost danger"
-            :disabled="loading || !selected || (selected.layer === 'base' && selected.module_id === 'core')"
-            @click="removeModule"
-          >
-            删除
-          </button>
-        </div>
-        <CodeEditor v-model="editorYaml" language="yaml" :height="280" />
-
-        <div class="preview-head">
-          <span class="lbl">Resolved Preview</span>
-          <span v-if="resolved" class="mono hash">{{ resolved.resolved_hash }}</span>
-        </div>
-        <CodeEditor v-model="resolvedText" language="json" :height="280" read-only />
+        <template v-if="isEditing">
+          <header class="module-focus">
+            <span class="layer-pill">{{ layerLabel(displayLayer) }}</span>
+            <label class="module-id-field">
+              <span class="lbl">模块 ID</span>
+              <input
+                v-model="editorModuleId"
+                class="inp-mini mono module-id-inp"
+                :readonly="!creatingNew"
+                :placeholder="creatingNew ? '例如 app.http' : undefined"
+                spellcheck="false"
+              />
+            </label>
+            <button
+              type="button"
+              class="btn primary"
+              :disabled="saving || (creatingNew && !editorModuleId.trim())"
+              @click="saveModule"
+            >
+              {{ saving ? "保存中…" : "保存模块" }}
+            </button>
+          </header>
+          <div class="editors-row">
+          <div class="editor-pane">
+            <div class="pane-head">
+              <span class="lbl">模块配置（YAML）</span>
+            </div>
+            <CodeEditor v-model="editorYaml" language="yaml" fill />
+          </div>
+          <div class="editor-pane preview-pane">
+            <div class="pane-head">
+              <span class="lbl">合并结果（只读）</span>
+            </div>
+            <CodeEditor v-model="resolvedText" language="yaml" fill read-only />
+          </div>
+          </div>
+        </template>
+        <p v-else class="right-empty">从左侧选择模块，或点击「新增」创建。</p>
       </div>
     </div>
   </div>
@@ -145,6 +203,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { stringify } from "yaml";
 import CodeEditor from "@/components/CodeEditor.vue";
 import SecretManagerPanel from "@/components/SecretManagerPanel.vue";
 import {
@@ -159,6 +218,21 @@ import {
   type DictResolveResponse,
 } from "@/api/dict";
 
+/** 新建/空模块编辑区占位（服务端仍解析为空映射，不在 UI 展示 `{}`）。 */
+const EMPTY_MODULE_YAML =
+  "# 根须为映射（对象），在此填写本模块配置项，例如：\n# timeout_sec: 30\n";
+
+function isEmptyModuleYaml(yaml: string): boolean {
+  const t = yaml.trim();
+  return t === "" || t === "{}";
+}
+
+function moduleYamlForEditor(yaml: string | undefined | null): string {
+  const raw = yaml ?? "";
+  if (isEmptyModuleYaml(raw)) return EMPTY_MODULE_YAML;
+  return raw.endsWith("\n") ? raw : `${raw}\n`;
+}
+
 const activeTab = ref<"modules" | "secrets">("modules");
 const dictDir = ref("");
 const profiles = ref<string[]>(["default"]);
@@ -169,10 +243,16 @@ const resolved = ref<DictResolveResponse | null>(null);
 const selected = ref<{ layer: DictLayer; module_id: string } | null>(null);
 const editorLayer = ref<DictLayer>("base");
 const editorModuleId = ref("");
-const editorYaml = ref("{}\n");
+const editorYaml = ref(EMPTY_MODULE_YAML);
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
+const creatingNew = ref(false);
+const confirmOpen = ref(false);
+const confirmText = ref("");
+const deletingModule = ref(false);
+const deletingModuleKey = ref<string | null>(null);
+const pendingDelete = ref<{ layer: DictLayer; module_id: string } | null>(null);
 
 function onSecretError(msg: string) {
   error.value = msg;
@@ -211,10 +291,32 @@ const sortedBaseModules = computed(() => {
 const filteredBaseModules = computed(() => filterModules(sortedBaseModules.value, "base"));
 const filteredProfileModules = computed(() => filterModules(profileModules.value, "profile"));
 
+const isEditing = computed(() => creatingNew.value || selected.value !== null);
+const displayLayer = computed<DictLayer>(() => selected.value?.layer ?? editorLayer.value);
+
 const resolvedText = computed({
-  get: () => (resolved.value ? JSON.stringify(resolved.value.resolved_dictionary, null, 2) : "{}"),
+  get: () => {
+    if (!resolved.value) return "{}\n";
+    try {
+      return stringify(resolved.value.resolved_dictionary, { lineWidth: 0 });
+    } catch {
+      return "{}\n";
+    }
+  },
   set: () => {},
 });
+
+function layerLabel(layer: DictLayer): string {
+  return layer === "base" ? "基础模块" : "环境覆盖";
+}
+
+function moduleItemKey(layer: DictLayer, moduleId: string): string {
+  return `${layer}:${moduleId}`;
+}
+
+function canDeleteModule(layer: DictLayer, moduleId: string): boolean {
+  return !(layer === "base" && moduleId === "core");
+}
 
 async function reload() {
   error.value = "";
@@ -224,7 +326,7 @@ async function reload() {
     dictDir.value = summary.dict_dir;
     profiles.value = summary.profiles.length ? summary.profiles : ["default"];
     if (!profiles.value.includes(selectedProfile.value)) selectedProfile.value = profiles.value[0] ?? "default";
-    await reloadProfile();
+    await reloadProfile(true);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -234,11 +336,13 @@ async function reload() {
 
 function onProfileChange() {
   if (activeTab.value === "modules") {
-    void reloadProfile();
+    creatingNew.value = false;
+    selected.value = null;
+    void reloadProfile(false);
   }
 }
 
-async function reloadProfile() {
+async function reloadProfile(selectFirstIfNone = false) {
   const [base, prof, res] = await Promise.all([
     fetchDictModules("base"),
     fetchDictModules("profile", selectedProfile.value),
@@ -250,7 +354,7 @@ async function reloadProfile() {
   moduleContentCache.value = {};
   modulePathHintsCache.value = {};
   await hydrateSearchCache();
-  if (!selected.value && base.modules.length) {
+  if (selectFirstIfNone && !selected.value && !creatingNew.value && base.modules.length) {
     await selectModule("base", base.modules[0].module_id);
   }
 }
@@ -345,12 +449,13 @@ async function hydrateSearchCache(): Promise<void> {
 
 async function selectModule(layer: DictLayer, moduleId: string) {
   error.value = "";
+  creatingNew.value = false;
   try {
     const mod = await fetchDictModule(layer, moduleId, layer === "profile" ? selectedProfile.value : undefined);
     selected.value = { layer, module_id: moduleId };
     editorLayer.value = layer;
     editorModuleId.value = moduleId;
-    editorYaml.value = mod.yaml || "{}\n";
+    editorYaml.value = moduleYamlForEditor(mod.yaml);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -358,24 +463,27 @@ async function selectModule(layer: DictLayer, moduleId: string) {
 
 function startNew(layer: DictLayer) {
   selected.value = null;
+  creatingNew.value = true;
   editorLayer.value = layer;
   editorModuleId.value = "";
-  editorYaml.value = "{}\n";
+  editorYaml.value = EMPTY_MODULE_YAML;
 }
 
 async function saveModule() {
-  const moduleId = editorModuleId.value.trim();
+  const layer = selected.value?.layer ?? editorLayer.value;
+  const moduleId = (selected.value?.module_id ?? editorModuleId.value).trim();
   if (!moduleId) return;
   saving.value = true;
   error.value = "";
   try {
     await saveDictModule(
-      editorLayer.value,
+      layer,
       moduleId,
       editorYaml.value,
-      editorLayer.value === "profile" ? selectedProfile.value : undefined,
+      layer === "profile" ? selectedProfile.value : undefined,
     );
-    selected.value = { layer: editorLayer.value, module_id: moduleId };
+    creatingNew.value = false;
+    selected.value = { layer, module_id: moduleId };
     moduleContentCache.value = {};
     modulePathHintsCache.value = {};
     await reloadProfile();
@@ -386,27 +494,47 @@ async function saveModule() {
   }
 }
 
-async function removeModule() {
-  if (!selected.value) return;
-  if (!confirm(`删除 ${selected.value.layer}:${selected.value.module_id}？`)) return;
+function requestRemoveModule(layer: DictLayer, moduleId: string) {
+  if (!canDeleteModule(layer, moduleId)) return;
+  pendingDelete.value = { layer, module_id: moduleId };
+  confirmText.value = `确定删除${layerLabel(layer)}「${moduleId}」？此操作不可恢复。`;
+  confirmOpen.value = true;
+}
+
+function closeConfirmDialog() {
+  if (deletingModule.value) return;
+  confirmOpen.value = false;
+  pendingDelete.value = null;
+}
+
+async function confirmRemoveModule() {
+  const target = pendingDelete.value;
+  if (!target) return;
+  deletingModule.value = true;
+  deletingModuleKey.value = moduleItemKey(target.layer, target.module_id);
   error.value = "";
-  loading.value = true;
   try {
     await deleteDictModule(
-      selected.value.layer,
-      selected.value.module_id,
-      selected.value.layer === "profile" ? selectedProfile.value : undefined,
+      target.layer,
+      target.module_id,
+      target.layer === "profile" ? selectedProfile.value : undefined,
     );
-    selected.value = null;
-    editorModuleId.value = "";
-    editorYaml.value = "{}\n";
+    confirmOpen.value = false;
+    pendingDelete.value = null;
+    if (selected.value?.layer === target.layer && selected.value.module_id === target.module_id) {
+      selected.value = null;
+      creatingNew.value = false;
+      editorModuleId.value = "";
+      editorYaml.value = EMPTY_MODULE_YAML;
+    }
     moduleContentCache.value = {};
     modulePathHintsCache.value = {};
     await reloadProfile();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    loading.value = false;
+    deletingModule.value = false;
+    deletingModuleKey.value = null;
   }
 }
 
@@ -424,12 +552,18 @@ void reload();
 
 .top {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 14px 16px 0;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.top-primary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
@@ -466,41 +600,57 @@ void reload();
   word-break: break-all;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.env-block {
+  display: inline-flex;
   align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.page-tabs {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
+.env-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.env-select {
+  min-width: 120px;
+}
+
+.top-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin: 0 -16px;
+  padding: 0 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 
 .tab-btn {
   border: none;
-  background: var(--surface);
+  background: transparent;
   color: var(--muted);
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
   cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
 }
 
 .tab-btn.active {
-  background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
-}
-
-.profile-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
 }
 
 .inp-mini {
@@ -648,29 +798,87 @@ void reload();
   padding: 0;
 }
 
-.module-btn {
+.module-item {
   width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
 }
 
-.module-btn:hover {
+.module-item:hover {
   background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
 }
 
-.module-btn.active {
+.module-item.active {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
+}
+
+.module-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.module-item-tail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.delete-module-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #fecaca 55%, var(--border));
+  background: color-mix(in srgb, #fef2f2 75%, #fbfdff);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    background 0.14s ease;
+}
+
+.module-item:hover .delete-module-btn,
+.module-item:focus-within .delete-module-btn,
+.delete-module-btn.is-revealed {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.delete-module-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #dc2626 45%, var(--border));
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.delete-module-btn:disabled {
+  cursor: not-allowed;
+}
+
+.delete-module-btn.is-revealed:disabled {
+  opacity: 1;
+  pointer-events: none;
 }
 
 .module-lock {
@@ -690,11 +898,34 @@ void reload();
 
 .right {
   min-width: 0;
+  min-height: 0;
   padding: 12px 16px;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.editors-row {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.editor-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .root-btn {
@@ -719,30 +950,86 @@ void reload();
   color: var(--muted);
 }
 
-.meta {
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #0f172a 32%, transparent);
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.confirm-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.module-focus {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
-.module-input {
-  min-width: 220px;
-}
-
-.preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.hash {
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--muted);
+.layer-pill {
+  flex-shrink: 0;
   font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.module-id-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.module-id-inp {
+  width: 200px;
+  max-width: min(200px, 100%);
+}
+
+.module-id-inp:read-only {
+  cursor: default;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.right-empty {
+  margin: auto;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 24px 16px;
 }
 
 .lbl {
@@ -766,6 +1053,10 @@ void reload();
     border-right: none;
     border-bottom: 1px solid var(--border);
     max-height: 38vh;
+  }
+  .editors-row {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 </style>

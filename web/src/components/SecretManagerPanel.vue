@@ -6,7 +6,9 @@
         <p class="confirm-text">{{ confirmText }}</p>
         <div class="confirm-actions">
           <button type="button" class="btn ghost" @click="closeConfirmDialog">取消</button>
-          <button type="button" class="btn ghost danger" @click="confirmDialogAction">确认删除</button>
+          <button type="button" class="btn ghost danger" :disabled="deletingSecret" @click="confirmDialogAction">
+            {{ deletingSecret ? "删除中…" : "确认删除" }}
+          </button>
         </div>
       </div>
     </div>
@@ -14,21 +16,32 @@
     <div class="secret-layout">
       <aside class="secret-left">
         <div class="section-title">
-          <span>密钥列表 · {{ profile }}</span>
+          <span>环境「{{ profile }}」</span>
           <button type="button" class="link" @click="startNew">新增</button>
         </div>
-        <button
+        <div
           v-for="s in secrets"
           :key="s.secret_name"
-          type="button"
-          class="module-btn"
+          class="secret-item"
           :class="{ active: selectedName === s.secret_name && !isNew }"
           @click="selectSecret(s.secret_name)"
         >
-          <span class="mono">{{ s.secret_name }}</span>
-          <span class="type-tag">{{ s.secret_type }}</span>
-        </button>
-        <p v-if="!secrets.length" class="empty">当前 profile 暂无密钥，请先加密明文并保存。</p>
+          <span class="mono secret-name">{{ s.secret_name }}</span>
+          <div class="secret-item-tail">
+            <span class="type-tag">{{ s.secret_type }}</span>
+            <button
+              type="button"
+              class="delete-module-btn"
+              :class="{ 'is-revealed': deletingSecretName === s.secret_name }"
+              :disabled="!!deletingSecretName"
+              aria-label="删除密钥"
+              @click.stop="requestRemoveSecret(s.secret_name)"
+            >
+              {{ deletingSecretName === s.secret_name ? "…" : "删除" }}
+            </button>
+          </div>
+        </div>
+        <p v-if="!secrets.length" class="empty">当前环境暂无密钥。可用下方加密工具生成密文后保存。</p>
       </aside>
 
       <div class="secret-right">
@@ -40,25 +53,22 @@
             placeholder="es_password"
             :disabled="!isNew && !!selectedName"
           />
-          <span class="lbl">类型</span>
+          <span class="lbl">加密方式</span>
           <select v-model="editorType" class="inp-mini">
             <option v-for="t in secretTypes" :key="t" :value="t">{{ t }}</option>
           </select>
           <button type="button" class="btn primary" :disabled="saving || !editorName.trim()" @click="onSave">
             {{ saving ? "保存中…" : "保存" }}
           </button>
-          <button type="button" class="btn ghost danger" :disabled="!selectedName || isNew" @click="requestRemove">
-            删除
-          </button>
         </div>
 
-        <div class="lbl block">密钥数据 JSON（密文）</div>
+        <div class="lbl block">密文数据（JSON）</div>
         <CodeEditor v-model="editorDataJson" language="json" :height="200" />
 
         <div class="crypto-box">
           <div class="lbl">加密工具</div>
           <p class="muted small">
-            输入明文 → 加密 → 将下方 JSON 粘贴到「密钥数据」并保存。本 profile 数据字典引用：
+            输入明文并加密后，将生成的 JSON 填入上方「密文数据」并保存。在本环境的数据字典中引用：
             <code class="mono">secret://{{ editorName || "密钥名" }}</code>
           </p>
           <textarea v-model="plaintextInput" class="plaintext-inp mono" rows="2" placeholder="待加密的明文" />
@@ -106,6 +116,9 @@ const encrypting = ref(false);
 const confirmOpen = ref(false);
 const confirmTitle = ref("确认删除");
 const confirmText = ref("");
+const pendingDeleteName = ref<string | null>(null);
+const deletingSecret = ref(false);
+const deletingSecretName = ref<string | null>(null);
 
 async function reload() {
   try {
@@ -152,7 +165,7 @@ async function onSave() {
   try {
     data = JSON.parse(editorDataJson.value) as Record<string, unknown>;
   } catch {
-    emit("error", "密钥数据 JSON 格式无效");
+    emit("error", "密文数据 JSON 格式无效");
     return;
   }
   saving.value = true;
@@ -168,27 +181,37 @@ async function onSave() {
   }
 }
 
-function requestRemove() {
-  if (!selectedName.value) return;
+function requestRemoveSecret(name: string) {
+  pendingDeleteName.value = name;
   confirmTitle.value = "删除密钥";
-  confirmText.value = `确定删除 profile「${props.profile}」下的密钥「${selectedName.value}」？此操作不可恢复。`;
+  confirmText.value = `确定删除环境「${props.profile}」下的密钥「${name}」？此操作不可恢复。`;
   confirmOpen.value = true;
 }
 
 function closeConfirmDialog() {
+  if (deletingSecret.value) return;
   confirmOpen.value = false;
+  pendingDeleteName.value = null;
 }
 
 async function confirmDialogAction() {
-  const name = selectedName.value;
-  confirmOpen.value = false;
+  const name = pendingDeleteName.value;
   if (!name) return;
+  deletingSecret.value = true;
+  deletingSecretName.value = name;
+  confirmOpen.value = false;
+  pendingDeleteName.value = null;
   try {
     await apiDeleteSecret(props.profile, name);
-    startNew();
+    if (selectedName.value === name) {
+      startNew();
+    }
     await reload();
   } catch (e) {
     emit("error", e instanceof Error ? e.message : String(e));
+  } finally {
+    deletingSecret.value = false;
+    deletingSecretName.value = null;
   }
 }
 
@@ -296,35 +319,92 @@ defineExpose({ reload });
   letter-spacing: 0.04em;
 }
 
-.module-btn {
-  display: flex;
+.secret-item {
   width: 100%;
-  justify-content: space-between;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  text-align: left;
+  justify-content: space-between;
+  gap: 8px;
   border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
   background: transparent;
   color: var(--text);
-  border-radius: 8px;
-  padding: 6px 8px;
-  font-size: 12px;
   cursor: pointer;
-  margin-bottom: 4px;
+  font-size: 12px;
 }
 
-.module-btn:hover {
-  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+.secret-item:hover {
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
 }
 
-.module-btn.active {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+.secret-item.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
+}
+
+.secret-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.secret-item-tail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .type-tag {
   font-size: 10px;
   color: var(--muted);
+}
+
+.delete-module-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #fecaca 55%, var(--border));
+  background: color-mix(in srgb, #fef2f2 75%, #fbfdff);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    background 0.14s ease;
+}
+
+.secret-item:hover .delete-module-btn,
+.secret-item:focus-within .delete-module-btn,
+.delete-module-btn.is-revealed {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.delete-module-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #dc2626 45%, var(--border));
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.delete-module-btn:disabled {
+  cursor: not-allowed;
+}
+
+.delete-module-btn.is-revealed:disabled {
+  opacity: 1;
+  pointer-events: none;
 }
 
 .meta {
