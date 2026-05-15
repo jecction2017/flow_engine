@@ -135,7 +135,11 @@ def tree_copy(
     profile_id: str | None = None,
     runtime_patch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Deep copy of the resolved dictionary tree for ``$.global.dictionary``."""
+    """Deep copy of the resolved dictionary tree for ``$.global.dictionary``.
+
+    ``secret://<name>`` references are kept as-is; decrypt only in Python
+    integration code via :mod:`flow_engine.secrets.service`.
+    """
     return copy.deepcopy(resolve(profile_id, runtime_patch)["resolved_dictionary"])
 
 

@@ -49,8 +49,12 @@ from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file
 from flow_engine.starlark_sdk.user_script_store import get_user_script_store
+from flow_engine.secrets.errors import SecretError
+from flow_engine.secrets.registry import list_secret_types
+from flow_engine.secrets.service import encrypt_plaintext
 from flow_engine.stores import data_dict
 from flow_engine.stores.dict_store import DataDictError
+from flow_engine.stores.secret_store import SecretStoreError, store as secret_store
 from flow_engine.stores.profile_store import (
     ProfileConfigError,
     invalidate_profile_store_cache,
@@ -117,6 +121,16 @@ class PutDictSubtreeBody(BaseModel):
 
 class PutDictModuleBody(BaseModel):
     yaml: str = Field(..., description="YAML mapping for this dictionary module")
+
+
+class PutSecretBody(BaseModel):
+    secret_type: str = Field(..., description="Crypto backend type, e.g. local_fernet")
+    secret_data: dict[str, Any] = Field(default_factory=dict, description="Backend-specific ciphertext JSON")
+
+
+class EncryptSecretBody(BaseModel):
+    secret_type: str = Field(..., description="Crypto backend type")
+    plaintext: str = Field(..., description="Value to encrypt")
 
 
 class CreateDictProfileBody(BaseModel):
@@ -590,6 +604,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         try:
             resolved = data_dict.resolve(profile_id, body.runtime_patch)
+            dict_tree = data_dict.tree_copy(profile_id, body.runtime_patch)
         except DataDictError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -610,7 +625,7 @@ def create_app() -> FastAPI:
             deployment_capability_policy=policy_rules,
             profile_system_capability_policy=profile_rules,
         )
-        rt = FlowRuntime(flow, dictionary=resolved["resolved_dictionary"], run_opts=run_opts)
+        rt = FlowRuntime(flow, dictionary=dict_tree, run_opts=run_opts)
         started = time.monotonic()
         timed_out = False
         try:
@@ -834,6 +849,99 @@ def create_app() -> FastAPI:
         return {"path": path, "profile": pid, "value": v}
 
     # -----------------------------------------------------------------------
+    # Secrets (密钥管理)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/secrets/types")
+    def list_secret_crypto_types() -> dict[str, Any]:
+        return {"secret_types": list_secret_types()}
+
+    @app.get("/api/secrets")
+    def list_secrets(profile: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+            records = secret_store().list_secrets(profile=pid)
+        except (ProfileConfigError, SecretStoreError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "secret_dir": secret_store().directory,
+            "profile": pid,
+            "secrets": [
+                {
+                    "profile_code": r.profile_code,
+                    "secret_name": r.secret_name,
+                    "secret_type": r.secret_type,
+                    "secret_data": r.secret_data,
+                }
+                for r in records
+            ],
+        }
+
+    @app.get("/api/secrets/{secret_name}")
+    def get_secret(
+        secret_name: str,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+            rec = secret_store().get_secret(secret_name, profile=pid)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except SecretStoreError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {
+            "profile_code": rec.profile_code,
+            "secret_name": rec.secret_name,
+            "secret_type": rec.secret_type,
+            "secret_data": rec.secret_data,
+        }
+
+    @app.put("/api/secrets/{secret_name}")
+    def put_secret(
+        secret_name: str,
+        body: PutSecretBody,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+            rec = secret_store().put_secret(
+                secret_name, body.secret_type, body.secret_data, profile=pid
+            )
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except (SecretStoreError, SecretError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "ok": True,
+            "profile_code": rec.profile_code,
+            "secret_name": rec.secret_name,
+            "secret_type": rec.secret_type,
+            "secret_data": rec.secret_data,
+        }
+
+    @app.delete("/api/secrets/{secret_name}")
+    def delete_secret(
+        secret_name: str,
+        profile: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        try:
+            pid = profile_store().resolve_profile(profile)
+            secret_store().delete_secret(secret_name, profile=pid)
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except SecretStoreError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {"ok": True, "profile": pid}
+
+    @app.post("/api/secrets/crypto/encrypt")
+    def encrypt_secret_plaintext(body: EncryptSecretBody) -> dict[str, Any]:
+        try:
+            secret_data = encrypt_plaintext(body.secret_type, body.plaintext)
+        except SecretError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"secret_type": body.secret_type.strip().lower(), "secret_data": secret_data}
+
+    # -----------------------------------------------------------------------
     # Lookup tables
     # -----------------------------------------------------------------------
 
@@ -1038,7 +1146,7 @@ def create_app() -> FastAPI:
     def debug_node(body: DebugNodeBody) -> JSONResponse:
         try:
             profile = profile_store().resolve_profile(body.profile)
-            resolved = data_dict.resolve(profile)
+            dict_tree = data_dict.tree_copy(profile)
             # 临时调试入口：永远 RunMode.DEBUG（系统默认 SUPPRESS 所有副作用类）。
             # 能力栈优先级：body 显式策略 > profile 系统策略 > DEBUG 系统默认。
             # body.capability_policy 只能"放宽"（ALLOW/REDIRECT 特定 builtin），
@@ -1046,7 +1154,7 @@ def create_app() -> FastAPI:
             merged_policy = list(body.capability_policy or []) + list(
                 profile_store().get_system_capability_policy(profile, run_mode=RunMode.DEBUG.value)
             )
-            with profile_scope(profile), data_dict.dictionary_scope(resolved["resolved_dictionary"]):
+            with profile_scope(profile), data_dict.dictionary_scope(dict_tree):
                 result, logs = debug_task_script(
                     body.script,
                     body.initial_context or {},
@@ -1567,7 +1675,7 @@ def create_app() -> FastAPI:
         async def _drive() -> None:
             try:
                 sem = asyncio.Semaphore(max(1, body.concurrency))
-                resolved = await asyncio.to_thread(data_dict.resolve, body.profile_code)
+                dict_tree = await asyncio.to_thread(data_dict.tree_copy, body.profile_code)
 
                 async def one(row: dict[str, Any]) -> None:
                     async with sem:
@@ -1577,7 +1685,7 @@ def create_app() -> FastAPI:
                             ver_no=resolved_ver_no,
                             profile_code=body.profile_code,
                             flow_data=flow_data,
-                            dictionary=resolved["resolved_dictionary"],
+                            dictionary=dict_tree,
                             mock_config=body.mock_config,
                             test_input=row,
                             context_mapping=body.context_mapping,

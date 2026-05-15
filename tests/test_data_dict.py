@@ -67,6 +67,14 @@ def test_base_core_module_exists_automatically() -> None:
     assert "core" in modules
 
 
+def test_yaml_secret_uri_reference_unquoted() -> None:
+    st = data_dict.store()
+    yaml_text = "app:\n  pwd: secret://pwd1\n"
+    st.write_module("base", "secmod", yaml_text)
+    parsed = st.read_module("base", "secmod")
+    assert parsed["app"]["pwd"] == "secret://pwd1"
+
+
 def test_write_and_read_module_roundtrip() -> None:
     st = data_dict.store()
     content = "key: value\nnested:\n  a: 1\n"

@@ -399,6 +399,59 @@ class FeDictModule(_AuditCols, Base):
 
 
 # ---------------------------------------------------------------------------
+# fe_secret  密钥管理（数据字典密文引用）
+# ---------------------------------------------------------------------------
+
+
+class FeSecret(_AuditCols, Base):
+    """密钥定义表；数据字典中 ``secret://<name>`` 引用本表（按 profile 隔离）。
+
+    profile_code  关联 fe_env_profile.profile_code
+    secret_name   同一 profile 内唯一
+    secret_type   加解密后端类型（如 local_fernet），由 registry 路由
+    secret_data   后端相关的密文 JSON（如 ciphertext、nonce 等）
+    """
+
+    __tablename__ = "fe_secret"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_code", "secret_name",
+            name="uk_fe_secret_profile_name",
+        ),
+        {**_FE_TABLE_OPTS, "comment": "密钥管理：按 profile 隔离，名称+类型+密文 JSON"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+        comment="自增主键",
+    )
+    profile_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="关联 fe_env_profile.profile_code",
+    )
+    secret_name: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="密钥名，与数据字典 secret:// 引用一致",
+    )
+    secret_type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="加解密方案类型，路由到 SecretCryptoBackend",
+    )
+    secret_data: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        comment="方案相关的密文/元数据 JSON",
+    )
+
+
+# ---------------------------------------------------------------------------
 # fe_lookup_ns  Lookup 命名空间（Schema 定义）
 # ---------------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ from flow_engine.db.models import (
     FeFlowTestPlan,
     FeFlowVersion,
     FeLookupNs,
+    FeSecret,
 )
 from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
@@ -256,6 +257,9 @@ class GlobalProfileStore:
 
             if _count(FeLookupNs, FeLookupNs.profile_code == pid, FeLookupNs.deleted_at.is_(None)):
                 labels.append("Lookup")
+
+            if _count(FeSecret, FeSecret.profile_code == pid, FeSecret.deleted_at.is_(None)):
+                labels.append("密钥管理")
 
             pat_compact = f'%"profile_code":"{pid}"%'
             pat_spaced = f'%"profile_code": "{pid}"%'

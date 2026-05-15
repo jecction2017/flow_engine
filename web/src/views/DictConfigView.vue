@@ -12,9 +12,22 @@
         </div>
       </div>
       <div class="actions">
+        <div class="page-tabs">
+          <button type="button" class="tab-btn" :class="{ active: activeTab === 'modules' }" @click="activeTab = 'modules'">
+            模块配置
+          </button>
+          <button type="button" class="tab-btn" :class="{ active: activeTab === 'secrets' }" @click="activeTab = 'secrets'">
+            密钥管理
+          </button>
+        </div>
         <label class="profile-row">
           <span>Profile</span>
-          <select v-model="selectedProfile" class="inp-mini" :disabled="loading" @change="reloadProfile">
+          <select
+            v-model="selectedProfile"
+            class="inp-mini"
+            :disabled="loading"
+            @change="onProfileChange"
+          >
             <option v-for="p in profiles" :key="p" :value="p">{{ p }}</option>
           </select>
         </label>
@@ -24,13 +37,23 @@
 
     <p v-if="error" class="err">{{ error }}</p>
 
-    <div class="hint-bar">
-      模块文件按 dot 命名展开为字典树路径，如 <code class="mono">middleware.kafka</code> 对应
-      <code class="mono">$.global.dictionary.middleware.kafka</code>。运行时 <code class="mono">dict_get()</code>
-      与上下文快照读取同一份 resolved dictionary。
+    <div v-if="activeTab === 'modules'" class="hint-bar">
+      模块按 dot 路径展开；密钥引用写 <code class="mono">secret://密钥名</code>（YAML 无需引号）。
+      <code class="mono">dict_get()</code> 返回引用字符串；仅在 Python 集成模块内显式解密。
+    </div>
+    <div v-else class="hint-bar">
+      密钥按当前 Profile 隔离；在数据字典 YAML 中用 <code class="mono">secret://密钥名</code> 引用。
+      加密需 <code class="mono">FLOW_SECRET_MASTER_KEY</code>；不提供在线解密，避免明文经接口泄露。
     </div>
 
-    <div class="body">
+    <SecretManagerPanel
+      v-if="activeTab === 'secrets'"
+      :key="selectedProfile"
+      :profile="selectedProfile"
+      @error="onSecretError"
+    />
+
+    <div v-show="activeTab === 'modules'" class="body">
       <aside class="left">
         <div class="search-box">
           <input
@@ -123,6 +146,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
+import SecretManagerPanel from "@/components/SecretManagerPanel.vue";
 import {
   deleteDictModule,
   fetchDictModule,
@@ -135,6 +159,7 @@ import {
   type DictResolveResponse,
 } from "@/api/dict";
 
+const activeTab = ref<"modules" | "secrets">("modules");
 const dictDir = ref("");
 const profiles = ref<string[]>(["default"]);
 const selectedProfile = ref("default");
@@ -148,6 +173,10 @@ const editorYaml = ref("{}\n");
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
+
+function onSecretError(msg: string) {
+  error.value = msg;
+}
 const searchQuery = ref("");
 const debouncedSearch = ref("");
 const moduleContentCache = ref<Record<string, string>>({});
@@ -200,6 +229,12 @@ async function reload() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+function onProfileChange() {
+  if (activeTab.value === "modules") {
+    void reloadProfile();
   }
 }
 
@@ -436,6 +471,28 @@ void reload();
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.page-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tab-btn {
+  border: none;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .profile-row {

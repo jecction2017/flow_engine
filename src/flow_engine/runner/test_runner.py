@@ -207,8 +207,7 @@ async def run_test_batch(
         return batch_id
 
     flow_data = await asyncio.to_thread(_read_flow_version_body, flow_code, ver_no)
-    resolved = await asyncio.to_thread(data_dict.resolve, profile_code)
-    dictionary = resolved["resolved_dictionary"]
+    dictionary = await asyncio.to_thread(data_dict.tree_copy, profile_code)
 
     sem = asyncio.Semaphore(max(1, int(concurrency)))
     parsed_policy = [CapabilityRule.model_validate(r) for r in (capability_policy or [])]

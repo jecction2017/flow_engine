@@ -622,7 +622,7 @@ class Worker:
         ]
 
         profile_id = deployment.get("env_profile_code") or DEFAULT_PROFILE_ID
-        resolved = await asyncio.to_thread(data_dict.resolve, profile_id)
+        dict_tree = await asyncio.to_thread(data_dict.tree_copy, profile_id)
         profile_policy_raw = await asyncio.to_thread(
             lambda: profile_store().get_system_capability_policy(profile_id, run_mode=mode.value)
         )
@@ -660,7 +660,7 @@ class Worker:
 
         runtime = FlowRuntime(
             flow,
-            dictionary=resolved["resolved_dictionary"],
+            dictionary=dict_tree,
             run_opts=run_opts,
             obs=backend,
             flow_code=flow_code,
