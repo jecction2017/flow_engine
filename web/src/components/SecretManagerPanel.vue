@@ -15,12 +15,32 @@
 
     <div class="secret-layout">
       <aside class="secret-left">
+        <div class="search-box">
+          <input
+            v-model="searchQuery"
+            class="search-input mono"
+            type="text"
+            placeholder="搜索密钥名…"
+          />
+          <button
+            v-if="searchQuery.trim()"
+            type="button"
+            class="search-clear"
+            title="清空搜索"
+            @click="searchQuery = ''"
+          >
+            ×
+          </button>
+        </div>
+        <div class="search-meta">
+          <span>密钥 {{ filteredSecrets.length }}</span>
+        </div>
         <div class="section-title">
           <span>环境「{{ profile }}」</span>
           <button type="button" class="link" @click="startNew">新增</button>
         </div>
         <div
-          v-for="s in secrets"
+          v-for="s in filteredSecrets"
           :key="s.secret_name"
           class="secret-item"
           :class="{ active: selectedName === s.secret_name && !isNew }"
@@ -42,6 +62,7 @@
           </div>
         </div>
         <p v-if="!secrets.length" class="empty">当前环境暂无密钥。可用下方加密工具生成密文后保存。</p>
+        <p v-else-if="debouncedSearch && !filteredSecrets.length" class="empty">未找到匹配的密钥。</p>
       </aside>
 
       <div class="secret-right">
@@ -84,7 +105,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import {
   deleteSecret as apiDeleteSecret,
@@ -103,7 +124,27 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: "error", msg: string): void }>();
 
 const secrets = ref<SecretRecord[]>([]);
+const searchQuery = ref("");
+const debouncedSearch = ref("");
 const secretTypes = ref<string[]>(["local_fernet"]);
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => searchQuery.value,
+  (q) => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedSearch.value = q.trim().toLowerCase();
+    }, 160);
+  },
+);
+
+const filteredSecrets = computed(() => {
+  const sorted = [...secrets.value].sort((a, b) => a.secret_name.localeCompare(b.secret_name));
+  const q = debouncedSearch.value;
+  if (!q) return sorted;
+  return sorted.filter((s) => s.secret_name.toLowerCase().includes(q));
+});
 const selectedName = ref<string | null>(null);
 const isNew = ref(false);
 const editorName = ref("");
@@ -230,6 +271,8 @@ async function runEncrypt() {
 watch(
   () => props.profile,
   () => {
+    searchQuery.value = "";
+    debouncedSearch.value = "";
     startNew();
     void reload();
   },
@@ -301,6 +344,50 @@ defineExpose({ reload });
   overflow: auto;
   border-right: 1px solid var(--border);
   padding-right: 8px;
+}
+
+.search-box {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 7px 28px 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.search-clear {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.search-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 2px 10px;
 }
 
 .secret-right {
