@@ -1270,6 +1270,16 @@ class FeUserScript(_AuditCols, Base):
         nullable=False,
         comment="Starlark 源码，单文件 50-200 行",
     )
+    description: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+        comment="脚本说明，供能力与脚本页展示",
+    )
+    export_functions: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="导出符号列表（顶层 def 名），保存时从源码提取",
+    )
 
 
 # ---------------------------------------------------------------------------

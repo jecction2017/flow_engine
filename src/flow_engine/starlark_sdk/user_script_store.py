@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from flow_engine.db.models import FeUserScript
 from flow_engine.db.session import db_session
+from flow_engine.starlark_sdk.user_script_exports import extract_starlark_export_functions
 
 _TENANT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _SAFE_REL = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./-]*\.star$")
@@ -65,6 +66,9 @@ class UserScriptStore:
             return s.execute(stmt).scalar_one_or_none() is not None
 
     def get_script(self, tenant: str, rel_path: str) -> str:
+        return self.get_script_record(tenant, rel_path)["content"]
+
+    def get_script_record(self, tenant: str, rel_path: str) -> dict[str, Any]:
         validate_tenant(tenant)
         validate_script_path(rel_path)
         with db_session() as s:
@@ -77,11 +81,20 @@ class UserScriptStore:
             row = s.execute(stmt).scalar_one_or_none()
             if row is None:
                 raise FileNotFoundError(f"Script not found: user://{tenant}/{rel_path}")
-            return row.content
+            return _record_from_row(row)
 
-    def put_script(self, tenant: str, rel_path: str, content: str) -> None:
+    def put_script(
+        self,
+        tenant: str,
+        rel_path: str,
+        content: str,
+        *,
+        description: str | None = None,
+    ) -> None:
         validate_tenant(tenant)
         validate_script_path(rel_path)
+        exports = extract_starlark_export_functions(content)
+        desc = (description or "").strip() or None
         with db_session() as s:
             stmt = (
                 select(FeUserScript)
@@ -91,9 +104,19 @@ class UserScriptStore:
             )
             row = s.execute(stmt).scalar_one_or_none()
             if row is None:
-                s.add(FeUserScript(tenant=tenant, rel_path=rel_path, content=content))
+                s.add(
+                    FeUserScript(
+                        tenant=tenant,
+                        rel_path=rel_path,
+                        content=content,
+                        description=desc,
+                        export_functions=exports,
+                    )
+                )
             else:
                 row.content = content
+                row.description = desc
+                row.export_functions = exports
 
     def delete_script(self, tenant: str, rel_path: str) -> None:
         validate_tenant(tenant)
@@ -109,6 +132,20 @@ class UserScriptStore:
             row = s.execute(stmt).scalar_one_or_none()
             if row:
                 row.deleted_at = now
+
+
+def _record_from_row(row: FeUserScript) -> dict[str, Any]:
+    exports = row.export_functions
+    if not isinstance(exports, list):
+        exports = []
+    return {
+        "tenant": row.tenant,
+        "rel_path": row.rel_path,
+        "path": f"{row.tenant}/{row.rel_path}",
+        "content": row.content,
+        "description": row.description or "",
+        "export_functions": [str(x) for x in exports],
+    }
 
 
 _store_cache: UserScriptStore | None = None

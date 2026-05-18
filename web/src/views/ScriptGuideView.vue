@@ -61,7 +61,7 @@
           面向初学者：你只需要掌握少量 Python 风格语法，就可以在流程节点里编写可运行脚本。
         </p>
         <ol>
-          <li>在「能力与脚本 → 用户脚本」创建或打开一个 <code class="mono">租户/xxx.star</code> 文件。</li>
+          <li>在「能力与脚本 → 用户脚本」左侧先添加模块，再在模块下添加脚本（路径 <code class="mono">模块/名称.star</code>，id 为 <code class="mono">user://…</code>）。</li>
           <li>先写一个返回字典的小脚本。</li>
           <li>点击「调试」查看输出结果，再保存复用。</li>
         </ol>

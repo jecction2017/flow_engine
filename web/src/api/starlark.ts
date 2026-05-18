@@ -33,6 +33,13 @@ export type UserScriptsResponse = {
 export type UserScriptFileResponse = {
   path: string;
   content: string;
+  description: string;
+  export_functions: string[];
+};
+
+export type PutUserScriptPayload = {
+  content: string;
+  description?: string;
 };
 
 const jsonHeaders = { "Content-Type": "application/json" };
@@ -80,16 +87,23 @@ export async function getInternalScript(relUnderInternal: string): Promise<UserS
   return r.json() as Promise<UserScriptFileResponse>;
 }
 
-export async function putUserScript(relPath: string, content: string): Promise<void> {
+export async function putUserScript(
+  relPath: string,
+  payload: PutUserScriptPayload,
+): Promise<UserScriptFileResponse> {
   const r = await fetch(userScriptUrl(relPath), {
     method: "PUT",
     headers: jsonHeaders,
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content: payload.content,
+      description: payload.description ?? "",
+    }),
   });
   if (!r.ok) {
     const t = await r.text();
     throw new Error(t || `put ${relPath}: ${r.status}`);
   }
+  return r.json() as Promise<UserScriptFileResponse>;
 }
 
 export type DebugNodeResponse = {

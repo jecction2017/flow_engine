@@ -1,6 +1,6 @@
-/** Group registry python_functions by module (from id or category fallback). */
+/** Group registry entries by module (from id or path fallback). */
 
-import type { RegistryPythonFn } from "@/api/starlark";
+import type { RegistryInternalModule, RegistryPythonFn } from "@/api/starlark";
 
 const PYTHON_ID_RE = /^python:\/\/([^/]+)\//i;
 
@@ -56,4 +56,118 @@ export function formatPythonExampleCall(fn: RegistryPythonFn): string {
     return `${p.name}=...`;
   });
   return `${fn.starlark_name}(${args.join(", ")})`;
+}
+
+const INTERNAL_ID_RE = /^internal:\/\/([^/]+)\//i;
+
+export function internalModuleKey(m: RegistryInternalModule): string {
+  const m1 = m.uri.match(INTERNAL_ID_RE);
+  if (m1?.[1]) return m1[1].toLowerCase();
+  const m2 = m.path.replace(/^\/+/, "").match(/^internal\/([^/]+)\//i);
+  return m2?.[1]?.toLowerCase() ?? "other";
+}
+
+export function internalScriptName(m: RegistryInternalModule): string {
+  const m1 = m.uri.match(/^internal:\/\/[^/]+\/(.+)$/i);
+  if (m1?.[1]) return m1[1];
+  const parts = m.path.replace(/^\/+/, "").split("/");
+  return parts[parts.length - 1] ?? m.uri;
+}
+
+export type InternalModuleGroup = {
+  module: string;
+  scripts: RegistryInternalModule[];
+};
+
+export function groupInternalModulesByModule(modules: RegistryInternalModule[]): InternalModuleGroup[] {
+  const map = new Map<string, RegistryInternalModule[]>();
+  for (const m of modules) {
+    const key = internalModuleKey(m);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(m);
+  }
+  const out: InternalModuleGroup[] = [];
+  for (const [module, scripts] of map) {
+    scripts.sort((a, b) => internalScriptName(a).localeCompare(internalScriptName(b)));
+    out.push({ module, scripts });
+  }
+  out.sort((a, b) => a.module.localeCompare(b.module));
+  return out;
+}
+
+/** Filter internal groups by module, script name, summary, exports, uri. */
+export function filterInternalModuleGroups(
+  groups: InternalModuleGroup[],
+  query: string,
+): InternalModuleGroup[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return groups;
+  return groups
+    .map((g) => {
+      const modMatch = g.module.includes(q);
+      const scripts = g.scripts.filter(
+        (s) =>
+          modMatch ||
+          internalScriptName(s).toLowerCase().includes(q) ||
+          s.summary.toLowerCase().includes(q) ||
+          s.uri.toLowerCase().includes(q) ||
+          s.exports.some((ex) => ex.toLowerCase().includes(q)),
+      );
+      return { module: g.module, scripts };
+    })
+    .filter((g) => g.scripts.length > 0);
+}
+
+const USER_PATH_RE = /^([^/]+)\/(.+)$/;
+
+export function userScriptModuleKey(path: string): string {
+  const m = path.match(USER_PATH_RE);
+  return m?.[1] ?? "";
+}
+
+export function userScriptFileName(path: string): string {
+  const m = path.match(USER_PATH_RE);
+  return m?.[2] ?? path;
+}
+
+export type UserScriptGroup = {
+  module: string;
+  scripts: string[];
+};
+
+export function groupUserScriptsByModule(paths: string[], extraModules: Iterable<string> = []): UserScriptGroup[] {
+  const map = new Map<string, Set<string>>();
+  for (const mod of extraModules) {
+    const key = mod.trim().toLowerCase();
+    if (key) map.set(key, new Set());
+  }
+  for (const p of paths) {
+    const mod = userScriptModuleKey(p);
+    if (!mod) continue;
+    const key = mod.toLowerCase();
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key)!.add(p);
+  }
+  const out: UserScriptGroup[] = [];
+  for (const [module, scriptSet] of map) {
+    const scripts = [...scriptSet].sort((a, b) => userScriptFileName(a).localeCompare(userScriptFileName(b)));
+    out.push({ module, scripts });
+  }
+  out.sort((a, b) => a.module.localeCompare(b.module));
+  return out;
+}
+
+/** Filter user script groups by module or file name. */
+export function filterUserScriptGroups(groups: UserScriptGroup[], query: string): UserScriptGroup[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return groups;
+  return groups
+    .map((g) => {
+      const modMatch = g.module.includes(q);
+      const scripts = g.scripts.filter(
+        (p) => modMatch || userScriptFileName(p).toLowerCase().includes(q) || p.toLowerCase().includes(q),
+      );
+      return { module: g.module, scripts };
+    })
+    .filter((g) => g.scripts.length > 0);
 }

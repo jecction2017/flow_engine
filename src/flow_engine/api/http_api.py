@@ -109,6 +109,7 @@ class DebugNodeBody(BaseModel):
 
 class PutUserScriptBody(BaseModel):
     content: str = Field(..., description="Starlark source")
+    description: str = Field(default="", description="脚本说明")
 
 
 class PutDictRawBody(BaseModel):
@@ -1123,20 +1124,23 @@ def create_app() -> FastAPI:
     @app.get("/api/starlark/user/{tenant}/{path:path}")
     def get_user_script(tenant: str, path: str) -> dict[str, Any]:
         try:
-            content = get_user_script_store().get_script(tenant, path)
+            record = get_user_script_store().get_script_record(tenant, path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Script not found") from None
-        return {"path": f"{tenant}/{path}", "content": content}
+        return record
 
     @app.put("/api/starlark/user/{tenant}/{path:path}")
     def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:
         try:
-            get_user_script_store().put_script(tenant, path, body.content)
+            get_user_script_store().put_script(
+                tenant, path, body.content, description=body.description
+            )
+            record = get_user_script_store().get_script_record(tenant, path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"ok": True, "path": f"{tenant}/{path}"}
+        return {"ok": True, **record}
 
     # -----------------------------------------------------------------------
     # Debug

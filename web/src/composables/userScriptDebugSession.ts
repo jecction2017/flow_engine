@@ -2,7 +2,6 @@ import type { CapabilityRule } from "@/types/flow";
 
 /** Per-script debug session persisted in browser localStorage (not written to server). */
 export type UserScriptDebugSession = {
-  ctxText: string;
   profile: string;
   capabilityPolicy: CapabilityRule[];
 };
@@ -21,7 +20,6 @@ function readAll(): Record<string, UserScriptDebugSession> {
       if (!v || typeof v !== "object" || Array.isArray(v)) continue;
       const row = v as Record<string, unknown>;
       out[k] = {
-        ctxText: typeof row.ctxText === "string" ? row.ctxText : "{}",
         profile: typeof row.profile === "string" ? row.profile : "default",
         capabilityPolicy: Array.isArray(row.capabilityPolicy)
           ? (row.capabilityPolicy as CapabilityRule[])

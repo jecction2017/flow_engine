@@ -16,14 +16,14 @@
             <span class="settings-panel-title">调试设置</span>
             <span class="settings-panel-sub">{{
               isUserScriptMode
-                ? "上下文、Profile 与抑制规则仅作用于本次请求，保存在浏览器本地，下次打开同一脚本路径时自动恢复。"
+                ? "Profile 与抑制规则仅作用于本次请求，保存在浏览器本地，下次打开同一脚本路径时自动恢复。"
                 : "上下文、Profile 与抑制规则仅作用于本次请求，不写回流程 YAML。"
             }}</span>
           </div>
         </header>
 
         <div class="settings-stack">
-          <div class="ctx-json-block">
+          <div v-if="!isUserScriptMode" class="ctx-json-block">
             <div class="ctx-json-head">
               <span class="field-line-lbl">
                 调试上下文 (JSON)
@@ -66,7 +66,7 @@
             <div v-else class="ctx-hint-line err">JSON 无法解析，调试时会被视为空对象。</div>
           </div>
 
-          <div class="profile-block-standalone">
+          <div class="profile-block-standalone" :class="{ 'profile-block-first': isUserScriptMode }">
             <div class="field-line field-line--tight">
               <span class="field-line-lbl">
                 调试 Profile
@@ -261,7 +261,6 @@ function defaultCtxText(): string {
 
 function loadUserScriptSession(path: string) {
   const saved = readUserScriptDebugSession(path);
-  ctxText.value = saved?.ctxText ?? "{}";
   if (saved?.profile) {
     profileText.value = saved.profile;
     if (!profileOptions.value.includes(saved.profile)) {
@@ -278,7 +277,6 @@ function persistUserScriptSession() {
   const path = props.userScriptPath?.trim();
   if (!path) return;
   writeUserScriptDebugSession(path, {
-    ctxText: ctxText.value,
     profile: profileText.value,
     capabilityPolicy: capabilityPolicy.value,
   });
@@ -304,10 +302,7 @@ watch(
 
 /** 用户每次编辑都回写到当前节点的独立调试上下文，或用户脚本 localStorage 会话。 */
 watch(ctxText, (v) => {
-  if (isUserScriptMode.value) {
-    persistUserScriptSession();
-    return;
-  }
+  if (isUserScriptMode.value) return;
   if (props.path?.length) store.setDebugContextText(props.path, v);
 });
 
@@ -350,9 +345,15 @@ async function run() {
     ? [...capabilityPolicy.value]
     : [...(task.value?.capability_overrides ?? []), ...capabilityPolicy.value];
 
+  const initial_context = isUserScriptMode.value
+    ? {}
+    : parsedCtx.value.ok
+      ? parsedCtx.value.value
+      : {};
+
   const body = {
     script,
-    initial_context: parsedCtx.value.ok ? parsedCtx.value.value : {},
+    initial_context,
     profile: profileText.value,
     capability_policy,
   };
@@ -518,6 +519,10 @@ defineExpose({ run, pending });
 .profile-block-standalone {
   margin-top: 8px;
   padding-top: 0;
+}
+
+.profile-block-first {
+  margin-top: 0;
 }
 
 @media (max-width: 520px) {
