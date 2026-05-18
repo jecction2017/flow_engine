@@ -244,46 +244,20 @@
       </div>
     </div>
 
-    <Teleport to="body">
-      <template v-if="node && node.type === 'task'">
-        <div
-          v-show="debugDrawerOpen"
-          class="nde-backdrop"
-          @click.self="debugDrawerOpen = false"
-        />
-        <aside
-          class="nde-drawer"
-          :class="{ 'nde-drawer--open': debugDrawerOpen }"
-          role="dialog"
-          aria-modal="true"
-          aria-label="节点调试"
-          @click.stop
-        >
-          <div class="nde-drawer-hd">
-            <span class="nde-drawer-title">节点调试</span>
-            <div class="nde-drawer-hd-actions">
-              <button
-                type="button"
-                class="btn primary sm"
-                :disabled="debugPending"
-                @click="runNodeDebug"
-              >
-                {{ debugPending ? "请求中…" : "▶ 调试" }}
-              </button>
-              <button type="button" class="btn ghost sm" @click="debugDrawerOpen = false">关闭</button>
-            </div>
-          </div>
-          <div class="nde-drawer-body">
-            <DebugPanel ref="debugPanelRef" :path="path" embedded hide-toolbar />
-          </div>
-        </aside>
-      </template>
-    </Teleport>
+    <DebugDrawer
+      v-if="node && node.type === 'task'"
+      v-model:open="debugDrawerOpen"
+      title="节点调试"
+      :pending="debugPending"
+      @run="runNodeDebug"
+    >
+      <DebugPanel ref="debugPanelRef" :path="path" embedded hide-toolbar />
+    </DebugDrawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import type {
   Boundary,
   CapabilityRule,
@@ -298,6 +272,7 @@ import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache
 import BoundaryMappingEditor from "./BoundaryMappingEditor.vue";
 import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import CodeEditor from "./CodeEditor.vue";
+import DebugDrawer from "./DebugDrawer.vue";
 import DebugPanel from "./DebugPanel.vue";
 import InfoTip from "./InfoTip.vue";
 import { collectContextPathSuggestions } from "@/utils/contextPathSuggestions";
@@ -335,18 +310,8 @@ watch(
   },
 );
 
-function onDebugEscape(ev: KeyboardEvent) {
-  if (ev.key !== "Escape" || !debugDrawerOpen.value) return;
-  debugDrawerOpen.value = false;
-}
-
 onMounted(() => {
   void ensureRegistry();
-  document.addEventListener("keydown", onDebugEscape);
-});
-
-onUnmounted(() => {
-  document.removeEventListener("keydown", onDebugEscape);
 });
 
 const node = computed(() => store.editableNode(props.path) as FlowNode | null);
@@ -700,71 +665,6 @@ function commit() {
 .btn.primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-.nde-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  background: color-mix(in srgb, #0f172a 32%, transparent);
-}
-
-.nde-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 51;
-  width: min(480px, calc(100vw - 12px));
-  max-width: 100%;
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  box-shadow: -8px 0 28px rgba(15, 23, 42, 0.14);
-  display: flex;
-  flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.22s ease-out, visibility 0.22s;
-  pointer-events: none;
-  visibility: hidden;
-}
-
-.nde-drawer--open {
-  transform: translateX(0);
-  pointer-events: auto;
-  visibility: visible;
-}
-
-.nde-drawer-hd {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.nde-drawer-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
-
-.nde-drawer-hd-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.nde-drawer-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 14px 16px;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
 }
 
 .script-body {

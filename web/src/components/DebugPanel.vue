@@ -2,7 +2,7 @@
   <section :class="embedded ? 'debug-embedded' : 'card'">
     <div v-if="!hideToolbar" class="head">
       <div class="head-title">
-        <span class="h">节点调试</span>
+        <span class="h">{{ isUserScriptMode ? "脚本调试" : "节点调试" }}</span>
       </div>
       <button type="button" class="btn" :disabled="pending" @click="run">
         {{ pending ? "请求中…" : "▶ 调试" }}
@@ -14,7 +14,11 @@
         <header class="settings-panel-hd">
           <div class="settings-panel-titles">
             <span class="settings-panel-title">调试设置</span>
-            <span class="settings-panel-sub">上下文、Profile 与抑制规则仅作用于本次请求，不写回流程 YAML。</span>
+            <span class="settings-panel-sub">{{
+              isUserScriptMode
+                ? "上下文、Profile 与抑制规则仅作用于本次请求，保存在浏览器本地，下次打开同一脚本路径时自动恢复。"
+                : "上下文、Profile 与抑制规则仅作用于本次请求，不写回流程 YAML。"
+            }}</span>
           </div>
         </header>
 
@@ -25,7 +29,11 @@
                 调试上下文 (JSON)
                 <InfoTip
                   wide
-                  text="每个节点独立保存。JSON 最外层的字段名会作为 Starlark 全局变量直接注入脚本（不经过节点边界映射），仅保存在浏览器本地，不会写回流程 YAML。"
+                  :text="
+                    isUserScriptMode
+                      ? '每个脚本路径独立保存。JSON 最外层字段名会作为 Starlark 全局变量直接注入脚本，仅保存在浏览器本地。'
+                      : '每个节点独立保存。JSON 最外层的字段名会作为 Starlark 全局变量直接注入脚本（不经过节点边界映射），仅保存在浏览器本地，不会写回流程 YAML。'
+                  "
                 />
               </span>
               <div class="ctx-json-actions">
@@ -78,7 +86,11 @@
               <span class="cap-summary-tip" @click.stop>
                 <InfoTip
                   wide
-                  text="调试模式，默认抑制副作用函数（suppress），可在此配置规则：放行（allow）或重定向（redirect + redirect_params）；此配置规则仅随本次调试发送，并与节点已保存的抑制规则合并，不写回流程。"
+                  :text="
+                    isUserScriptMode
+                      ? '调试模式，默认抑制副作用函数（suppress），可在此配置规则：放行（allow）或重定向（redirect + redirect_params）；规则随本次调试发送并保存在浏览器本地，下次自动恢复。'
+                      : '调试模式，默认抑制副作用函数（suppress），可在此配置规则：放行（allow）或重定向（redirect + redirect_params）；此配置规则仅随本次调试发送，并与节点已保存的抑制规则合并，不写回流程。'
+                  "
                 />
               </span>
             </summary>
@@ -136,20 +148,34 @@
 import { computed, ref, watch, onMounted } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
+import { debugNode } from "@/api/starlark";
 import type { CapabilityRule, TaskNode } from "@/types/flow";
+import {
+  readUserScriptDebugSession,
+  writeUserScriptDebugSession,
+} from "@/composables/userScriptDebugSession";
 import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import InfoTip from "./InfoTip.vue";
 import { fetchProfileConfig } from "@/api/profiles";
 
 const props = withDefaults(
   defineProps<{
-    path: number[];
+    /** 流程节点调试：节点在树中的 path。 */
+    path?: number[];
+    /** 用户脚本调试：脚本路径（用于 localStorage 分桶）。 */
+    userScriptPath?: string;
+    /** 用户脚本调试：当前编辑器中的脚本正文。 */
+    userScriptContent?: string;
     /** 抽屉内嵌：去掉外层卡片边框，由容器负责布局。 */
     embedded?: boolean;
     /** 隐藏顶部标题栏与主「调试」按钮（由外层工具栏触发 run）。 */
     hideToolbar?: boolean;
   }>(),
   { embedded: false, hideToolbar: false },
+);
+
+const isUserScriptMode = computed(
+  () => typeof props.userScriptPath === "string" && props.userScriptPath.trim().length > 0,
 );
 
 const store = useFlowStudioStore();
@@ -168,6 +194,7 @@ const defaultProfile = ref("default");
 const capabilityPolicy = ref<CapabilityRule[]>([]);
 
 const task = computed(() => {
+  if (isUserScriptMode.value || !props.path?.length) return null;
   // 使用读穿视图：优先取未保存的草稿，让脚本 / 边界的即时修改能直接进入调试，
   // 避免必须先保存才能生效。
   const n = store.viewNode(props.path);
@@ -232,10 +259,40 @@ function defaultCtxText(): string {
   return JSON.stringify(store.doc.initial_context ?? {}, null, 2);
 }
 
+function loadUserScriptSession(path: string) {
+  const saved = readUserScriptDebugSession(path);
+  ctxText.value = saved?.ctxText ?? "{}";
+  if (saved?.profile) {
+    profileText.value = saved.profile;
+    if (!profileOptions.value.includes(saved.profile)) {
+      profileOptions.value = [...profileOptions.value, saved.profile];
+    }
+  }
+  capabilityPolicy.value = saved?.capabilityPolicy ?? [];
+  resultPhase.value = "idle";
+  responseText.value = "// 等待调试输出";
+  logs.value = [];
+}
+
+function persistUserScriptSession() {
+  const path = props.userScriptPath?.trim();
+  if (!path) return;
+  writeUserScriptDebugSession(path, {
+    ctxText: ctxText.value,
+    profile: profileText.value,
+    capabilityPolicy: capabilityPolicy.value,
+  });
+}
+
 /** 切换到不同节点时，从 store 读取该节点独立的调试上下文；没有则首次用 initial_context 作为种子。 */
 watch(
-  () => props.path.join("/"),
+  () => (isUserScriptMode.value ? props.userScriptPath : props.path?.join("/")),
   () => {
+    if (isUserScriptMode.value) {
+      loadUserScriptSession(props.userScriptPath!.trim());
+      return;
+    }
+    if (!props.path?.length) return;
     const saved = store.getDebugContextText(props.path);
     ctxText.value = saved !== undefined ? saved : defaultCtxText();
     resultPhase.value = "idle";
@@ -245,13 +302,25 @@ watch(
   { immediate: true },
 );
 
-/** 用户每次编辑都回写到当前节点的独立调试上下文。 */
+/** 用户每次编辑都回写到当前节点的独立调试上下文，或用户脚本 localStorage 会话。 */
 watch(ctxText, (v) => {
-  store.setDebugContextText(props.path, v);
+  if (isUserScriptMode.value) {
+    persistUserScriptSession();
+    return;
+  }
+  if (props.path?.length) store.setDebugContextText(props.path, v);
 });
 
+watch(profileText, () => {
+  if (isUserScriptMode.value) persistUserScriptSession();
+});
+
+watch(capabilityPolicy, () => {
+  if (isUserScriptMode.value) persistUserScriptSession();
+}, { deep: true });
+
 function resetFromInitialContext() {
-  ctxText.value = defaultCtxText();
+  ctxText.value = isUserScriptMode.value ? "{}" : defaultCtxText();
 }
 
 function clearCtx() {
@@ -259,9 +328,15 @@ function clearCtx() {
 }
 
 async function run() {
-  if (!task.value) {
+  const script = isUserScriptMode.value
+    ? (props.userScriptContent ?? "")
+    : task.value?.script;
+
+  if (!script) {
     resultPhase.value = "blocked";
-    responseText.value = "// 仅 Task 节点可调试";
+    responseText.value = isUserScriptMode.value
+      ? "// 脚本内容为空"
+      : "// 仅 Task 节点可调试";
     logs.value = [];
     return;
   }
@@ -271,49 +346,33 @@ async function run() {
   responseText.value = "";
   logs.value = [];
 
+  const capability_policy = isUserScriptMode.value
+    ? [...capabilityPolicy.value]
+    : [...(task.value?.capability_overrides ?? []), ...capabilityPolicy.value];
+
   const body = {
-    script: task.value.script,
+    script,
     initial_context: parsedCtx.value.ok ? parsedCtx.value.value : {},
     profile: profileText.value,
-    // 节点级 capability_overrides + 调试面板手动添加的策略；服务端在 DEBUG 系统默认
-    // 之上叠加这两层（前者来自流程定义，后者来自调试者临时白名单）。
-    capability_policy: [
-      ...(task.value.capability_overrides ?? []),
-      ...capabilityPolicy.value,
-    ],
+    capability_policy,
   };
 
   try {
-    const res = await fetch("/api/debug/node", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      responseText.value = text || `HTTP ${res.status}`;
+    const { response, logs: runLogs, httpOk } = await debugNode(
+      body.script,
+      body.initial_context,
+      body.profile,
+      { capabilityPolicy: body.capability_policy as unknown as Record<string, unknown>[] },
+    );
+    if (!httpOk) {
+      responseText.value =
+        typeof response.error === "string" ? response.error : JSON.stringify(response, null, 2);
       resultPhase.value = "http_err";
       return;
     }
-    try {
-      const parsed = JSON.parse(text) as {
-        ok?: boolean;
-        result?: unknown;
-        error?: string;
-        logs?: LogEntry[];
-      };
-      // Separate the log stream from the result payload for display:
-      // the "响应" block stays focused on the script's return value
-      // while logs get their own structured row list below.
-      logs.value = Array.isArray(parsed.logs) ? parsed.logs : [];
-      const { logs: _logs, ...rest } = parsed;
-      void _logs;
-      responseText.value = JSON.stringify(rest, null, 2);
-      resultPhase.value = parsed.ok === false ? "starlark_err" : "ok";
-    } catch {
-      responseText.value = text;
-      resultPhase.value = "ok";
-    }
+    logs.value = runLogs;
+    responseText.value = JSON.stringify(response, null, 2);
+    resultPhase.value = response.ok === false ? "starlark_err" : "ok";
   } catch {
     responseText.value = JSON.stringify(
       {
@@ -334,8 +393,15 @@ onMounted(async () => {
     const res = await fetchProfileConfig();
     defaultProfile.value = res.default_profile || "default";
     if (Array.isArray(res.profiles) && res.profiles.length) profileOptions.value = [...res.profiles];
-    profileText.value = defaultProfile.value;
-    if (!profileOptions.value.includes(profileText.value)) profileOptions.value.push(profileText.value);
+    if (!isUserScriptMode.value) {
+      profileText.value = defaultProfile.value;
+    }
+    if (!profileOptions.value.includes(profileText.value)) {
+      profileOptions.value = [...profileOptions.value, profileText.value];
+    }
+    if (!profileOptions.value.includes(defaultProfile.value)) {
+      profileOptions.value = [...profileOptions.value, defaultProfile.value];
+    }
   } catch {
     // keep defaults
   }

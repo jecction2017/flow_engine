@@ -52,10 +52,11 @@
           v-if="activeSegment === 'user'"
           type="button"
           class="btn ghost"
-          :disabled="pendingDebug"
-          @click="runDebug"
+          :disabled="!scriptPathValid"
+          title="打开脚本调试：编辑上下文、附加策略并执行"
+          @click="openUserDebugDrawer"
         >
-          {{ pendingDebug ? "调试中…" : "调试" }}
+          调试
         </button>
       </div>
     </header>
@@ -254,43 +255,33 @@
           class="user-editor"
           :registry="registry"
         />
-        <details class="dbg-details" open>
-          <summary class="dbg-sum">
-            调试（上下文 JSON + 输出）
-            <span class="badge suppressed" title="临时调试入口，副作用类 builtin 默认全部 SUPPRESS">
-              副作用已抑制
-            </span>
-          </summary>
-          <div class="row dbg">
-            <label class="lbl">运行 Profile</label>
-            <select v-model="debugProfile" class="sel">
-              <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
-            </select>
-          </div>
-          <div class="row dbg">
-            <label class="lbl">初始上下文 JSON</label>
-            <textarea v-model="ctxJson" class="area mono" rows="4" spellcheck="false" />
-          </div>
-          <details class="cap-details">
-            <summary class="cap-sum">本次附加策略（可选，仅本次脚本调试）</summary>
-            <div class="cap-hint">
-              与 Flow Studio 节点调试相同：固定调试模式，副作用默认抑制。此处规则仅作用于<strong>当前这次调试</strong>，可放行或配置重定向参数（由具体内置函数识别）。
-            </div>
-            <CapabilityRulesEditor v-model="debugCapabilityPolicy" />
-          </details>
-          <div class="lbl">输出</div>
-          <pre class="out mono">{{ debugOut }}</pre>
-        </details>
       </div>
     </div>
+
+    <DebugDrawer
+      v-if="activeSegment === 'user' && scriptPathValid"
+      v-model:open="userDebugDrawerOpen"
+      title="脚本调试"
+      :pending="userDebugPending"
+      @run="runUserDebug"
+    >
+      <DebugPanel
+        ref="userDebugPanelRef"
+        :user-script-path="scriptPath.trim()"
+        :user-script-content="userScriptContent"
+        embedded
+        hide-toolbar
+      />
+    </DebugDrawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
+import DebugDrawer from "@/components/DebugDrawer.vue";
+import DebugPanel from "@/components/DebugPanel.vue";
 import {
-  debugNode,
   fetchStarlarkRegistry,
   fetchUserScripts,
   getInternalScript,
@@ -301,9 +292,6 @@ import {
   type RegistryInternalModule,
   type RegistryPythonFn,
 } from "@/api/starlark";
-import { fetchProfileConfig } from "@/api/profiles";
-import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
-import type { CapabilityRule } from "@/types/flow";
 import {
   filterPythonModuleGroups,
   formatPythonExampleCall,
@@ -334,20 +322,40 @@ const userScriptContent = ref(`load("internal://lib/helpers.star", "double_int")
 
 {"demo": double_int(21)}
 `);
-const ctxJson = ref("{}");
-const debugOut = ref("// 在「用户脚本」分区点击「调试」");
-const profileOptions = ref<string[]>(["default"]);
-const debugProfile = ref("default");
-// 与节点调试一致：用户脚本调试也是临时仿真路径，run_mode 锁死 DEBUG，
-// capability_policy 仅作为白名单 / REDIRECT 高级通道。
-const debugCapabilityPolicy = ref<CapabilityRule[]>([]);
+const userDebugDrawerOpen = ref(false);
+const userDebugPanelRef = shallowRef<InstanceType<typeof DebugPanel> | null>(null);
 
 const loading = ref(false);
 const saving = ref(false);
-const pendingDebug = ref(false);
 const error = ref("");
 
 const scriptPathValid = computed(() => USER_SCRIPT_PATH_RE.test(scriptPath.value.trim()));
+
+const userDebugPending = computed(() => {
+  const inst = userDebugPanelRef.value as unknown as { pending?: { value?: boolean } | boolean } | null;
+  if (!inst?.pending) return false;
+  return typeof inst.pending === "object" && inst.pending !== null && "value" in inst.pending
+    ? !!inst.pending.value
+    : !!inst.pending;
+});
+
+function openUserDebugDrawer() {
+  if (!scriptPathValid.value) return;
+  userDebugDrawerOpen.value = true;
+}
+
+function runUserDebug() {
+  const inst = userDebugPanelRef.value as unknown as { run?: () => void | Promise<void> } | null;
+  void inst?.run?.();
+}
+
+watch(scriptPath, () => {
+  userDebugDrawerOpen.value = false;
+});
+
+watch(activeSegment, (seg) => {
+  if (seg !== "user") userDebugDrawerOpen.value = false;
+});
 
 const pythonGroups = computed(() => groupPythonFunctionsByModule(registry.value?.python_functions ?? []));
 const filteredPythonGroups = computed(() => filterPythonModuleGroups(pythonGroups.value, pythonSearch.value));
@@ -518,39 +526,8 @@ async function save() {
   }
 }
 
-async function runDebug() {
-  if (activeSegment.value !== "user") return;
-  let ctx: Record<string, unknown> = {};
-  try {
-    ctx = JSON.parse(ctxJson.value || "{}") as Record<string, unknown>;
-  } catch {
-    debugOut.value = "// 上下文 JSON 无效";
-    return;
-  }
-  pendingDebug.value = true;
-  try {
-    const res = await debugNode(userScriptContent.value, ctx, debugProfile.value, {
-      capabilityPolicy: debugCapabilityPolicy.value as unknown as Record<string, unknown>[],
-    });
-    debugOut.value = JSON.stringify(res, null, 2);
-  } catch (e) {
-    debugOut.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    pendingDebug.value = false;
-  }
-}
-
 onMounted(() => {
-  void refreshAll().then(async () => {
-    try {
-      const pf = await fetchProfileConfig();
-      if (Array.isArray(pf.profiles) && pf.profiles.length) {
-        profileOptions.value = [...pf.profiles];
-      }
-      debugProfile.value = pf.default_profile || "default";
-    } catch {
-      // keep fallback
-    }
+  void refreshAll().then(() => {
     void loadFromPath();
   });
 });
@@ -1136,98 +1113,6 @@ onMounted(() => {
   padding: 6px 8px;
   font-size: 12px;
   background: #fff;
-}
-
-.dbg-details {
-  margin-top: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--surface) 95%, transparent);
-}
-
-.dbg-sum {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  user-select: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.cap-details {
-  margin-top: 8px;
-  border-top: 1px dashed var(--border);
-  padding-top: 6px;
-}
-
-.cap-sum {
-  font-size: 11.5px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-}
-
-.cap-sum:hover {
-  color: var(--accent);
-}
-
-.cap-details[open] .cap-sum {
-  margin-bottom: 6px;
-  color: var(--text);
-}
-
-.cap-hint {
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--accent-soft, #e0e7ff) 60%, #fff);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 6px;
-}
-
-.cap-hint strong {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.badge.suppressed {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 999px;
-  letter-spacing: 0.02em;
-  background: color-mix(in srgb, #f59e0b 18%, transparent);
-  color: #92400e;
-}
-
-.area {
-  width: 100%;
-  max-width: none;
-  box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  font-size: 12px;
-  resize: vertical;
-}
-
-.out {
-  margin: 0;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: #0f172a;
-  color: #e2e8f0;
-  font-size: 11px;
-  max-height: min(50vh, 360px);
-  overflow: auto;
-  white-space: pre-wrap;
 }
 
 .muted {

@@ -1,5 +1,7 @@
 /** Starlark registry + user script files under `/api/starlark`. */
 
+import type { LogEntry } from "@/api/flows";
+
 export type RegistryPythonFn = {
   id: string;
   starlark_name: string;
@@ -90,9 +92,13 @@ export async function putUserScript(relPath: string, content: string): Promise<v
   }
 }
 
-export type DebugNodeResponse =
-  | { ok: true; result: Record<string, unknown> }
-  | { ok: false; error: string; traceback?: string };
+export type DebugNodeResponse = {
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
+  traceback?: string;
+  logs?: LogEntry[];
+};
 
 /**
  * 节点 / 用户脚本调试入口 —— 服务端硬编码 RunMode.DEBUG，副作用类 builtin
@@ -104,12 +110,19 @@ export type DebugNodeOptions = {
   capabilityPolicy?: Record<string, unknown>[];
 };
 
+export type DebugNodeParsed = {
+  response: DebugNodeResponse;
+  logs: LogEntry[];
+  httpOk: boolean;
+  rawText: string;
+};
+
 export async function debugNode(
   script: string,
   initialContext: Record<string, unknown> = {},
   profile?: string,
   options: DebugNodeOptions = {},
-): Promise<DebugNodeResponse> {
+): Promise<DebugNodeParsed> {
   const r = await fetch("/api/debug/node", {
     method: "POST",
     headers: jsonHeaders,
@@ -120,5 +133,22 @@ export async function debugNode(
       capability_policy: options.capabilityPolicy ?? [],
     }),
   });
-  return r.json() as Promise<DebugNodeResponse>;
+  const rawText = await r.text();
+  if (!r.ok) {
+    return { response: { ok: false, error: rawText || `HTTP ${r.status}` }, logs: [], httpOk: false, rawText };
+  }
+  try {
+    const parsed = JSON.parse(rawText) as DebugNodeResponse;
+    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
+    const { logs: _logs, ...rest } = parsed;
+    void _logs;
+    return { response: rest, logs, httpOk: true, rawText };
+  } catch {
+    return {
+      response: { ok: true, result: rawText },
+      logs: [],
+      httpOk: true,
+      rawText,
+    };
+  }
 }
