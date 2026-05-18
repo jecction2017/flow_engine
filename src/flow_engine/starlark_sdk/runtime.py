@@ -371,6 +371,7 @@ def _attach_sdk_python(mod: sl.Module) -> None:
     # Importing module here guarantees decorators have populated registry
     # even when runtime is used outside HTTP API bootstrap.
     from flow_engine.starlark_sdk import python_builtin_impl as _python_builtin_impl  # noqa: F401
+    from flow_engine.starlark_sdk import integrations as _integrations  # noqa: F401
 
     for entry in list_registered_builtins():
         name = entry.spec.starlark_name

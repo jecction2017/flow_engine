@@ -33,6 +33,9 @@ api = [
 runner = [
   "croniter>=2.0",
 ]
+integrations = [
+  "elasticsearch[async]>=8.13,<9",
+]
 
 [project.scripts]
 flow-api = "flow_engine.http_api:main"

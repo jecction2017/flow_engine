@@ -1154,7 +1154,10 @@ def create_app() -> FastAPI:
             merged_policy = list(body.capability_policy or []) + list(
                 profile_store().get_system_capability_policy(profile, run_mode=RunMode.DEBUG.value)
             )
+            from flow_engine.connectors.registry import get_registry
+
             with profile_scope(profile), data_dict.dictionary_scope(dict_tree):
+                get_registry().bind(dict_tree, profile=profile)
                 result, logs = debug_task_script(
                     body.script,
                     body.initial_context or {},

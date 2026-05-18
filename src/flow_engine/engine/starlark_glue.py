@@ -186,6 +186,18 @@ def debug_task_script(
     """
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
+    from flow_engine.connectors.registry import get_registry
+    from flow_engine.stores.data_dict import active_dictionary
+    from flow_engine.stores.profile_store import active_profile
+
+    tree = active_dictionary()
+    if tree is not None:
+        try:
+            pid = active_profile()
+        except Exception:  # noqa: BLE001
+            pid = None
+        get_registry().bind(tree, profile=pid)
+
     return sdk_runtime.debug_task_script(
         script,
         variables,
@@ -269,7 +281,10 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
         CapabilityRule.model_validate(r) for r in payload.get("effective_policy", [])
     ]
 
+    from flow_engine.connectors.registry import get_registry
+
     with run_mode_scope(run_mode, effective_policy):
         with dictionary_scope(payload.get("dictionary") or {}):
+            get_registry().bind(payload.get("dictionary") or {})
             result, logs = sdk_runtime.debug_task_script(script, flat)
     return {"result": result, "logs": logs}

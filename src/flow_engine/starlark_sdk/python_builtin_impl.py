@@ -319,3 +319,7 @@ def side_effect_probe(arg: str = "default") -> dict[str, Any]:
         "arg": arg,
         "redirect": dict(rp),
     }
+
+
+# Register integration builtins (ES, business writes, ...).
+from flow_engine.starlark_sdk import integrations as _integrations  # noqa: E402, F401

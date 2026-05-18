@@ -694,13 +694,26 @@ class FlowRuntime:
         self._t0 = time.monotonic()
         self.flow_state = FlowState.RUNNING
         try:
+            from flow_engine.connectors.correlation import integration_correlation_scope
+            from flow_engine.connectors.registry import get_registry
+
+            ref = self._run_ref()
+            correlation_id = None
+            if ref is not None:
+                if getattr(ref, "deploy_run_id", None) is not None:
+                    correlation_id = f"deploy-{ref.deploy_run_id}"
+                elif getattr(ref, "test_run_id", None) is not None:
+                    correlation_id = f"test-{ref.test_run_id}"
+
             with run_mode_scope(
                 self._run_opts.mode,
                 self._run_opts.deployment_capability_policy,
                 self._run_opts.profile_system_capability_policy,
             ):
-                with dictionary_scope(self.dictionary):
-                    return await self._run_scoped()
+                with integration_correlation_scope(correlation_id):
+                    with dictionary_scope(self.dictionary):
+                        get_registry().bind(self.dictionary)
+                        return await self._run_scoped()
         finally:
             self.executors.shutdown()
             if self._cancel_dereg is not None:

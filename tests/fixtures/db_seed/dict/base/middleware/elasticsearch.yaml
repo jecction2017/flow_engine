@@ -1,0 +1,16 @@
+defaults:
+  request_timeout_sec: 30
+  protection:
+    max_in_flight: 16
+    max_rps: 50
+    max_result_docs: 1000
+    max_scroll_pages: 10
+    circuit_failure_threshold: 5
+    circuit_open_sec: 30
+instances:
+  main:
+    hosts:
+      - http://localhost:9200
+    verify_certs: false
+    auth:
+      type: none
