@@ -40,6 +40,8 @@ export type UserScriptFileResponse = {
 export type PutUserScriptPayload = {
   content: string;
   description?: string;
+  /** 省略时服务端从 content 自动提取 */
+  export_functions?: string[];
 };
 
 const jsonHeaders = { "Content-Type": "application/json" };
@@ -97,6 +99,7 @@ export async function putUserScript(
     body: JSON.stringify({
       content: payload.content,
       description: payload.description ?? "",
+      export_functions: payload.export_functions,
     }),
   });
   if (!r.ok) {
@@ -104,6 +107,23 @@ export async function putUserScript(
     throw new Error(t || `put ${relPath}: ${r.status}`);
   }
   return r.json() as Promise<UserScriptFileResponse>;
+}
+
+export async function deleteUserScript(relPath: string): Promise<void> {
+  const r = await fetch(userScriptUrl(relPath), { method: "DELETE" });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `delete ${relPath}: ${r.status}`);
+  }
+}
+
+export async function deleteUserModule(module: string): Promise<{ deleted: number }> {
+  const r = await fetch(`/api/starlark/user/${encodeURIComponent(module)}`, { method: "DELETE" });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `delete module ${module}: ${r.status}`);
+  }
+  return r.json() as Promise<{ deleted: number }>;
 }
 
 export type DebugNodeResponse = {

@@ -110,6 +110,10 @@ class DebugNodeBody(BaseModel):
 class PutUserScriptBody(BaseModel):
     content: str = Field(..., description="Starlark source")
     description: str = Field(default="", description="脚本说明")
+    export_functions: list[str] | None = Field(
+        default=None,
+        description="导出符号列表；省略时从 content 自动提取",
+    )
 
 
 class PutDictRawBody(BaseModel):
@@ -1135,12 +1139,34 @@ def create_app() -> FastAPI:
     def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:
         try:
             get_user_script_store().put_script(
-                tenant, path, body.content, description=body.description
+                tenant,
+                path,
+                body.content,
+                description=body.description,
+                export_functions=body.export_functions,
             )
             record = get_user_script_store().get_script_record(tenant, path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, **record}
+
+    @app.delete("/api/starlark/user/{tenant}/{path:path}")
+    def delete_user_script(tenant: str, path: str) -> dict[str, Any]:
+        try:
+            deleted = get_user_script_store().delete_script(tenant, path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Script not found")
+        return {"ok": True, "tenant": tenant, "path": path}
+
+    @app.delete("/api/starlark/user/{tenant}")
+    def delete_user_module(tenant: str) -> dict[str, Any]:
+        try:
+            count = get_user_script_store().delete_module(tenant)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "tenant": tenant, "deleted": count}
 
     # -----------------------------------------------------------------------
     # Debug

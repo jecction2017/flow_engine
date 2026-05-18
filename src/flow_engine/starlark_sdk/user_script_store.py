@@ -19,6 +19,21 @@ from flow_engine.starlark_sdk.user_script_exports import extract_starlark_export
 
 _TENANT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _SAFE_REL = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./-]*\.star$")
+_EXPORT_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _normalize_export_functions(names: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in names:
+        name = raw.strip()
+        if not name or name in seen:
+            continue
+        if not _EXPORT_NAME.match(name):
+            raise ValueError(f"Invalid export symbol: {name!r}")
+        seen.add(name)
+        out.append(name)
+    return out
 
 
 def validate_tenant(tenant: str) -> str:
@@ -90,10 +105,14 @@ class UserScriptStore:
         content: str,
         *,
         description: str | None = None,
+        export_functions: list[str] | None = None,
     ) -> None:
         validate_tenant(tenant)
         validate_script_path(rel_path)
-        exports = extract_starlark_export_functions(content)
+        if export_functions is not None:
+            exports = _normalize_export_functions(export_functions)
+        else:
+            exports = extract_starlark_export_functions(content)
         desc = (description or "").strip() or None
         with db_session() as s:
             stmt = (
@@ -118,7 +137,8 @@ class UserScriptStore:
                 row.description = desc
                 row.export_functions = exports
 
-    def delete_script(self, tenant: str, rel_path: str) -> None:
+    def delete_script(self, tenant: str, rel_path: str) -> bool:
+        """Soft-delete one script. Returns True if a row was updated."""
         validate_tenant(tenant)
         validate_script_path(rel_path)
         now = datetime.now(timezone.utc)
@@ -130,8 +150,25 @@ class UserScriptStore:
                 .where(FeUserScript.deleted_at.is_(None))
             )
             row = s.execute(stmt).scalar_one_or_none()
-            if row:
+            if row is None:
+                return False
+            row.deleted_at = now
+            return True
+
+    def delete_module(self, tenant: str) -> int:
+        """Soft-delete all scripts in a module (tenant). Returns count deleted."""
+        validate_tenant(tenant)
+        now = datetime.now(timezone.utc)
+        with db_session() as s:
+            stmt = (
+                select(FeUserScript)
+                .where(FeUserScript.tenant == tenant)
+                .where(FeUserScript.deleted_at.is_(None))
+            )
+            rows = s.execute(stmt).scalars().all()
+            for row in rows:
                 row.deleted_at = now
+            return len(rows)
 
 
 def _record_from_row(row: FeUserScript) -> dict[str, Any]:
