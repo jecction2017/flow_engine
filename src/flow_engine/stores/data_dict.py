@@ -152,9 +152,24 @@ def active_dictionary() -> dict[str, Any] | None:
 def dictionary_scope(dictionary: dict[str, Any]) -> Iterator[None]:
     token = _active_dictionary.set(copy.deepcopy(dictionary))
     try:
+        _bind_connectors_for_dictionary(dictionary)
         yield
     finally:
         _active_dictionary.reset(token)
+
+
+def _bind_connectors_for_dictionary(dictionary: dict[str, Any]) -> None:
+    """Bind connector handles whenever a resolved dictionary scope is active."""
+    from flow_engine.connectors.registry import get_registry
+
+    profile: str | None = None
+    try:
+        from flow_engine.stores.profile_store import active_profile
+
+        profile = active_profile()
+    except Exception:  # noqa: BLE001
+        pass
+    get_registry().bind(dictionary, profile=profile)
 
 
 def lookup(path: str, default: Any = None) -> Any:

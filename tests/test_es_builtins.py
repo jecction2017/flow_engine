@@ -50,7 +50,6 @@ def test_es_search_with_mock_client() -> None:
             }
         }
         with dictionary_scope(dictionary):
-            reg.bind(dictionary)
             fn = builtin_map()["es_search"]
             out = fn("main", "logs-*", None, None, 5)
         assert out["ok"] is True

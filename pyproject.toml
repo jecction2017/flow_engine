@@ -34,7 +34,7 @@ runner = [
   "croniter>=2.0",
 ]
 integrations = [
-  "elasticsearch[async]>=8.13,<9",
+  "elasticsearch[async]>=7.17,<8",
 ]
 
 [project.scripts]

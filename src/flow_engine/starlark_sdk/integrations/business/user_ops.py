@@ -59,7 +59,7 @@ def user_create(instance: str, user_doc: dict[str, Any]) -> dict[str, Any]:
     if not get_registry().elasticsearch_available:
         return err_envelope(
             "INTEGRATION_UNAVAILABLE",
-            "elasticsearch not available",
+            get_registry().integration_unavailable_message(),
             instance=instance,
         )
     try:
@@ -93,7 +93,11 @@ def user_create(instance: str, user_doc: dict[str, Any]) -> dict[str, Any]:
 )
 def user_delete(instance: str, user_id: str) -> dict[str, Any]:
     if not get_registry().elasticsearch_available:
-        return err_envelope("INTEGRATION_UNAVAILABLE", "elasticsearch not available", instance=instance)
+        return err_envelope(
+            "INTEGRATION_UNAVAILABLE",
+            get_registry().integration_unavailable_message(),
+            instance=instance,
+        )
     _audit("user_delete", instance, user_id=user_id, index=USER_INDEX)
     return run_es_operation(
         instance,
@@ -120,7 +124,11 @@ def user_delete(instance: str, user_id: str) -> dict[str, Any]:
 )
 def user_bulk_update(instance: str, patches: list[Any]) -> dict[str, Any]:
     if not get_registry().elasticsearch_available:
-        return err_envelope("INTEGRATION_UNAVAILABLE", "elasticsearch not available", instance=instance)
+        return err_envelope(
+            "INTEGRATION_UNAVAILABLE",
+            get_registry().integration_unavailable_message(),
+            instance=instance,
+        )
     ops: list[dict[str, Any]] = []
     for p in patches:
         if isinstance(p, dict):

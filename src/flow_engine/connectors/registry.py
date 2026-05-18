@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
+import sys
 import threading
 from typing import Any
 
@@ -42,24 +44,48 @@ class ConnectorRegistry:
         self._handles: dict[tuple[str, str], ConnectorHandle] = {}
         self._bind_hash: str | None = None
         self._profile: str | None = None
-        self._elasticsearch_available = False
         self._register_backends()
 
-    def _register_backends(self) -> None:
+    @staticmethod
+    def _elasticsearch_package_installed() -> bool:
+        return importlib.util.find_spec("elasticsearch") is not None
+
+    def _ensure_elasticsearch_backend(self) -> bool:
+        """Lazy-load ES backend when the package is present in this interpreter."""
+        if "elasticsearch" in self._backends:
+            return True
+        if not self._elasticsearch_package_installed():
+            return False
         try:
             from flow_engine.connectors.backends.elasticsearch.backend import (
                 ElasticsearchBackend,
             )
 
             self._backends["elasticsearch"] = ElasticsearchBackend()
-            self._elasticsearch_available = True
+            return True
         except ImportError:
-            logger.debug("Elasticsearch backend not available", exc_info=True)
-            self._elasticsearch_available = False
+            logger.warning("elasticsearch package present but backend import failed", exc_info=True)
+            return False
+
+    def _register_backends(self) -> None:
+        self._ensure_elasticsearch_backend()
 
     @property
     def elasticsearch_available(self) -> bool:
-        return self._elasticsearch_available
+        return self._ensure_elasticsearch_backend()
+
+    @staticmethod
+    def integration_unavailable_message() -> str:
+        exe = sys.executable
+        if ConnectorRegistry._elasticsearch_package_installed():
+            return (
+                f"Elasticsearch backend failed to load in this process ({exe}). "
+                "Restart flow-api using the project virtualenv."
+            )
+        return (
+            f"elasticsearch is not installed for the API Python interpreter ({exe}). "
+            "Activate .venv, run: pip install \"elasticsearch>=7.17,<8\", then restart flow-api."
+        )
 
     def bind(
         self,
@@ -76,13 +102,21 @@ class ConnectorRegistry:
         config_hash = _hash_config({"elasticsearch": es_raw})
 
         with _LOCK:
-            if config_hash == self._bind_hash and profile == self._profile:
+            # Re-bind when config/profile unchanged but handles are missing (e.g. prior
+            # bind called close_all() then bind_instances failed before populating).
+            stale_empty = (
+                config_hash == self._bind_hash
+                and profile == self._profile
+                and es_raw is not None
+                and not any(k == "elasticsearch" for k, _ in self._handles)
+            )
+            if config_hash == self._bind_hash and profile == self._profile and not stale_empty:
                 return
             self.close_all()
             self._bind_hash = config_hash
             self._profile = profile
 
-            if es_raw is not None and "elasticsearch" in self._backends:
+            if es_raw is not None and self._ensure_elasticsearch_backend():
                 resolved = resolve_secret_references(es_raw, profile=profile)
                 cfg = parse_elasticsearch_config(resolved)
                 if cfg is not None:

@@ -28,8 +28,10 @@ def create_client(
     try:
         from elasticsearch import Elasticsearch
     except ImportError as exc:
+        from flow_engine.connectors.registry import ConnectorRegistry
+
         raise ConnectorError(
-            "elasticsearch package not installed; install flow-engine[integrations]",
+            ConnectorRegistry.integration_unavailable_message(),
             code="INTEGRATION_UNAVAILABLE",
         ) from exc
 
@@ -71,8 +73,10 @@ def create_async_client(
     try:
         from elasticsearch import AsyncElasticsearch
     except ImportError as exc:
+        from flow_engine.connectors.registry import ConnectorRegistry
+
         raise ConnectorError(
-            "elasticsearch package not installed; install flow-engine[integrations]",
+            ConnectorRegistry.integration_unavailable_message(),
             code="INTEGRATION_UNAVAILABLE",
         ) from exc
 

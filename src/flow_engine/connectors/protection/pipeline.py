@@ -48,8 +48,12 @@ class ProtectionPipeline:
                 raise
             self._circuit.record_failure()
             raise
-        except Exception:
-            self._circuit.record_failure()
+        except Exception as exc:
+            # Validation / policy errors must not trip the cluster circuit breaker.
+            from flow_engine.connectors.errors import ConnectorError
+
+            if not isinstance(exc, ConnectorError):
+                self._circuit.record_failure()
             raise
         finally:
             self._concurrency.release()

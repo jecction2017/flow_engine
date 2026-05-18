@@ -23,14 +23,22 @@ class ElasticsearchHandle:
     def __init__(
         self,
         instance_id: str,
-        client: Any,
+        spec: ElasticsearchInstanceSpec,
         pipeline: ProtectionPipeline,
-        allowed_index_patterns: list[str] | None,
+        *,
+        request_timeout_sec: float,
     ) -> None:
         self.instance_id = instance_id
-        self._client = client
+        self._spec = spec
         self._pipeline = pipeline
-        self._allowed = allowed_index_patterns
+        self._allowed = spec.allowed_index_patterns
+        self._request_timeout_sec = request_timeout_sec
+        self._client: Any | None = None
+
+    def _client_or_create(self) -> Any:
+        if self._client is None:
+            self._client = create_client(self._spec, request_timeout_sec=self._request_timeout_sec)
+        return self._client
 
     def execute(self, operation: str, **params: Any) -> dict[str, Any]:
         ctx = RequestContext(instance_id=self.instance_id, operation=operation)
@@ -39,7 +47,14 @@ class ElasticsearchHandle:
         except RuntimeError as exc:
             code = str(exc)
             if code in {"CIRCUIT_OPEN", "CONNECTOR_RATE_LIMIT", "CONNECTOR_CONCURRENCY_LIMIT"}:
-                return err_envelope(code, code.replace("_", " ").lower(), instance=self.instance_id)
+                msg = code.replace("_", " ").lower()
+                if code == "CIRCUIT_OPEN":
+                    msg = (
+                        "circuit open after repeated ES failures — wait "
+                        f"{int(self._pipeline.spec.circuit_open_sec)}s or restart flow-api; "
+                        "fix ES host/auth/client version (ES 7.x needs elasticsearch-py 7.x)"
+                    )
+                return err_envelope(code, msg, instance=self.instance_id)
             raise
         except TimeoutError as exc:
             return err_envelope("CONNECTOR_TIMEOUT", str(exc), instance=self.instance_id)
@@ -49,10 +64,11 @@ class ElasticsearchHandle:
             return err_envelope("ES_ERROR", str(exc), instance=self.instance_id)
 
     def _execute_inner(self, operation: str, **params: Any) -> dict[str, Any]:
+        client = self._client_or_create()
         t0 = time.monotonic()
         if operation == "search":
             data = es_ops.search(
-                self._client,
+                client,
                 index=params["index"],
                 body=params.get("body"),
                 query=params.get("query"),
@@ -61,14 +77,14 @@ class ElasticsearchHandle:
             )
         elif operation == "mget":
             data = es_ops.mget(
-                self._client,
+                client,
                 index=params["index"],
                 ids=params["ids"],
                 allowed_patterns=self._allowed,
             )
         elif operation == "count":
             data = es_ops.count(
-                self._client,
+                client,
                 index=params["index"],
                 body=params.get("body"),
                 query=params.get("query"),
@@ -76,7 +92,7 @@ class ElasticsearchHandle:
             )
         elif operation == "scroll":
             data = es_ops.scroll_search(
-                self._client,
+                client,
                 index=params["index"],
                 body=params.get("body"),
                 query=params.get("query"),
@@ -87,20 +103,20 @@ class ElasticsearchHandle:
             )
         elif operation == "index_document":
             data = es_ops.index_document(
-                self._client,
+                client,
                 index=params["index"],
                 doc_id=params["doc_id"],
                 document=params["document"],
             )
         elif operation == "delete_document":
             data = es_ops.delete_document(
-                self._client,
+                client,
                 index=params["index"],
                 doc_id=params["doc_id"],
             )
         elif operation == "bulk_update":
             data = es_ops.bulk_update_documents(
-                self._client,
+                client,
                 index=params["index"],
                 operations=params["operations"],
             )
@@ -117,7 +133,9 @@ class ElasticsearchHandle:
         return self._pipeline.cap_scroll_pages(pages)
 
     def close(self) -> None:
-        close_client(self._client)
+        if self._client is not None:
+            close_client(self._client)
+            self._client = None
 
 
 class ElasticsearchBackend:
@@ -140,12 +158,11 @@ class ElasticsearchBackend:
             timeout = spec.request_timeout_sec or default_timeout
             prot = merged_protection(defaults, raw)
             pipeline = ProtectionPipeline(prot, request_timeout_sec=timeout)
-            client = create_client(spec, request_timeout_sec=timeout)
             handle = ElasticsearchHandle(
                 iid,
-                client,
+                spec,
                 pipeline,
-                spec.allowed_index_patterns,
+                request_timeout_sec=timeout,
             )
             self._clients[iid] = handle
             out[iid] = handle

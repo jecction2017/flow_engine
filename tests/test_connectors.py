@@ -77,7 +77,6 @@ def test_registry_bind_instances() -> None:
             }
         }
         with dictionary_scope(dictionary):
-            reg.bind(dictionary)
             handle = reg.get("elasticsearch", "main")
             result = handle.execute("search", index="logs-*", body=None, query=None, size=10)
         assert result["ok"] is True
@@ -86,6 +85,44 @@ def test_registry_bind_instances() -> None:
         es_backend.create_client = original_create
         reg.close_all()
         reset_registry_for_tests()
+
+
+def test_bind_retries_when_hash_matches_but_handles_empty() -> None:
+    reset_registry_for_tests()
+    reg = ConnectorRegistry()
+    dictionary = {
+        "middleware": {
+            "elasticsearch": {
+                "instances": {
+                    "main": {"hosts": ["http://localhost:9200"], "auth": {"type": "none"}},
+                }
+            }
+        }
+    }
+    reg.bind(dictionary, profile="default")
+    reg._handles.clear()  # noqa: SLF001 simulate stale empty bind
+    with dictionary_scope(dictionary):
+        reg.bind(dictionary, profile="default")
+        assert reg.list_instances("elasticsearch") == ["main"]
+    reg.close_all()
+    reset_registry_for_tests()
+
+
+def test_circuit_breaker_skips_connector_error_failures() -> None:
+    spec = ProtectionSpec(circuit_failure_threshold=2, circuit_open_sec=60.0)
+    pipe = ProtectionPipeline(spec, request_timeout_sec=5.0)
+    ctx = RequestContext(instance_id="x", operation="search")
+    from flow_engine.connectors.errors import ConnectorError
+
+    for _ in range(3):
+
+        def fail_validation() -> None:
+            raise ConnectorError("bad index", code="INVALID_INDEX")
+
+        with pytest.raises(ConnectorError):
+            pipe.run(ctx, fail_validation)
+    # Should not open circuit for validation-only failures.
+    pipe.run(ctx, lambda: "ok")
 
 
 def test_protection_pipeline_timeout() -> None:

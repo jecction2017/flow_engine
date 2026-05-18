@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 from typing import Any
 
+from flow_engine.connectors.backends.elasticsearch.compat import call_client
 from flow_engine.connectors.errors import ConnectorError
 
 
@@ -49,7 +50,7 @@ def search(
         req["size"] = min(size, int(req["size"]))
     else:
         req["size"] = size
-    resp = client.search(index=index, body=req)
+    resp = call_client(client.search, index=index, body=req)
     return dict(resp) if hasattr(resp, "items") else resp
 
 
@@ -63,7 +64,7 @@ def mget(
     _validate_index(index, allowed_patterns)
     if not ids:
         return {"docs": []}
-    resp = client.mget(index=index, body={"ids": ids})
+    resp = call_client(client.mget, index=index, body={"ids": ids})
     return dict(resp) if hasattr(resp, "items") else resp
 
 
@@ -83,9 +84,9 @@ def count(
     if query is not None:
         req["query"] = query
     if req:
-        resp = client.count(index=index, body=req)
+        resp = call_client(client.count, index=index, body=req)
     else:
-        resp = client.count(index=index)
+        resp = call_client(client.count, index=index)
     return dict(resp) if hasattr(resp, "items") else resp
 
 
@@ -109,14 +110,14 @@ def scroll_search(
         req["query"] = query
     req["size"] = min(size, int(req.get("size", size)))
 
-    first = client.search(index=index, body=req, scroll=scroll_ttl)
+    first = call_client(client.search, index=index, body=req, scroll=scroll_ttl)
     first_dict = dict(first) if hasattr(first, "items") else first
     scroll_id = first_dict.get("_scroll_id")
     all_hits: list[Any] = list((first_dict.get("hits") or {}).get("hits") or [])
     pages = 1
 
     while scroll_id and pages < max_pages:
-        nxt = client.scroll(scroll_id=scroll_id, scroll=scroll_ttl)
+        nxt = call_client(client.scroll, scroll_id=scroll_id, scroll=scroll_ttl)
         nxt_dict = dict(nxt) if hasattr(nxt, "items") else nxt
         scroll_id = nxt_dict.get("_scroll_id")
         batch = (nxt_dict.get("hits") or {}).get("hits") or []
@@ -151,7 +152,7 @@ def index_document(
     doc_id: str,
     document: dict[str, Any],
 ) -> dict[str, Any]:
-    resp = client.index(index=index, id=doc_id, document=document)
+    resp = call_client(client.index, index=index, id=doc_id, document=document)
     return dict(resp) if hasattr(resp, "items") else resp
 
 
@@ -161,7 +162,7 @@ def delete_document(
     index: str,
     doc_id: str,
 ) -> dict[str, Any]:
-    resp = client.delete(index=index, id=doc_id)
+    resp = call_client(client.delete, index=index, id=doc_id)
     return dict(resp) if hasattr(resp, "items") else resp
 
 
