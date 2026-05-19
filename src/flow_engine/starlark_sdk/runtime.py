@@ -17,7 +17,14 @@ import copy as _copy
 import starlark as sl
 
 from flow_engine.engine.context import ContextStack
-from flow_engine.engine.exceptions import starlark_to_python
+from flow_engine.engine.exceptions import (
+    BreakInterrupt,
+    ContinueInterrupt,
+    JumpTarget,
+    TerminateInterrupt,
+    flow_control_descriptor,
+    starlark_to_python,
+)
 from flow_engine.starlark_sdk.builtin_registry import (
     PythonBuiltinSpec,
     list_registered_builtins,
@@ -430,7 +437,7 @@ def debug_task_script(
     *,
     run_mode: Any = None,
     capability_policy: Any = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
     """Debug-only evaluation for a task node.
 
     Unlike :func:`eval_task_script`, this path **does not** perform boundary
@@ -446,7 +453,10 @@ def debug_task_script(
     pre-existing behaviour (no scope opened — capability defaults to whatever
     is already active in the calling context, or PRODUCTION when none is).
 
-    Returns ``(result_dict, log_entries)``.
+    Returns ``(result_dict, log_entries, control_flow)`` where ``control_flow``
+    is ``None`` on normal completion, or a descriptor such as
+    ``{"action": "continue"}`` when a flow-control builtin interrupts
+    evaluation (mirrors orchestrator handling in production runs).
     """
     from contextlib import nullcontext
 
@@ -485,15 +495,22 @@ def debug_task_script(
         file_loader, _cache = build_file_loader()
         glb = _globals_main()
         ast = _parse_cached("debug_task.star", script)
-        with cf_guard():
-            val = sl.eval(mod, ast, glb, file_loader=file_loader)
+        control_flow: dict[str, Any] | None = None
+        try:
+            with cf_guard():
+                val = sl.eval(mod, ast, glb, file_loader=file_loader)
+        except (ContinueInterrupt, BreakInterrupt, TerminateInterrupt, JumpTarget) as exc:
+            control_flow = flow_control_descriptor(exc)
+            val = None
         logs = coll.as_dicts()
+    if control_flow is not None:
+        return {}, logs, control_flow
     val = starlark_to_python(val)
     if val is None:
-        return {}, logs
+        return {}, logs, None
     if not isinstance(val, dict):
         raise TypeError(f"Debug task script must evaluate to a dict, got {type(val).__name__}")
-    return val, logs
+    return val, logs, None
 
 
 def eval_key_expr(

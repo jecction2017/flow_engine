@@ -75,8 +75,11 @@ def complete_test_run(
     *,
     status: str,
     error: str | None,
+    flow_logs: list[dict[str, Any]] | None = None,
 ) -> None:
     """Finalize a test run. Detailed execution data is in ``fe_run_span``."""
+    from flow_engine.runner.deploy_persistence import _normalize_flow_logs
+
     with db_session() as s:
         row = s.get(FeTestRun, int(run_id))
         if row is None:
@@ -85,6 +88,7 @@ def complete_test_run(
         row.finished_at = datetime.now(timezone.utc)
         if error:
             row.error = error
+        row.flow_logs = _normalize_flow_logs(flow_logs)
 
 
 def fail_test_run(run_id: int, error: str) -> None:
@@ -174,6 +178,7 @@ def get_test_run_detail(run_id: int) -> dict[str, Any] | None:
             "finished_at": utc_isoformat(row.finished_at),
             "error": row.error,
             "evaluation": evaluation,
+            "flow_logs": list(row.flow_logs) if row.flow_logs else None,
         }
 
 

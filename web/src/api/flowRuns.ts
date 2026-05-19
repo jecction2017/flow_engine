@@ -9,10 +9,10 @@
  *   * `FlowRunSummary` is the list-row projection used by deploy runs
  *     / test batch runs / overview.
  *
- * NodeRunInfo / NodeStats / flow_logs from the legacy contract have
- * been removed (the data no longer exists on the backend rows). For
- * any per-node aggregate, use metrics summary (`@/api/metrics`).
+ * Per-node detail lives in spans; flow-level hook logs are on the run row
+ * as ``flow_logs`` (on_start / on_complete / on_failure).
  */
+import type { LogEntry } from "@/api/flows";
 
 async function checkOk(r: Response): Promise<Response> {
   if (!r.ok) {
@@ -104,6 +104,8 @@ export type FlowRunDetail = {
   case_key?: string | null;
   error: string | null;
   evaluation?: RunEvaluation | null;
+  /** 流程级钩子日志（部署/测试运行持久化）。 */
+  flow_logs?: LogEntry[] | null;
 };
 
 export type ListFlowRunsParams = {

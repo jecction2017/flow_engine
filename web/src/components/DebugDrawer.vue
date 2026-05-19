@@ -8,6 +8,7 @@
     <aside
       class="debug-drawer"
       :class="{ 'debug-drawer--open': open }"
+      :style="{ width: drawerWidth }"
       role="dialog"
       aria-modal="true"
       :aria-label="ariaLabel || title"
@@ -46,8 +47,14 @@ withDefaults(
     ariaLabel?: string;
     pending?: boolean;
     showRun?: boolean;
+    /** 抽屉宽度，默认与历史节点调试一致；流程节点调试可传入更宽值。 */
+    drawerWidth?: string;
   }>(),
-  { pending: false, showRun: true },
+  {
+    pending: false,
+    showRun: true,
+    drawerWidth: "min(480px, calc(100vw - 12px))",
+  },
 );
 
 const emit = defineEmits<{
@@ -91,7 +98,6 @@ onUnmounted(() => {
   right: 0;
   bottom: 0;
   z-index: 51;
-  width: min(480px, calc(100vw - 12px));
   max-width: 100%;
   background: var(--surface);
   border-left: 1px solid var(--border);

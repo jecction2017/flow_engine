@@ -36,6 +36,22 @@
     </section>
 
     <section class="card">
+      <div class="sec-title">
+        <span>生命周期钩子（可选）</span>
+        <InfoTip
+          wide
+          text="流程级 Starlark 片段：on_start / on_complete / on_failure。通常仅用 resolve() 读路径。部署/测试运行详情中可查看 flow_logs。"
+        />
+      </div>
+      <HooksEditor
+        :model-value="flowHooks"
+        :slots="flowHookSlots"
+        :registry="starlarkRegistry"
+        @update:model-value="onFlowHooksUpdate"
+      />
+    </section>
+
+    <section class="card">
       <div class="card-hd">
         <div class="card-hd-main">
           <span class="card-title">并发策略</span>
@@ -178,12 +194,31 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch, ref } from "vue";
-import type { ExecutionStrategy } from "@/types/flow";
+import { computed, reactive, watch, ref, onMounted } from "vue";
+import type { ExecutionStrategy, FlowHooks } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
+import HooksEditor, { type HookSlotDef } from "./HooksEditor.vue";
 import InfoTip from "./InfoTip.vue";
 
 const store = useFlowStudioStore();
+const { registry: starlarkRegistry, ensureRegistry } = useStarlarkRegistryCache();
+
+onMounted(() => {
+  void ensureRegistry();
+});
+
+const flowHookSlots: HookSlotDef[] = [
+  { key: "on_start", label: "on_start", tip: "流程开始前执行。" },
+  { key: "on_complete", label: "on_complete", tip: "流程成功结束后执行。" },
+  { key: "on_failure", label: "on_failure", tip: "流程失败时执行（terminate 除外）。" },
+];
+
+const flowHooks = computed(() => store.doc.hooks ?? null);
+
+function onFlowHooksUpdate(v: FlowHooks | null) {
+  store.setFlowMeta({ hooks: v });
+}
 
 const selectedStrategyKey = computed<string | null>(() =>
   store.selection.kind === "strategy" ? store.selection.key : null,
@@ -598,6 +633,16 @@ function removeStrategy(key: string) {
     transform: translateX(0);
     opacity: 1;
   }
+}
+
+.sec-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .inline-hd {

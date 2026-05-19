@@ -903,7 +903,12 @@ class FeDeployRun(_AuditCols, Base):
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
-        comment="失败 / 终止时的错误信息（不再保存 flow_logs / global_ns / node blob）",
+        comment="失败 / 终止时的错误信息",
+    )
+    flow_logs: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="流程级钩子日志（on_start/on_complete/on_failure）",
     )
 
 
@@ -1004,6 +1009,11 @@ class FeTestRun(_AuditCols, Base):
         JSON,
         nullable=True,
         comment="测试断言评估结果：verdict / rules 等（JSON）",
+    )
+    flow_logs: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="流程级钩子日志（on_start/on_complete/on_failure）",
     )
 
 

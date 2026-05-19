@@ -1,0 +1,14 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "sku": { "type": "string" },
+      "name": { "type": "string" },
+      "stock": { "type": "number" }
+    }
+  },
+  "rows": [
+    { "sku": "SKU-A", "name": "Widget", "stock": 100 },
+    { "sku": "SKU-B", "name": "Gadget", "stock": 5 }
+  ]
+}

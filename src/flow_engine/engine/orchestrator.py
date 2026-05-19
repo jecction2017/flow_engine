@@ -12,7 +12,7 @@ from contextvars import ContextVar, copy_context
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 
 import starlark as sl
 
@@ -23,8 +23,10 @@ from flow_engine.engine.exceptions import (
     FlowEngineError,
     JumpTarget,
     TerminateInterrupt,
+    raise_flow_control,
 )
 from flow_engine.engine.models import (
+    BaseNode,
     ExecutionStrategy,
     FlowDefinition,
     FlowMember,
@@ -973,6 +975,9 @@ class FlowRuntime:
                 fut2 = pool.submit(process_starlark_task, payload)
                 raw = await self._with_timeout(asyncio.wrap_future(fut2, loop=loop), timeout)
                 self._append_node_logs(nid, raw.get("logs"), attempt=attempt)
+                cf = raw.get("control_flow")
+                if isinstance(cf, dict):
+                    raise_flow_control(cf)
                 return raw["result"]
         finally:
             if acquired:
@@ -1291,7 +1296,56 @@ class FlowRuntime:
             return copy.deepcopy(data)
         raise AssertionError(f"unknown fault_type: {ftype}")
 
-    def _handle_on_error(self, node: TaskNode, exc: BaseException) -> str:
+    async def _run_with_on_error_guard(
+        self,
+        node: BaseNode,
+        run_once: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run a composite node body with retry / on_error semantics."""
+        nid = self._nid(node)
+        st = self._strategy_for(node)
+        retries = st.retry_count
+        last_exc: BaseException | None = None
+        for _attempt in range(retries + 1):
+            try:
+                await run_once()
+                return
+            except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
+                raise
+            except asyncio.TimeoutError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    self._mark(nid, NodeState.SUCCESS)
+                    return
+                self._mark(nid, NodeState.FAILED)
+                raise FlowEngineError(f"Timeout in node {nid}") from e
+            except sl.StarlarkError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    self._mark(nid, NodeState.SUCCESS)
+                    return
+                self._mark(nid, NodeState.FAILED)
+                raise FlowEngineError(f"Starlark error in {nid}: {e}") from e
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    self._mark(nid, NodeState.SUCCESS)
+                    return
+                self._mark(nid, NodeState.FAILED)
+                raise FlowEngineError(f"Error in {nid}: {e}") from e
+        self._mark(nid, NodeState.FAILED)
+        raise FlowEngineError(f"Node {nid} failed after retries: {last_exc!r}")
+
+    def _handle_on_error(self, node: BaseNode, exc: BaseException) -> str:
         """Decide what to do with `exc` based on `node.on_error`.
 
         Returns one of:
@@ -1349,6 +1403,57 @@ class FlowRuntime:
         finally:
             ctx.pop()
 
+    async def _run_loop_iteration_with_on_error(
+        self,
+        node: LoopNode,
+        run_once: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run one loop iteration body; ``on_error`` applies per iteration."""
+        if not node.on_error:
+            await run_once()
+            return
+
+        st = self._strategy_for(node)
+        retries = st.retry_count
+        last_exc: BaseException | None = None
+        for _attempt in range(retries + 1):
+            try:
+                await run_once()
+                return
+            except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
+                raise
+            except asyncio.TimeoutError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    return
+                raise FlowEngineError(
+                    f"Timeout in loop iteration {self._nid(node)}"
+                ) from e
+            except sl.StarlarkError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    return
+                raise FlowEngineError(
+                    f"Starlark error in loop iteration {self._nid(node)}: {e}"
+                ) from e
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    return
+                raise
+        raise FlowEngineError(
+            f"Loop iteration {self._nid(node)} failed after retries: {last_exc!r}"
+        )
+
     async def _execute_loop(
         self,
         node: LoopNode,
@@ -1358,8 +1463,26 @@ class FlowRuntime:
         parent_id: str | None = None,
         parent_order: int | None = None,
     ) -> None:
-        nid = self._nid(node)
         await tracker.wait_all()
+        await self._execute_loop_body(
+            node,
+            ctx,
+            tracker,
+            parent_id=parent_id,
+            parent_order=parent_order,
+        )
+        await tracker.wait_all()
+
+    async def _execute_loop_body(
+        self,
+        node: LoopNode,
+        ctx: ContextStack,
+        tracker: TaskTracker,
+        *,
+        parent_id: str | None = None,
+        parent_order: int | None = None,
+    ) -> None:
+        nid = self._nid(node)
         hooks = node.hooks if isinstance(node.hooks, LoopHooks) else None
 
         # Run before iterable evaluation (same ordering as the legacy single-row
@@ -1368,7 +1491,24 @@ class FlowRuntime:
         if hooks and hooks.pre_exec:
             loop_pre_exec_logs = run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
 
-        items = eval_iterable_expr(node.iterable, ctx)
+        prepared: list[Any] = []
+
+        async def eval_and_prepare_items() -> None:
+            items = eval_iterable_expr(node.iterable, ctx)
+            copy_mode = getattr(node, "copy_item", "shared")
+            for raw_it in items:
+                if copy_mode == "deep":
+                    prepared.append(copy.deepcopy(raw_it))
+                elif copy_mode == "shallow":
+                    prepared.append(copy.copy(raw_it))
+                else:
+                    prepared.append(raw_it)
+
+        if node.on_error:
+            await self._run_with_on_error_guard(node, eval_and_prepare_items)
+        else:
+            await eval_and_prepare_items()
+
         copy_mode = getattr(node, "copy_item", "shared")
         isolation = getattr(node, "iteration_isolation", "shared")
         collect = getattr(node, "iteration_collect", None)
@@ -1379,15 +1519,6 @@ class FlowRuntime:
         # flow semantics (frame reuse, ordered writes, break/continue at the
         # outermost iteration) are preserved bit-for-bit.
         concurrency = 1 if mode == StrategyMode.SYNC else max(1, strategy.concurrency)
-
-        prepared: list[Any] = []
-        for raw_it in items:
-            if copy_mode == "deep":
-                prepared.append(copy.deepcopy(raw_it))
-            elif copy_mode == "shallow":
-                prepared.append(copy.copy(raw_it))
-            else:
-                prepared.append(raw_it)
 
         try:
             if concurrency == 1:
@@ -1431,7 +1562,6 @@ class FlowRuntime:
                 except Exception:  # noqa: BLE001
                     logger.exception("loop post_exec hook failed")
 
-        await tracker.wait_all()
         # Sequential and concurrent loops each end every iteration's loop-node
         # row with a terminal state inside the per-iteration path.
 
@@ -1551,12 +1681,15 @@ class FlowRuntime:
                                 ),
                             )
                         try:
-                            await self._run_members(
-                                node.children,
-                                iter_ctx,
-                                iter_tracker,
-                                parent_id=nid,
-                                parent_order=loop_row_order,
+                            await self._run_loop_iteration_with_on_error(
+                                node,
+                                lambda: self._run_members(
+                                    node.children,
+                                    iter_ctx,
+                                    iter_tracker,
+                                    parent_id=nid,
+                                    parent_order=loop_row_order,
+                                ),
                             )
                         except ContinueInterrupt:
                             iter_status = "skipped"
@@ -1571,7 +1704,7 @@ class FlowRuntime:
                         else:
                             # Collect while the iteration frame is still pushed so
                             # ``from_path`` can reference the loop alias (``$.it.*``);
-                            # on continue/break/error we skip (no partial results).
+                            # on continue/break/on_error=ignore we skip (no partial results).
                             if collect is not None:
                                 self._collect_iteration_result(iter_ctx, ctx, collect)
                     finally:
@@ -1623,12 +1756,15 @@ class FlowRuntime:
                             ),
                         )
                     try:
-                        await self._run_members(
-                            node.children,
-                            ctx,
-                            iter_tracker,
-                            parent_id=nid,
-                            parent_order=loop_row_order,
+                        await self._run_loop_iteration_with_on_error(
+                            node,
+                            lambda: self._run_members(
+                                node.children,
+                                ctx,
+                                iter_tracker,
+                                parent_id=nid,
+                                parent_order=loop_row_order,
+                            ),
                         )
                     except ContinueInterrupt:
                         iter_status = "skipped"
@@ -1760,12 +1896,15 @@ class FlowRuntime:
                                     run_order=my_loop_order,
                                 )
                             try:
-                                await self._run_members(
-                                    node.children,
-                                    iter_ctx,
-                                    iter_tracker,
-                                    parent_id=nid,
-                                    parent_order=loop_parent_order,
+                                await self._run_loop_iteration_with_on_error(
+                                    node,
+                                    lambda: self._run_members(
+                                        node.children,
+                                        iter_ctx,
+                                        iter_tracker,
+                                        parent_id=nid,
+                                        parent_order=loop_parent_order,
+                                    ),
                                 )
                             except ContinueInterrupt:
                                 iter_status = "skipped"
@@ -1859,16 +1998,20 @@ class FlowRuntime:
 
         sub_tracker = TaskTracker(parent=tracker)
         frame = ContextFrame(node_id=nid, alias=node.alias)
+
+        async def run_members_once() -> None:
+            await self._run_members(
+                node.children,
+                ctx,
+                sub_tracker,
+                parent_id=nid,
+                parent_order=sub_parent_order,
+            )
+
         try:
             with self._pushed_frame(ctx, frame):
                 try:
-                    await self._run_members(
-                        node.children,
-                        ctx,
-                        sub_tracker,
-                        parent_id=nid,
-                        parent_order=sub_parent_order,
-                    )
+                    await self._run_with_on_error_guard(node, run_members_once)
                 except BaseException as e:  # noqa: BLE001
                     close_status = "failed"
                     close_error = str(e)

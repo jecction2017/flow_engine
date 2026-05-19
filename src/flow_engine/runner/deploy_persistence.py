@@ -19,6 +19,26 @@ if TYPE_CHECKING:
     from flow_engine.engine.orchestrator import FlowRunResult
     from flow_engine.runner.models import RunMode
 
+_FLOW_LOGS_MAX = 500
+
+
+def _normalize_flow_logs(logs: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    if not logs:
+        return None
+    if len(logs) <= _FLOW_LOGS_MAX:
+        return logs
+    trimmed = [dict(e) for e in logs[:_FLOW_LOGS_MAX]]
+    trimmed.append(
+        {
+            "level": "warn",
+            "message": f"flow_logs truncated to {_FLOW_LOGS_MAX} entries",
+            "ts_ms": 0,
+            "source": "system",
+            "truncated": True,
+        }
+    )
+    return trimmed
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -103,6 +123,7 @@ def complete_deploy_run(run_id: int, result: "FlowRunResult") -> None:
         row.finished_at = datetime.now(timezone.utc)
         if result.message:
             row.error = result.message
+        row.flow_logs = _normalize_flow_logs(list(result.flow_logs))
 
 
 def fail_deploy_run(run_id: int, error: str) -> None:
@@ -204,4 +225,5 @@ def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:
                 int(row.sampled_span_count) if row.sampled_span_count is not None else None
             ),
             "error": row.error,
+            "flow_logs": list(row.flow_logs) if row.flow_logs else None,
         }

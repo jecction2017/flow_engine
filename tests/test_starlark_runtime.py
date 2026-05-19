@@ -4,7 +4,12 @@ import pytest
 
 from flow_engine.engine.context import ContextStack
 from flow_engine.starlark_sdk.registry_data import load_registry
-from flow_engine.starlark_sdk.runtime import eval_task_script, runtime_stats, warmup_runtime
+from flow_engine.starlark_sdk.runtime import (
+    debug_task_script,
+    eval_task_script,
+    runtime_stats,
+    warmup_runtime,
+)
 
 
 def test_registry_includes_declarative_python_builtins() -> None:
@@ -70,3 +75,40 @@ def test_eval_task_script_captures_logs() -> None:
     assert [e["level"] for e in logs] == ["info", "warn", "error", "info"]
     assert all(e["source"] == "task" for e in logs)
     assert logs[1]["message"].startswith("progress ") and '"step": 1' in logs[1]["message"]
+
+
+def test_debug_task_script_flow_continue_is_not_an_error() -> None:
+    script = """
+def is_match():
+    if normalized_alarm["alarm_type"] == "app_type_02":
+        log_info("alarm type is app_type_02")
+        flow_continue()
+    return {"is_match": normalized_alarm["alarm_grade"] == "low"}
+
+{"feature": is_match()}
+""".strip()
+    result, logs, control_flow = debug_task_script(
+        script,
+        {"normalized_alarm": {"alarm_type": "app_type_02", "alarm_grade": "high"}},
+    )
+    assert result == {}
+    assert control_flow == {"action": "continue"}
+    assert any("app_type_02" in e.get("message", "") for e in logs)
+
+
+def test_debug_task_script_normal_path_when_no_flow_continue() -> None:
+    script = """
+def is_match():
+    if normalized_alarm["alarm_type"] == "app_type_02":
+        flow_continue()
+    return {"is_match": normalized_alarm["alarm_grade"] == "low"}
+
+{"feature": is_match()}
+""".strip()
+    result, logs, control_flow = debug_task_script(
+        script,
+        {"normalized_alarm": {"alarm_type": "app_type_01", "alarm_grade": "low"}},
+    )
+    assert control_flow is None
+    assert result == {"feature": {"is_match": True}}
+    assert logs == []

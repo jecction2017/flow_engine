@@ -1,0 +1,4 @@
+tax_rate: 0.08
+free_shipping_threshold: 200.0
+standard_shipping_fee: 12.0
+vip_shipping_fee: 0.0

@@ -1,0 +1,11 @@
+{
+  "latest_version": 1,
+  "has_draft": false,
+  "versions": [
+    {
+      "version": 1,
+      "display_name": "order_fulfillment_canary",
+      "description": "电商订单履约金丝雀示例：并发、字典、Lookup、测试集、Mock、部署"
+    }
+  ]
+}

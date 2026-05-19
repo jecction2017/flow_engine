@@ -105,16 +105,21 @@
       </div>
       <pre class="ctx mono">{{ triggerCtxText }}</pre>
     </section>
+
+    <section v-if="activeTab === 'flow_logs'" class="rd-section">
+      <FlowLogsPanel :logs="flowLogs" />
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { FlowRunDetail } from "@/api/flowRuns";
+import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
 import SpansExplorer from "@/components/SpansExplorer.vue";
 
-type TabId = "overview" | "spans" | "evaluation" | "context";
+type TabId = "overview" | "spans" | "evaluation" | "context" | "flow_logs";
 
 const props = defineProps<{ detail: FlowRunDetail }>();
 
@@ -141,8 +146,15 @@ const tabs = computed<{ id: TabId; label: string }[]>(() => {
   if (props.detail.trigger_context) {
     out.push({ id: "context", label: "触发上下文" });
   }
+  if (flowLogs.value.length > 0) {
+    out.push({ id: "flow_logs", label: "流程钩子日志" });
+  }
   return out;
 });
+
+const flowLogs = computed(() =>
+  Array.isArray(props.detail.flow_logs) ? props.detail.flow_logs : [],
+);
 
 const activeTab = ref<TabId>(tabs.value[0]?.id ?? "spans");
 

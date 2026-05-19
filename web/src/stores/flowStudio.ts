@@ -213,7 +213,9 @@ export const useFlowStudioStore = defineStore("flowStudio", () => {
     }
   }
 
-  function setFlowMeta(patch: Partial<Pick<FlowDocument, "display_name" | "version">>) {
+  function setFlowMeta(
+    patch: Partial<Pick<FlowDocument, "display_name" | "version" | "hooks">>,
+  ) {
     doc.value = { ...doc.value, ...patch };
   }
 

@@ -339,6 +339,7 @@ async def _run_single_test_case(
             run_id,
             status=status,
             error=result.message,
+            flow_logs=list(result.flow_logs),
         )
         rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
             test_input

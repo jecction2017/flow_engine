@@ -137,9 +137,15 @@ export async function ensureUserModule(module: string): Promise<{ created: boole
   return r.json() as Promise<{ created: boolean }>;
 }
 
+export type DebugControlFlow = {
+  action: "continue" | "break" | "terminate" | "jump";
+  target?: string;
+};
+
 export type DebugNodeResponse = {
   ok?: boolean;
   result?: unknown;
+  control_flow?: DebugControlFlow;
   error?: string;
   traceback?: string;
   logs?: LogEntry[];

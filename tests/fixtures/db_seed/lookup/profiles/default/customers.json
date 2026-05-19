@@ -1,0 +1,25 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "customer_id": { "type": "string" },
+      "name": { "type": "string" },
+      "tier": { "type": "string" },
+      "risk_score": { "type": "number" }
+    }
+  },
+  "rows": [
+    {
+      "customer_id": "CUST-100",
+      "name": "Alice",
+      "tier": "gold",
+      "risk_score": 10
+    },
+    {
+      "customer_id": "CUST-200",
+      "name": "Bob",
+      "tier": "standard",
+      "risk_score": 55
+    }
+  ]
+}

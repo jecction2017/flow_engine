@@ -366,6 +366,34 @@ def test_http_debug_node_is_locked_to_debug_mode() -> None:
     assert _REAL_CALLS == [], "debug HTTP path must SUPPRESS side-effect calls"
 
 
+def test_http_debug_node_flow_continue_returns_control_flow() -> None:
+    client = _make_test_client()
+    script = """
+def is_match():
+    if normalized_alarm["alarm_type"] == "app_type_02":
+        log_info("alarm type is app_type_02")
+        flow_continue()
+    return {"is_match": normalized_alarm["alarm_grade"] == "low"}
+
+{"feature": is_match()}
+""".strip()
+    r = client.post(
+        "/api/debug/node",
+        json={
+            "script": script,
+            "initial_context": {
+                "normalized_alarm": {"alarm_type": "app_type_02", "alarm_grade": "high"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["ok"] is True
+    assert payload["result"] == {}
+    assert payload["control_flow"] == {"action": "continue"}
+    assert any("app_type_02" in e.get("message", "") for e in payload.get("logs", []))
+
+
 def test_http_debug_node_default_suppresses_integration() -> None:
     """No explicit policy + DEBUG default → ``integration`` builtins SUPPRESS.
 

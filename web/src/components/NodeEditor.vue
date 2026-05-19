@@ -116,6 +116,35 @@
           />
         </section>
 
+        <section v-if="node.type === 'task'" class="card">
+          <div class="sec-title">
+            <span>执行钩子（可选）</span>
+            <InfoTip wide text="pre_exec / post_exec：任务脚本执行前后；通常仅用 resolve() 读路径。" />
+          </div>
+          <HooksEditor
+            :model-value="nodeHooksValue"
+            :slots="taskHookSlots"
+            :registry="starlarkRegistry"
+            :path-suggestions="conditionPathSuggestionsGetter"
+            @update:model-value="onNodeHooksUpdate"
+          />
+        </section>
+
+        <section v-if="node.type === 'task'" class="card">
+          <div class="sec-title">
+            <span>异常处理 on_error（可选）</span>
+            <InfoTip wide text="任务脚本失败时的处理策略；与并发策略 retry_count 配合使用。" />
+          </div>
+          <OnErrorEditor
+            :model-value="(node as TaskNode).on_error"
+            :strategy-ref="node.strategy_ref"
+            :strategies="store.doc.strategies"
+            :jump-targets="jumpTargets"
+            :registry="starlarkRegistry"
+            @update:model-value="onOnErrorUpdate"
+          />
+        </section>
+
         <section v-if="node.type === 'loop'" class="card">
           <div class="sec-title"><span>循环</span></div>
           <div class="grid">
@@ -201,6 +230,38 @@
           </div>
         </section>
 
+        <section v-if="node.type === 'loop'" class="card">
+          <div class="sec-title">
+            <span>循环钩子（可选）</span>
+            <InfoTip
+              wide
+              text="pre_exec / post_exec 作用于整段循环；on_iteration_* 作用于每次迭代。Loop 的 on_error 在单次迭代失败时触发（iterable 求值失败仍按整段 loop 处理）。"
+            />
+          </div>
+          <HooksEditor
+            :model-value="loopHooksValue"
+            :slots="loopHookSlots"
+            :registry="starlarkRegistry"
+            :path-suggestions="conditionPathSuggestionsGetter"
+            @update:model-value="onLoopHooksUpdate"
+          />
+        </section>
+
+        <section v-if="node.type === 'loop'" class="card">
+          <div class="sec-title">
+            <span>异常处理 on_error（可选）</span>
+            <InfoTip wide text="单次迭代内子节点失败时触发；ignore 后继续下一项。iterable 求值失败仍按整段 loop 处理。" />
+          </div>
+          <OnErrorEditor
+            :model-value="(node as LoopNode).on_error"
+            :strategy-ref="node.strategy_ref"
+            :strategies="store.doc.strategies"
+            :jump-targets="jumpTargets"
+            :registry="starlarkRegistry"
+            @update:model-value="onOnErrorUpdate"
+          />
+        </section>
+
         <section v-if="node.type === 'subflow'" class="card">
           <div class="sec-title"><span>子流程</span></div>
           <label class="field">
@@ -210,6 +271,35 @@
             </span>
             <input v-model="node.alias" class="inp mono" @input="commit" />
           </label>
+        </section>
+
+        <section v-if="node.type === 'subflow'" class="card">
+          <div class="sec-title">
+            <span>执行钩子（可选）</span>
+            <InfoTip wide text="子流程 children 执行前后的 Starlark 片段。" />
+          </div>
+          <HooksEditor
+            :model-value="nodeHooksValue"
+            :slots="taskHookSlots"
+            :registry="starlarkRegistry"
+            :path-suggestions="conditionPathSuggestionsGetter"
+            @update:model-value="onNodeHooksUpdate"
+          />
+        </section>
+
+        <section v-if="node.type === 'subflow'" class="card">
+          <div class="sec-title">
+            <span>异常处理 on_error（可选）</span>
+            <InfoTip wide text="子流程内任子节点失败导致整段子流程失败时触发。" />
+          </div>
+          <OnErrorEditor
+            :model-value="(node as SubflowNode).on_error"
+            :strategy-ref="node.strategy_ref"
+            :strategies="store.doc.strategies"
+            :jump-targets="jumpTargets"
+            :registry="starlarkRegistry"
+            @update:model-value="onOnErrorUpdate"
+          />
         </section>
       </div>
 
@@ -248,6 +338,7 @@
       v-if="node && node.type === 'task'"
       v-model:open="debugDrawerOpen"
       title="节点调试"
+      drawer-width="min(720px, calc(100vw - 16px))"
       :pending="debugPending"
       @run="runNodeDebug"
     >
@@ -263,10 +354,15 @@ import type {
   CapabilityRule,
   FlowNode,
   LoopCopyItem,
+  LoopHooks,
   LoopIterationIsolation,
   LoopNode,
+  NodeHooks,
+  OnErrorConfig,
+  SubflowNode,
   TaskNode,
 } from "@/types/flow";
+import { nodeId } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
 import BoundaryMappingEditor from "./BoundaryMappingEditor.vue";
@@ -274,8 +370,11 @@ import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import CodeEditor from "./CodeEditor.vue";
 import DebugDrawer from "./DebugDrawer.vue";
 import DebugPanel from "./DebugPanel.vue";
+import HooksEditor, { type HookSlotDef } from "./HooksEditor.vue";
+import OnErrorEditor from "./OnErrorEditor.vue";
 import InfoTip from "./InfoTip.vue";
 import { collectContextPathSuggestions } from "@/utils/contextPathSuggestions";
+import { listJumpTargets } from "@/utils/jumpTargets";
 
 const props = defineProps<{ path: number[] }>();
 const store = useFlowStudioStore();
@@ -315,6 +414,54 @@ onMounted(() => {
 });
 
 const node = computed(() => store.editableNode(props.path) as FlowNode | null);
+
+const taskHookSlots: HookSlotDef[] = [
+  { key: "pre_exec", label: "pre_exec" },
+  { key: "post_exec", label: "post_exec" },
+];
+
+const loopHookSlots: HookSlotDef[] = [
+  { key: "pre_exec", label: "pre_exec" },
+  { key: "post_exec", label: "post_exec" },
+  { key: "on_iteration_start", label: "on_iteration_start" },
+  { key: "on_iteration_end", label: "on_iteration_end" },
+];
+
+const nodeHooksValue = computed(() => {
+  const n = node.value;
+  if (!n || (n.type !== "task" && n.type !== "subflow")) return null;
+  return n.hooks ?? null;
+});
+
+const loopHooksValue = computed(() => {
+  const n = node.value;
+  if (!n || n.type !== "loop") return null;
+  return n.hooks ?? null;
+});
+
+const jumpTargets = computed(() => {
+  const n = node.value;
+  if (!n) return [];
+  return listJumpTargets(store.doc, nodeId(n));
+});
+
+function onNodeHooksUpdate(v: NodeHooks | null) {
+  if (!node.value || (node.value.type !== "task" && node.value.type !== "subflow")) return;
+  node.value.hooks = v;
+  commit();
+}
+
+function onLoopHooksUpdate(v: LoopHooks | null) {
+  if (!node.value || node.value.type !== "loop") return;
+  node.value.hooks = v;
+  commit();
+}
+
+function onOnErrorUpdate(v: OnErrorConfig | null) {
+  if (!node.value) return;
+  node.value.on_error = v;
+  commit();
+}
 
 const title = computed(() => {
   if (!node.value) return "";

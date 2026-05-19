@@ -1,0 +1,343 @@
+# 电商订单履约金丝雀流程 — 覆盖并发 / Starlark / 字典 / Lookup / 条件分支 /
+# 循环聚合 / Subflow / on_error / Hooks / boundary I/O
+display_name: order_fulfillment_canary
+version: "1.0.0"
+
+initial_context:
+  order:
+    id: "ORD-DEMO-001"
+    customer_id: "CUST-100"
+    amount: 320.0
+    vip: true
+    apply_risky_discount: false
+    line_items:
+      - {sku: "SKU-A", qty: 2, unit_price: 50.0}
+      - {sku: "SKU-B", qty: 1, unit_price: 220.0}
+  enrichment:
+    inventory: {}
+    fraud: {}
+    promo: {}
+  line_totals:
+    rows: []
+    subtotal: 0
+  pricing:
+    tax: 0
+    shipping: 0
+    discount: 0
+    grand_total: 0
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+  async_checks:
+    name: async_checks
+    mode: async
+    concurrency: 4
+    timeout: 60
+  thread_calc:
+    name: thread_calc
+    mode: thread
+    concurrency: 2
+    timeout: 30
+
+hooks:
+  on_start: |
+    _ = resolve("$.global.order.id")
+  on_complete: |
+    _ = resolve("$.global.fulfillment.status")
+  on_failure: |
+    log_warn("order_fulfillment_failed")
+
+nodes:
+  - name: bootstrap_config
+    id: bootstrap_config
+    type: task
+    strategy_ref: default_sync
+    description: 从数据字典读取履约规则（profile 切换时自动生效）
+    script: |
+      tax_rate = float(dict_get("business.order.tax_rate", 0.08))
+      free_threshold = float(dict_get("business.order.free_shipping_threshold", 200.0))
+      std_ship = float(dict_get("business.order.standard_shipping_fee", 12.0))
+      vip_ship = float(dict_get("business.order.vip_shipping_fee", 0.0))
+      {
+        "rules": {
+          "tax_rate": tax_rate,
+          "free_shipping_threshold": free_threshold,
+          "standard_shipping_fee": std_ship,
+          "vip_shipping_fee": vip_ship,
+        }
+      }
+    boundary:
+      outputs:
+        rules: "$.global.rules"
+
+  - name: resolve_customer
+    id: resolve_customer
+    type: task
+    strategy_ref: default_sync
+    description: lookup_query 查询客户 tier / 风险分
+    script: |
+      cid = resolve("$.global.order.customer_id")
+      rows = lookup_query("customers", {"customer_id": cid})
+      def _pick(rs):
+        if len(rs) == 0:
+          return {"customer_id": cid, "tier": "standard", "risk_score": 50}
+        return rs[0]
+      c = _pick(rows)
+      {"customer": c}
+    boundary:
+      outputs:
+        customer: "$.global.customer"
+
+  - name: seed_enrichment
+    id: seed_enrichment
+    type: task
+    strategy_ref: default_sync
+    script: |
+      {"enrichment": {"inventory": {}, "fraud": {}, "promo": {}}}
+    boundary:
+      outputs:
+        enrichment: "$.global.enrichment"
+
+  - name: inventory_check
+    id: inventory_check
+    type: task
+    strategy_ref: async_checks
+    description: Lookup 校验首个 SKU 库存
+    script: |
+      def _first_sku(items):
+        if len(items) == 0:
+          return ""
+        return items[0]["sku"]
+      items = resolve("$.global.order.line_items")
+      sku = _first_sku(items)
+      rows = lookup_query("products", {"sku": sku})
+      ok = len(rows) > 0 and rows[0]["stock"] >= 1
+      {"shard": {"inventory_ok": ok, "checked_sku": sku}}
+    boundary:
+      outputs:
+        shard: "$.global.enrichment.inventory"
+
+  - name: call_fraud_api
+    id: call_fraud_api
+    type: task
+    strategy_ref: async_checks
+    description: 模拟外部风控 API（测试批次可 Mock 此节点）
+    script: |
+      risk = resolve("$.global.customer.risk_score")
+      flagged = risk >= 40
+      {"shard": {"flagged": flagged, "risk_score": risk}}
+    boundary:
+      outputs:
+        shard: "$.global.enrichment.fraud"
+
+  - name: promo_eval
+    id: promo_eval
+    type: task
+    strategy_ref: async_checks
+    description: VIP 客户促销评估
+    script: |
+      tier = resolve("$.global.customer.tier")
+      vip = resolve("$.global.order.vip")
+      rate = 0.15 if (vip and tier == "gold") else 0.05
+      {"shard": {"discount_rate": rate}}
+    boundary:
+      outputs:
+        shard: "$.global.enrichment.promo"
+
+  - name: aggregate_enrichment
+    id: aggregate_enrichment
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    script: |
+      e = resolve("$.global.enrichment")
+      ok = e["inventory"]["inventory_ok"] and (not e["fraud"]["flagged"])
+      {"gate": {"passed": ok, "reason": "ok" if ok else "inventory_or_fraud"}}
+    boundary:
+      outputs:
+        gate: "$.global.gate"
+
+  - name: process_line_items
+    id: process_line_items
+    type: loop
+    strategy_ref: default_sync
+    alias: line
+    iterable: 'resolve("$.global.order.line_items")'
+    copy_item: deep
+    hooks:
+      on_iteration_start: |
+        _ = resolve("$.item")
+      on_iteration_end: |
+        _ = resolve("$.global.line_totals.subtotal")
+    children:
+      - name: calc_line_subtotal
+        id: calc_line_subtotal
+        type: task
+        strategy_ref: async_checks
+        script: |
+          it = resolve("$.item")
+          sub = it["qty"] * it["unit_price"]
+          {"row": {"sku": it["sku"], "qty": it["qty"], "subtotal": sub}}
+        boundary:
+          outputs:
+            row: "$.global.scratch_row"
+
+      - name: accumulate_line
+        id: accumulate_line
+        type: task
+        strategy_ref: default_sync
+        wait_before: true
+        script: |
+          lt = resolve("$.global.line_totals")
+          row = resolve("$.global.scratch_row")
+          {
+            "line_totals": {
+              "rows": lt["rows"] + [row],
+              "subtotal": lt["subtotal"] + row["subtotal"],
+            }
+          }
+        boundary:
+          outputs:
+            line_totals: "$.global.line_totals"
+
+  - name: payment_subflow
+    id: payment_subflow
+    type: subflow
+    strategy_ref: default_sync
+    alias: payment
+    children:
+      - name: authorize_payment
+        id: authorize_payment
+        type: task
+        strategy_ref: default_sync
+        script: |
+          amt = resolve("$.global.line_totals.subtotal")
+          {"payment": {"authorized": True, "amount": amt, "currency": "CNY"}}
+        boundary:
+          outputs:
+            payment: "$.global.payment"
+
+      - name: record_payment_ref
+        id: record_payment_ref
+        type: task
+        strategy_ref: default_sync
+        script: |
+          p = resolve("$.global.payment")
+          ref = "PAY-" + resolve("$.global.order.id")
+          {"payment": {"authorized": p["authorized"], "amount": p["amount"], "ref": ref}}
+        boundary:
+          outputs:
+            payment: "$.global.payment"
+
+  - name: vip_shipping
+    id: vip_shipping
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.order.vip") == True'
+    script: |
+      fee = resolve("$.global.rules.vip_shipping_fee")
+      {"shipping": {"mode": "express", "fee": fee}}
+    boundary:
+      outputs:
+        shipping: "$.global.shipping"
+
+  - name: standard_shipping
+    id: standard_shipping
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.order.vip") != True'
+    script: |
+      sub = resolve("$.global.line_totals.subtotal")
+      rules = resolve("$.global.rules")
+      fee = 0.0 if sub >= rules["free_shipping_threshold"] else rules["standard_shipping_fee"]
+      {"shipping": {"mode": "standard", "fee": fee}}
+    boundary:
+      outputs:
+        shipping: "$.global.shipping"
+
+  - name: apply_flash_discount
+    id: apply_flash_discount
+    type: task
+    strategy_ref: default_sync
+    description: apply_risky_discount=true 时除零，on_error 跳转 recover_discount
+    script: |
+      risky = resolve("$.global.order.apply_risky_discount")
+      divisor = 0 if risky else 1
+      base = resolve("$.global.line_totals.subtotal")
+      rate = resolve("$.global.enrichment.promo.discount_rate")
+      {"pricing": {"discount": base * rate / divisor}}
+    on_error:
+      action: jump
+      target: recover_discount
+    boundary:
+      outputs:
+        pricing: "$.global.pricing"
+
+  - name: recover_discount
+    id: recover_discount
+    type: task
+    strategy_ref: default_sync
+    condition: 'resolve("$.global.order.apply_risky_discount") == True'
+    script: |
+      base = resolve("$.global.line_totals.subtotal")
+      rate = resolve("$.global.enrichment.promo.discount_rate")
+      {"pricing": {"discount": base * rate, "recovered": True}}
+    boundary:
+      outputs:
+        pricing: "$.global.pricing"
+
+  - name: apply_pricing_helper
+    id: apply_pricing_helper
+    type: task
+    strategy_ref: thread_calc
+    script: |
+      load("internal://lib/helpers.star", "double_int")
+      sub = resolve("$.global.line_totals.subtotal")
+      tax = sub * resolve("$.global.rules.tax_rate")
+      ship = resolve("$.global.shipping.fee")
+      prior = resolve("$.global.pricing")
+      disc = prior["discount"]
+      recovered = prior["recovered"] if "recovered" in prior else False
+      total = double_int(int(sub + tax + ship - disc)) // 2 + (sub + tax + ship - disc)
+      {
+        "pricing": {
+          "tax": tax,
+          "shipping": ship,
+          "discount": disc,
+          "grand_total": total,
+          "recovered": recovered,
+        }
+      }
+    boundary:
+      outputs:
+        pricing: "$.global.pricing"
+
+  - name: finalize_fulfillment
+    id: finalize_fulfillment
+    type: task
+    strategy_ref: default_sync
+    wait_before: true
+    hooks:
+      pre_exec: |
+        _ = resolve("$.global.gate.passed")
+      post_exec: |
+        _ = resolve("$.global.pricing.grand_total")
+    script: |
+      gate = resolve("$.global.gate")
+      status = "FULFILLED" if gate["passed"] else "REJECTED"
+      {
+        "fulfillment": {
+          "order_id": resolve("$.global.order.id"),
+          "status": status,
+          "customer_tier": resolve("$.global.customer.tier"),
+          "payment_ref": resolve("$.global.payment.ref"),
+          "line_count": len(resolve("$.global.line_totals.rows")),
+          "grand_total": resolve("$.global.pricing.grand_total"),
+          "shipping_mode": resolve("$.global.shipping.mode"),
+        }
+      }
+    boundary:
+      outputs:
+        fulfillment: "$.global.fulfillment"

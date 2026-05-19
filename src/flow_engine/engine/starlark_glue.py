@@ -176,13 +176,16 @@ def debug_task_script(
     *,
     run_mode: Any = None,
     capability_policy: Any = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
     """Task-node debug entrypoint: bind top-level keys of ``variables``
     directly as Starlark globals (no boundary mapping).
 
     ``run_mode`` / ``capability_policy`` are forwarded to the SDK runtime
     so HTTP debug endpoints can opt into a capability scope (e.g. DEBUG
-    suppresses ``integration`` writes by default). Returns ``(result, logs)``.
+    suppresses ``integration`` writes by default).
+
+    Returns ``(result, logs, control_flow)``; see
+    :func:`flow_engine.starlark_sdk.runtime.debug_task_script`.
     """
     from flow_engine.starlark_sdk import runtime as sdk_runtime
 
@@ -286,5 +289,8 @@ def process_starlark_task(payload: dict[str, Any]) -> dict[str, Any]:
     with run_mode_scope(run_mode, effective_policy):
         with dictionary_scope(payload.get("dictionary") or {}):
             get_registry().bind(payload.get("dictionary") or {})
-            result, logs = sdk_runtime.debug_task_script(script, flat)
-    return {"result": result, "logs": logs}
+            result, logs, control_flow = sdk_runtime.debug_task_script(script, flat)
+    out: dict[str, Any] = {"result": result, "logs": logs}
+    if control_flow is not None:
+        out["control_flow"] = control_flow
+    return out

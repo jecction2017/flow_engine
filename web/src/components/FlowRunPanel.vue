@@ -32,8 +32,8 @@
       </div>
 
       <div class="frp-drawer-body">
-        <div class="trial-run-stack">
-          <div class="trial-settings">
+        <div class="trial-run-columns">
+          <div class="trial-settings-col">
             <div class="debug-settings">
               <div class="settings-panel">
                 <header class="settings-panel-hd">
@@ -45,49 +45,45 @@
                   </div>
                 </header>
                 <div class="settings-stack">
-                  <div class="trial-settings-grid">
-                    <div class="trial-settings-cell trial-settings-profile">
-                      <div class="trial-top-field profile-block-standalone">
-                        <div class="field-line field-line--tight">
-                          <span class="field-line-lbl">
-                            试运行 Profile
-                            <InfoTip
-                              text="对应请求字段 profile，决定数据字典从哪套 Profile 加载。留空时使用服务端全局默认（见选项首行）；与流程文档里的默认 profile 可能不同。技术名：profile。"
-                            />
-                          </span>
-                        </div>
-                        <div class="profile-select-shell">
-                          <select v-model="profileText" class="inp inp-profile mono">
-                            <option value="">使用全局默认（{{ defaultProfile || "default" }}）</option>
-                            <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="trial-settings-cell trial-settings-timeout">
-                      <div class="trial-top-field">
-                        <div class="field-line field-line--tight">
-                          <span class="field-line-lbl">
-                            超时（秒）
-                            <InfoTip text="单次试运行请求在服务端等待完成的最长时间（timeout_sec），超出可能返回错误或终止状态。" />
-                          </span>
-                        </div>
-                        <div class="profile-select-shell">
-                          <input
-                            v-model.number="timeoutSec"
-                            class="inp inp-profile mono trial-timeout-inp"
-                            type="number"
-                            min="1"
-                            max="600"
-                            step="1"
+                  <div class="trial-settings-stack">
+                    <section class="trial-settings-field">
+                      <div class="field-line field-line--tight">
+                        <span class="field-line-lbl">
+                          试运行 Profile
+                          <InfoTip
+                            text="对应请求字段 profile，决定数据字典从哪套 Profile 加载。留空时使用服务端全局默认（见选项首行）；与流程文档里的默认 profile 可能不同。技术名：profile。"
                           />
-                        </div>
+                        </span>
                       </div>
-                    </div>
+                      <div class="profile-select-shell">
+                        <select v-model="profileText" class="inp inp-profile mono">
+                          <option value="">使用全局默认（{{ defaultProfile || "default" }}）</option>
+                          <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
+                        </select>
+                      </div>
+                    </section>
 
-                    <div class="trial-settings-cell trial-settings-context">
-                      <div class="ctx-json-block ctx-json-block--trial-fill">
+                    <section class="trial-settings-field trial-settings-field--timeout">
+                      <div class="field-line field-line--tight">
+                        <span class="field-line-lbl">
+                          超时（秒）
+                          <InfoTip text="单次试运行请求在服务端等待完成的最长时间（timeout_sec），超出可能返回错误或终止状态。" />
+                        </span>
+                      </div>
+                      <div class="profile-select-shell profile-select-shell--narrow">
+                        <input
+                          v-model.number="timeoutSec"
+                          class="inp inp-profile mono trial-timeout-inp"
+                          type="number"
+                          min="1"
+                          max="600"
+                          step="1"
+                        />
+                      </div>
+                    </section>
+
+                    <section class="trial-settings-field">
+                      <div class="ctx-json-block">
                         <div class="ctx-json-head">
                           <span class="field-line-lbl">
                             试运行上下文 (JSON)
@@ -127,9 +123,9 @@
                           <div v-else class="ctx-hint-line err">JSON 无法解析，试运行前请修正或清空。</div>
                         </div>
                       </div>
-                    </div>
+                    </section>
 
-                    <div class="trial-settings-cell trial-settings-side">
+                    <section class="trial-settings-field">
                       <div class="dict-yaml-block">
                         <div class="ctx-json-head">
                           <span class="field-line-lbl">
@@ -147,7 +143,6 @@
                           v-model="dictOverrideYaml"
                           class="area mono area-ctx area-ctx--yaml"
                           :class="{ invalid: !dictYamlValid }"
-                          rows="5"
                           spellcheck="false"
                           placeholder="# 可选，根须为映射；与数据字典 YAML 结构一致"
                         />
@@ -156,7 +151,9 @@
                         </div>
                         <div v-else class="ctx-hint-line err">{{ dictYamlError || "YAML 无法解析" }}</div>
                       </div>
+                    </section>
 
+                    <section class="trial-settings-field trial-settings-field--cap">
                       <details class="cap-details">
                         <summary class="cap-summary">
                           <span class="cap-summary-lbl">副作用函数抑制（仅本次试运行）</span>
@@ -169,7 +166,7 @@
                         </summary>
                         <CapabilityRulesEditor v-model="capabilityPolicy" />
                       </details>
-                    </div>
+                    </section>
                   </div>
                   <p v-if="error" class="err">{{ error }}</p>
                 </div>
@@ -177,12 +174,13 @@
             </div>
           </div>
 
-          <div class="trial-results debug-results">
-            <div class="results-head">
+          <div class="trial-results-col">
+            <div class="trial-results debug-results">
+              <div class="results-head">
               <div class="results-head-main">
                 <span class="results-title">试运行结果</span>
                 <InfoTip
-                  text="包含流程状态、节点时间线、全局上下文 global_ns 与流程级日志；与上方试运行设置相互独立。"
+                  text="包含流程状态、节点时间线、全局上下文 global_ns 与流程级日志；与左侧试运行设置相互独立。"
                 />
               </div>
               <div class="result-status-wrap">
@@ -206,19 +204,20 @@
                 <span class="trial-flow-alert-title">{{ trialRunAlertTitle }}</span>
                 <span class="trial-flow-alert-msg">{{ trialRunAlertBody }}</span>
               </div>
-              <div class="results-inner-grid">
+              <div class="results-panes">
                 <div class="result-block result-block--timeline">
                   <div class="lbl row result-block-hd">
                     <span class="lbl-row">
                       节点执行时间线
-                      <InfoTip text="各节点起止时间与状态；可展开子节点、按日志级别筛选后查看节点内日志。" />
+                      <InfoTip text="各节点起止时间与状态；可展开子节点、按日志级别筛选后查看节点内日志。区域最高 380px，超出部分在内部滚动。" />
                     </span>
                   </div>
-                  <div v-if="!response" class="hint">未运行</div>
-                  <div v-else-if="rawRuns.length === 0" class="hint">没有节点被调度</div>
-                  <ExecutionLinkTree
-                    v-else
-                    class="trial-exec-tree"
+                  <div class="result-pane-scroll">
+                    <div v-if="!response" class="hint">未运行</div>
+                    <div v-else-if="rawRuns.length === 0" class="hint">没有节点被调度</div>
+                    <ExecutionLinkTree
+                      v-else
+                      class="trial-exec-tree"
                     :rows="trialLinkRows"
                     :timeline-min-ms="0"
                     :timeline-max-ms="maxMs"
@@ -304,19 +303,34 @@
                       </section>
                     </template>
                   </ExecutionLinkTree>
+                  </div>
                 </div>
 
-                <div class="result-block result-block--globals">
+                <div
+                  ref="globalsPaneBlockRef"
+                  class="result-block result-block--globals"
+                  :style="{ height: `${globalsPaneHeight}px` }"
+                >
                   <div class="lbl row result-block-hd">
                     <span class="lbl-row">
                       全局上下文 (global_ns)
-                      <InfoTip text="试运行完成后的流程全局命名空间快照；技术字段名 global_ns。" />
+                      <InfoTip text="试运行完成后按内容自动增高（最高 380px）；可拖动右下角继续调整高度，超出部分在内部滚动。" />
                     </span>
                   </div>
-                  <pre class="out mono">{{ globalsText }}</pre>
-                  <p v-if="response?.message && !responseMessageAsFailureNotice" class="msg">{{ response.message }}</p>
+                  <div class="result-pane-scroll">
+                    <pre ref="globalsPreRef" class="out mono">{{ globalsText }}</pre>
+                    <p v-if="response?.message && !responseMessageAsFailureNotice" class="msg">{{ response.message }}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="pane-resize-corner"
+                    aria-label="拖动调整全局上下文区域高度"
+                    :class="{ 'pane-resize-corner--active': globalsResizeActive }"
+                    @mousedown="startGlobalsResize($event)"
+                  />
                 </div>
               </div>
+            </div>
             </div>
           </div>
         </div>
@@ -326,7 +340,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
 import { parseDocument } from "yaml";
 import { runFlow } from "@/api/flows";
 import type { LogEntry, NodeRunInfo, RunFlowResponse } from "@/api/flows";
@@ -379,6 +393,7 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener("keydown", onRunEscape);
+  stopGlobalsResize();
 });
 
 const ctxText = ref("");
@@ -398,6 +413,74 @@ const collapsed = reactive(new Set<string>());
 const openLogsFor = ref<string | null>(null);
 /** Active log-level filter. Empty set = show all. */
 const levelFilter = reactive(new Set<KnownLogLevel>());
+
+const GLOBALS_PANE_MIN = 100;
+const GLOBALS_PANE_DEFAULT = 200;
+const GLOBALS_PANE_AUTO_MAX = 380;
+const globalsPaneHeight = ref(GLOBALS_PANE_DEFAULT);
+const globalsPaneBlockRef = ref<HTMLElement | null>(null);
+const globalsPreRef = ref<HTMLElement | null>(null);
+const globalsResizeActive = ref(false);
+let globalsHeightManuallySet = false;
+
+let globalsResizeStartY = 0;
+let globalsResizeStartHeight = 0;
+
+function resetGlobalsPaneHeight() {
+  globalsHeightManuallySet = false;
+  globalsPaneHeight.value = GLOBALS_PANE_DEFAULT;
+}
+
+function measureGlobalsPaneHeight(): number {
+  const block = globalsPaneBlockRef.value;
+  const pre = globalsPreRef.value;
+  if (!block || !pre) return GLOBALS_PANE_DEFAULT;
+  const header = block.querySelector<HTMLElement>(".result-block-hd");
+  const msg = block.querySelector<HTMLElement>(".msg");
+  const headerH = header?.offsetHeight ?? 0;
+  const preH = pre.scrollHeight;
+  const msgH = msg?.offsetHeight ?? 0;
+  const chrome = 20;
+  const desired = headerH + preH + msgH + chrome;
+  return Math.min(
+    GLOBALS_PANE_AUTO_MAX,
+    Math.max(GLOBALS_PANE_DEFAULT, desired),
+  );
+}
+
+async function syncGlobalsPaneAutoHeight() {
+  if (globalsHeightManuallySet || !response.value) return;
+  await nextTick();
+  globalsPaneHeight.value = measureGlobalsPaneHeight();
+}
+
+function onGlobalsResizeMove(ev: MouseEvent) {
+  const dy = ev.clientY - globalsResizeStartY;
+  globalsPaneHeight.value = Math.max(
+    GLOBALS_PANE_MIN,
+    globalsResizeStartHeight + dy,
+  );
+}
+
+function stopGlobalsResize() {
+  globalsResizeActive.value = false;
+  document.removeEventListener("mousemove", onGlobalsResizeMove);
+  document.removeEventListener("mouseup", stopGlobalsResize);
+  document.body.style.removeProperty("user-select");
+  document.body.style.removeProperty("cursor");
+}
+
+function startGlobalsResize(ev: MouseEvent) {
+  ev.preventDefault();
+  globalsHeightManuallySet = true;
+  globalsResizeActive.value = true;
+  globalsResizeStartY = ev.clientY;
+  globalsResizeStartHeight = globalsPaneHeight.value;
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "nwse-resize";
+  document.addEventListener("mousemove", onGlobalsResizeMove);
+  document.addEventListener("mouseup", stopGlobalsResize);
+}
 
 function parseJsonObject(text: string): { ok: boolean; keys: string[] } {
   const raw = text.trim();
@@ -552,6 +635,18 @@ watch(
     dictOverrideYaml.value = "";
     collapsed.clear();
     openLogsFor.value = null;
+    resetGlobalsPaneHeight();
+  },
+);
+
+watch(
+  () => response.value,
+  (r) => {
+    if (!r) {
+      if (!globalsHeightManuallySet) globalsPaneHeight.value = GLOBALS_PANE_DEFAULT;
+      return;
+    }
+    void syncGlobalsPaneAutoHeight();
   },
 );
 
@@ -882,6 +977,7 @@ async function run() {
     return;
   }
   const runtimePatch = dictYamlResult.value.value;
+  resetGlobalsPaneHeight();
   pending.value = true;
   try {
     response.value = await runFlow(props.flowId, {
@@ -915,7 +1011,7 @@ async function run() {
   right: 0;
   bottom: 0;
   z-index: 51;
-  width: min(980px, calc(100vw - 16px));
+  width: min(1180px, calc(100vw - 16px));
   max-width: 100%;
   background: var(--surface);
   border-left: 1px solid var(--border);
@@ -970,33 +1066,53 @@ async function run() {
 .frp-drawer-body {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.trial-run-columns {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 12px;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.trial-settings-col {
+  flex: 0 0 min(360px, 34%);
+  min-width: 260px;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 10px 12px 12px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
+}
+
+.trial-results-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.trial-run-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 0 0 auto;
-  min-height: 0;
-}
+@media (max-width: 900px) {
+  .trial-run-columns {
+    flex-direction: column;
+    overflow-y: auto;
+  }
 
-.trial-settings {
-  flex: 0 0 auto;
-}
+  .trial-settings-col {
+    flex: 0 0 auto;
+    max-height: min(42vh, 420px);
+  }
 
-.trial-results.debug-results {
-  margin-top: 0;
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: min(52vh, 560px);
-  overflow: hidden;
+  .trial-results-col {
+    flex: 1 1 auto;
+    min-height: min(48vh, 480px);
+  }
 }
 
 .debug-settings {
@@ -1044,113 +1160,32 @@ async function run() {
   min-width: 0;
 }
 
-.trial-settings-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  gap: 10px 14px;
-  align-items: stretch;
-}
-
-.trial-settings-profile {
-  grid-column: 1;
-  grid-row: 1;
+.trial-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-self: stretch;
 }
 
-.trial-settings-profile .trial-top-field,
-.trial-settings-timeout .trial-top-field {
-  flex: 1 1 auto;
+.trial-settings-field {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-}
-
-.trial-settings-timeout {
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: stretch;
-  width: 100%;
-  max-width: none;
+  gap: 0;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-self: stretch;
 }
 
-.trial-settings-context {
-  grid-column: 1;
-  grid-row: 2;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-self: start;
-  width: 100%;
-  min-height: 0;
-}
-
-.trial-settings-context .ctx-json-block--trial-fill {
-  flex: 0 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.trial-settings-context .ctx-json-block--trial-fill .area-ctx {
-  flex: 0 1 auto;
-  min-height: 0;
-  align-self: stretch;
-  box-sizing: border-box;
-}
-
-.trial-settings-context .ctx-json-block--trial-fill .ctx-hint-footer {
-  flex-shrink: 0;
-}
-
-.trial-settings-side {
-  grid-column: 2;
-  grid-row: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  align-self: start;
-  width: 100%;
-}
-
-.trial-settings-side > .cap-details {
+.trial-settings-field--cap .cap-details {
   margin-top: 0;
 }
 
-@media (max-width: 720px) {
-  .trial-settings-grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-  }
-
-  .trial-settings-profile,
-  .trial-settings-timeout,
-  .trial-settings-context,
-  .trial-settings-side {
-    grid-column: 1;
-    grid-row: auto;
-  }
-
-  .trial-settings-timeout {
-    justify-self: stretch;
-  }
+.trial-settings-stack .profile-select-shell:not(.profile-select-shell--narrow) {
+  width: fit-content;
+  min-width: 200px;
+  max-width: min(300px, 100%);
 }
 
-.trial-settings-cell {
-  min-width: 0;
-}
-
-.profile-block-standalone {
-  margin-top: 0;
-  padding-top: 0;
+.trial-settings-stack .profile-select-shell--narrow {
+  max-width: 112px;
 }
 
 .dict-yaml-block {
@@ -1221,7 +1256,6 @@ async function run() {
   border-radius: 7px;
   padding: 1px;
   background: color-mix(in srgb, var(--border) 88%, var(--accent) 12%);
-  max-width: 100%;
 }
 
 .inp-profile {
@@ -1284,14 +1318,17 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   min-height: 88px;
 }
 
-.area-ctx--yaml {
-  min-height: 88px;
-}
 
 /* 与节点调试一致：标题与框 5px（ctx-json-head），框与提示 6px（.ctx-hint-line） */
 .area-ctx--trial-run {
-  height: 130px;
-  min-height: 130px;
+  height: 112px;
+  min-height: 112px;
+  box-sizing: border-box;
+}
+
+.area-ctx--yaml {
+  height: 96px;
+  min-height: 96px;
   box-sizing: border-box;
 }
 
@@ -1460,9 +1497,8 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   box-shadow:
     0 4px 14px rgba(15, 23, 42, 0.045),
     inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: min(52vh, 560px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1567,6 +1603,7 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   overflow-y: auto;
   padding-bottom: 2px;
   scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
 }
 
 .trial-flow-alert {
@@ -1608,19 +1645,53 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   color: #92400e;
 }
 
-.results-inner-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+.results-panes {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-items: stretch;
-  flex: 1 1 auto;
-  min-height: 0;
 }
 
-@media (max-width: 920px) {
-  .results-inner-grid {
-    grid-template-columns: 1fr;
-  }
+.pane-resize-corner {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 0 0 6px 0;
+  background: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.pane-resize-corner::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #94a3b8;
+  border-bottom: 2px solid #94a3b8;
+  border-radius: 0 0 2px 0;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.pane-resize-corner:hover::after,
+.pane-resize-corner--active::after {
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.result-pane-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
 }
 
 .result-block {
@@ -1640,31 +1711,38 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   margin-top: 0;
 }
 
-.result-block--timeline {
+.result-block--timeline,
+.result-block--globals {
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.result-block--timeline .trial-exec-tree {
-  flex: 1 1 auto;
-  min-height: 120px;
-  max-height: none;
-  overflow: auto;
+.result-block--timeline {
+  flex: 0 0 auto;
+  max-height: 380px;
 }
 
 .result-block--globals {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.result-block--timeline .trial-exec-tree {
   min-height: 0;
+}
+
+.result-block--globals .result-pane-scroll {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .result-block--globals .out {
   flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
+  min-height: 56px;
+  margin: 0;
 }
 
 .lbl {

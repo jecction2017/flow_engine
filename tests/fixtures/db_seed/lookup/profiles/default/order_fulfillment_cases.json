@@ -1,0 +1,53 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "id": { "type": "string" },
+      "customer_id": { "type": "string" },
+      "vip": { "type": "boolean" },
+      "apply_risky_discount": { "type": "boolean" },
+      "line_items": { "type": "array" }
+    }
+  },
+  "rows": [
+    {
+      "id": "T-001",
+      "customer_id": "CUST-100",
+      "amount": 100.0,
+      "vip": true,
+      "apply_risky_discount": false,
+      "line_items": [{ "sku": "SKU-A", "qty": 2, "unit_price": 50.0 }],
+      "_expect": {
+        "path": "fulfillment.status",
+        "equals": "FULFILLED",
+        "op": "eq"
+      }
+    },
+    {
+      "id": "T-002",
+      "customer_id": "CUST-200",
+      "amount": 50.0,
+      "vip": false,
+      "apply_risky_discount": false,
+      "line_items": [{ "sku": "SKU-A", "qty": 1, "unit_price": 50.0 }],
+      "_expect": {
+        "path": "fulfillment.status",
+        "equals": "REJECTED",
+        "op": "eq"
+      }
+    },
+    {
+      "id": "T-003",
+      "customer_id": "CUST-100",
+      "amount": 100.0,
+      "vip": true,
+      "apply_risky_discount": true,
+      "line_items": [{ "sku": "SKU-A", "qty": 2, "unit_price": 50.0 }],
+      "_expect": {
+        "path": "pricing.recovered",
+        "equals": true,
+        "op": "eq"
+      }
+    }
+  ]
+}

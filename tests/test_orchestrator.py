@@ -929,3 +929,128 @@ async def test_flow_logs_carry_lifecycle_hook_output() -> None:
     levels = [e["level"] for e in res.flow_logs]
     assert sources == ["on_start", "on_complete"]
     assert levels == ["info", "warn"]
+
+
+@pytest.mark.asyncio
+async def test_loop_on_error_ignore() -> None:
+    """Per-iteration on_error=ignore swallows child failure and continues the loop."""
+    flow = _flow(
+        """
+        display_name: loop_ignore
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: "[1]"
+            alias: it
+            on_error:
+              action: ignore
+            children:
+              - name: bad
+                id: bad
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {"x": 1 // 0}
+          - name: after
+            id: after
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"ok": True}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    by_id = {r.node_id: r for r in res.node_runs}
+    assert by_id["lp"].final_state == NodeState.SUCCESS.value
+    assert by_id["after"].final_state == NodeState.SUCCESS.value
+
+
+@pytest.mark.asyncio
+async def test_loop_on_error_ignore_only_failed_iteration() -> None:
+    """on_error=ignore applies per iteration: item 0 fails, item 1 still runs."""
+    flow = _flow(
+        """
+        display_name: loop_ignore_per_iter
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          seen: []
+        nodes:
+          - name: lp
+            id: lp
+            type: loop
+            strategy_ref: default_sync
+            iterable: "[0, 1]"
+            alias: it
+            on_error:
+              action: ignore
+            children:
+              - name: push_seen
+                id: push_seen
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  trail = resolve("$.global.seen")
+                  {"seen": trail + [resolve("$.item")]}
+                boundary:
+                  outputs:
+                    seen: "$.global.seen"
+              - name: maybe_fail
+                id: maybe_fail
+                type: task
+                strategy_ref: default_sync
+                condition: 'resolve("$.item") == 0'
+                script: |
+                  {"x": 1 // 0}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    assert res.context.global_ns["seen"] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_subflow_on_error_ignore() -> None:
+    flow = _flow(
+        """
+        display_name: subflow_ignore
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: sf
+            id: sf
+            type: subflow
+            strategy_ref: default_sync
+            alias: s
+            on_error:
+              action: ignore
+            children:
+              - name: bad
+                id: bad
+                type: task
+                strategy_ref: default_sync
+                script: |
+                  {"x": 1 // 0}
+          - name: after
+            id: after
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"ok": True}
+        """
+    )
+    res = await FlowRuntime(flow).run()
+    assert res.state == FlowState.COMPLETED
+    by_id = {r.node_id: r for r in res.node_runs}
+    assert by_id["sf"].final_state == NodeState.SUCCESS.value

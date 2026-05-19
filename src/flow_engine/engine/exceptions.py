@@ -35,6 +35,36 @@ class TerminateInterrupt(FlowEngineError):
     """Request workflow termination (optional use from Starlark)."""
 
 
+def flow_control_descriptor(exc: BaseException) -> dict[str, Any] | None:
+    """Map a flow-control interrupt to a JSON-serializable debug descriptor."""
+    if isinstance(exc, ContinueInterrupt):
+        return {"action": "continue"}
+    if isinstance(exc, BreakInterrupt):
+        return {"action": "break"}
+    if isinstance(exc, TerminateInterrupt):
+        return {"action": "terminate"}
+    if isinstance(exc, JumpTarget):
+        return {"action": "jump", "target": exc.target}
+    return None
+
+
+def raise_flow_control(descriptor: dict[str, Any]) -> None:
+    """Re-raise a flow-control interrupt from :func:`flow_control_descriptor`."""
+    action = descriptor.get("action")
+    if action == "continue":
+        raise ContinueInterrupt() from None
+    if action == "break":
+        raise BreakInterrupt() from None
+    if action == "terminate":
+        raise TerminateInterrupt() from None
+    if action == "jump":
+        target = descriptor.get("target")
+        if not isinstance(target, str) or not target:
+            raise FlowEngineError(f"Invalid jump control_flow descriptor: {descriptor!r}")
+        raise JumpTarget(target) from None
+    raise FlowEngineError(f"Unknown control_flow action: {action!r}")
+
+
 class TimeoutError(FlowEngineError):
     """Node execution exceeded timeout."""
 

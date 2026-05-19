@@ -21,6 +21,12 @@ pip install -e ".[mysql]"
 flow-db url
 ```
 
+### Recent model additions
+
+- `fe_deploy_run.flow_logs` / `fe_test_run.flow_logs` (JSON): persisted flow-level hook logs
+  (`on_start` / `on_complete` / `on_failure`). After pulling model changes, run `flow-db apply`
+  on an existing DB only if your MySQL user can `ALTER TABLE`; otherwise use drop & recreate below.
+
 ### Drop & recreate schema (recommended)
 
 Option A (fastest): drop the whole database and recreate it.

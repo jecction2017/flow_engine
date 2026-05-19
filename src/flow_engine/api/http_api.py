@@ -1201,13 +1201,16 @@ def create_app() -> FastAPI:
 
             with profile_scope(profile), data_dict.dictionary_scope(dict_tree):
                 get_registry().bind(dict_tree, profile=profile)
-                result, logs = debug_task_script(
+                result, logs, control_flow = debug_task_script(
                     body.script,
                     body.initial_context or {},
                     run_mode=RunMode.DEBUG,
                     capability_policy=merged_policy,
                 )
-            return JSONResponse(content={"ok": True, "result": result, "logs": logs})
+            payload: dict[str, Any] = {"ok": True, "result": result, "logs": logs}
+            if control_flow is not None:
+                payload["control_flow"] = control_flow
+            return JSONResponse(content=payload)
         except Exception as e:  # noqa: BLE001
             return JSONResponse(
                 status_code=200,

@@ -34,6 +34,54 @@ export interface CapabilityRule {
   redirect_params?: Record<string, unknown>;
 }
 
+/** 与后端 ``OnErrorAction`` 一致。 */
+export type OnErrorAction = "retry" | "jump" | "continue" | "break" | "ignore" | "custom";
+
+/** 节点失败时的处理策略 — 与后端 ``OnErrorConfig`` 一致。 */
+export interface OnErrorConfig {
+  action: OnErrorAction;
+  target?: string | null;
+  script?: string | null;
+}
+
+/** 流程级生命周期钩子 — 与后端 ``FlowHooks`` 一致。 */
+export interface FlowHooks {
+  on_start?: string | null;
+  on_complete?: string | null;
+  on_failure?: string | null;
+}
+
+/** Task / Subflow 执行钩子 — 与后端 ``NodeHooks`` 一致。 */
+export interface NodeHooks {
+  pre_exec?: string | null;
+  post_exec?: string | null;
+}
+
+/** Loop 执行钩子 — 与后端 ``LoopHooks`` 一致。 */
+export interface LoopHooks extends NodeHooks {
+  on_iteration_start?: string | null;
+  on_iteration_end?: string | null;
+}
+
+/** 从 hooks 对象中剔除空 slot，全空则返回 null。 */
+export function normalizeHooks<T extends Record<string, string | null | undefined>>(
+  hooks: T | null | undefined,
+  keys: readonly (keyof T)[],
+): T | null {
+  if (!hooks) return null;
+  const out = { ...hooks } as T;
+  let any = false;
+  for (const k of keys) {
+    const v = out[k];
+    if (typeof v === "string" && v.trim()) {
+      any = true;
+    } else {
+      delete out[k];
+    }
+  }
+  return any ? out : null;
+}
+
 export interface TaskNode {
   type: "task";
   /**
@@ -58,6 +106,8 @@ export interface TaskNode {
    * 与系统默认；null / undefined / [] = 无覆盖。
    */
   capability_overrides?: CapabilityRule[] | null;
+  hooks?: NodeHooks | null;
+  on_error?: OnErrorConfig | null;
 }
 
 export type LoopCopyItem = "shared" | "shallow" | "deep";
@@ -90,6 +140,8 @@ export interface LoopNode {
   iteration_isolation?: LoopIterationIsolation;
   /** 每次迭代结束后把 ``from_path`` 的值追加到父 ctx 的 ``append_to`` list。 */
   iteration_collect?: IterationCollect | null;
+  hooks?: LoopHooks | null;
+  on_error?: OnErrorConfig | null;
 }
 
 export interface SubflowNode {
@@ -107,6 +159,8 @@ export interface SubflowNode {
   description?: string | null;
   alias: string;
   children: FlowNode[];
+  hooks?: NodeHooks | null;
+  on_error?: OnErrorConfig | null;
 }
 
 export type FlowNode = TaskNode | LoopNode | SubflowNode;
@@ -124,6 +178,7 @@ export interface FlowDocument {
   version: string;
   strategies: Record<string, ExecutionStrategy>;
   nodes: FlowNode[];
+  hooks?: FlowHooks | null;
   initial_context?: Record<string, unknown> | null;
 }
 
