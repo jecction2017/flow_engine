@@ -41,6 +41,46 @@
       </div>
     </div>
 
+    <div v-if="importModalOpen" class="confirm-mask" @click.self="closeImportModal">
+      <div class="confirm-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入 Lookup 数据">
+        <div class="confirm-title">导入数据</div>
+        <p class="confirm-text">
+          向命名空间 <code class="mono">{{ activeNs }}</code> 导入文件（支持 .json、.csv、.xlsx）。
+        </p>
+        <div class="import-form">
+          <label class="import-field">
+            <span class="lbl">导入方式</span>
+            <select v-model="importMode" class="sel">
+              <option value="replace">覆盖</option>
+              <option value="append">追加</option>
+            </select>
+          </label>
+          <div class="import-field">
+            <span class="lbl">选择文件</span>
+            <div class="import-file-row">
+              <label class="btn ghost sm file-lbl">
+                选择文件
+                <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onImportFileSelected" />
+              </label>
+              <span v-if="importPendingFile" class="import-file-name mono">{{ importPendingFile.name }}</span>
+              <span v-else class="muted small">未选择文件</span>
+            </div>
+          </div>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="closeImportModal">取消</button>
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="!importPendingFile || loading"
+            @click="submitImport"
+          >
+            {{ loading ? "导入中…" : "开始导入" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="hint-bar">
       Starlark：
       <code class="mono">lookup_query("apps", {"appid": "demo-001"})</code>
@@ -72,16 +112,40 @@
           <span>命名空间</span>
           <button type="button" class="link" @click="startNew">新增</button>
         </div>
-        <button
-          v-for="n in filteredNamespaces"
-          :key="n"
-          type="button"
-          class="module-btn"
-          :class="{ active: activeNs === n && !isNew }"
-          @click="pickNamespace(n)"
-        >
-          <span class="mono">{{ n }}</span>
-        </button>
+        <div class="ns-list">
+          <div
+            v-for="n in filteredNamespaces"
+            :key="n"
+            class="module-item"
+            :class="{ active: activeNs === n && !isNew }"
+            @click="pickNamespace(n)"
+          >
+            <span class="mono module-name" :title="n">{{ n }}</span>
+            <div class="module-item-tail" @click.stop>
+              <div class="ns-menu-wrap">
+                <button
+                  type="button"
+                  class="ns-more-btn"
+                  :class="{ 'is-open': openNsMenuFor === n }"
+                  aria-label="更多操作"
+                  :aria-expanded="openNsMenuFor === n"
+                  title="更多操作"
+                  @click="toggleNsMenu(n)"
+                >
+                  ···
+                </button>
+                <div v-if="openNsMenuFor === n" class="ns-menu">
+                  <button type="button" class="menu-item" @click="onExportFromMenu(n)">导出 JSON</button>
+                  <button type="button" class="menu-item" @click="onImportFromMenu(n)">导入</button>
+                  <div class="menu-divider" />
+                  <button type="button" class="menu-item danger" :disabled="loading" @click="onDeleteFromMenu(n)">
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <p v-if="!filteredNamespaces.length" class="empty">暂无匹配的命名空间</p>
       </aside>
 
@@ -90,12 +154,17 @@
           <div class="meta" style="margin-bottom: 16px;">
             <span class="lbl">新建命名空间</span>
             <input v-model="newNamespaceInput" class="inp mono" placeholder="例如 apps、cwe_list" spellcheck="false" style="max-width: 300px;" />
-            <button type="button" class="btn primary" :disabled="!newNsValid || saving" @click="createNamespace">
+            <button type="button" class="btn primary" :disabled="!canCreateNew || saving" @click="createNamespace">
               创建并保存
             </button>
           </div>
           
-          <div class="new-options">
+          <div class="tabs new-add-tabs">
+            <button class="tab" :class="{ active: newAddMode === 'text' }" @click="newAddMode = 'text'">文本新增</button>
+            <button class="tab" :class="{ active: newAddMode === 'file' }" @click="newAddMode = 'file'">文件导入</button>
+          </div>
+
+          <div v-if="newAddMode === 'text'" class="new-options">
             <div class="new-option-card">
               <h4>1. 定义 JSON Schema (可选)</h4>
               <p class="muted" style="font-size: 11px; margin-bottom: 8px;">定义数据结构，支持标准的 JSON Schema 格式。</p>
@@ -104,52 +173,33 @@
             
             <div class="new-option-card">
               <h4>2. 初始数据 (可选)</h4>
-              <div class="tabs" style="margin-bottom: 8px;">
-                <button class="tab" :class="{ active: newInitMode === 'paste' }" @click="newInitMode = 'paste'">粘贴 JSON</button>
-                <button class="tab" :class="{ active: newInitMode === 'upload' }" @click="newInitMode = 'upload'">上传文件</button>
-              </div>
-              
-              <div v-if="newInitMode === 'paste'">
-                <p class="muted" style="font-size: 11px; margin-bottom: 8px;">粘贴包含对象数组的 JSON 文本。</p>
-                <CodeEditor v-model="newRowsJson" language="json" :height="200" />
-              </div>
-              
-              <div v-if="newInitMode === 'upload'" class="upload-area">
-                <p class="muted" style="font-size: 11px; margin-bottom: 12px;">支持 .json, .csv, .xlsx 格式文件。</p>
-                <label class="btn ghost">
-                  选择文件并导入
-                  <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onNewFile" />
-                </label>
-                <div v-if="newFile" style="margin-top: 8px; font-size: 12px;">
-                  已选择: {{ newFile.name }}
-                </div>
+              <p class="muted" style="font-size: 11px; margin-bottom: 8px;">粘贴包含对象数组的 JSON 文本。</p>
+              <CodeEditor v-model="newRowsJson" language="json" :height="200" />
+            </div>
+          </div>
+
+          <div v-else class="new-option-card">
+            <h4>上传文件</h4>
+            <p class="muted" style="font-size: 11px; margin-bottom: 12px;">
+              支持含 <code class="mono">schema</code> 与 <code class="mono">rows</code> 的 JSON，或 .csv / .xlsx 数据文件。
+            </p>
+            <div class="upload-area">
+              <label class="btn ghost">
+                选择文件
+                <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onNewFile" />
+              </label>
+              <div v-if="newFile" class="upload-selected">
+                已选择: {{ newFile.name }}
               </div>
             </div>
           </div>
         </template>
         
         <template v-else-if="activeNs">
-          <div class="meta">
+          <div class="meta meta-ns">
             <span class="lbl">当前命名空间</span>
             <span class="mono path">{{ activeNs }}</span>
-            <button type="button" class="btn ghost danger" :disabled="loading" @click="removeNs">
-              删除
-            </button>
-            <div class="meta-actions">
-              <button type="button" class="btn ghost" @click="downloadJson">
-                导出 JSON
-              </button>
-              <span class="lbl">导入:</span>
-              <select v-model="importMode" class="sel sm">
-                <option value="replace">覆盖</option>
-                <option value="append">追加</option>
-              </select>
-              <label class="file-lbl btn ghost sm">
-                选择文件
-                <input hidden type="file" accept=".json,.csv,.xlsx,.xlsm" @change="onFile" />
-              </label>
-              <span v-if="importHint" class="imp-hint">{{ importHint }}</span>
-            </div>
+            <span v-if="importHint" class="imp-hint">{{ importHint }}</span>
           </div>
 
           <div class="tabs">
@@ -288,7 +338,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import {
@@ -316,7 +366,7 @@ const isNew = ref(false);
 const newNamespaceInput = ref("");
 const newSchemaJson = ref('{\n  "type": "object",\n  "properties": {}\n}');
 const newRowsJson = ref('[]');
-const newInitMode = ref<"paste" | "upload">("paste");
+const newAddMode = ref<"text" | "file">("text");
 const newFile = ref<File | null>(null);
 
 const activeTab = ref<"structure" | "content">("content");
@@ -334,6 +384,9 @@ const error = ref("");
 const importMode = ref<"replace" | "append">("replace");
 const importFormat = ref<"auto">("auto");
 const importHint = ref("");
+const openNsMenuFor = ref<string | null>(null);
+const importModalOpen = ref(false);
+const importPendingFile = ref<File | null>(null);
 
 const rowSearchInput = ref("");
 const rowSearchQuery = ref("");
@@ -488,6 +541,12 @@ const filteredNamespaces = computed(() => {
 });
 
 const newNsValid = computed(() => NS_RE.test(newNamespaceInput.value.trim()));
+
+const canCreateNew = computed(() => {
+  if (!newNsValid.value) return false;
+  if (newAddMode.value === "file" && !newFile.value) return false;
+  return true;
+});
 
 const dynamicFields = computed(() => {
   const fields = new Set<string>();
@@ -693,8 +752,73 @@ async function refreshPage() {
   }
 }
 
+function toggleNsMenu(ns: string): void {
+  openNsMenuFor.value = openNsMenuFor.value === ns ? null : ns;
+}
+
+function closeNsMenu(): void {
+  openNsMenuFor.value = null;
+}
+
+function onDocumentClick(ev: MouseEvent): void {
+  const el = ev.target as HTMLElement | null;
+  if (!el?.closest(".ns-menu-wrap")) {
+    closeNsMenu();
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("click", onDocumentClick);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocumentClick);
+});
+
+async function ensureActiveNs(ns: string): Promise<void> {
+  if (activeNs.value === ns && !isNew.value) return;
+  await pickNamespace(ns);
+}
+
+async function onExportFromMenu(ns: string): Promise<void> {
+  closeNsMenu();
+  await ensureActiveNs(ns);
+  downloadJson();
+}
+
+async function onImportFromMenu(ns: string): Promise<void> {
+  closeNsMenu();
+  await ensureActiveNs(ns);
+  openImportModal();
+}
+
+function openImportModal(): void {
+  importPendingFile.value = null;
+  importModalOpen.value = true;
+}
+
+function closeImportModal(): void {
+  importModalOpen.value = false;
+  importPendingFile.value = null;
+}
+
+function onImportFileSelected(ev: Event): void {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  importPendingFile.value = file ?? null;
+}
+
+async function onDeleteFromMenu(ns: string): Promise<void> {
+  closeNsMenu();
+  await ensureActiveNs(ns);
+  void removeNs();
+}
+
 async function pickNamespace(ns: string) {
   if (!ns) return;
+  closeNsMenu();
+  closeImportModal();
   isNew.value = false;
   activeNs.value = ns;
   page.value = 1;
@@ -712,12 +836,22 @@ async function pickNamespace(ns: string) {
   }
 }
 
+function namespaceFromFilename(filename: string): string {
+  let base = filename.replace(/\.[^.]+$/, "").trim();
+  if (!base) return "";
+  base = base.replace(/[^a-zA-Z0-9_-]/g, "_");
+  if (!/^[a-zA-Z0-9]/.test(base)) base = `n${base}`;
+  base = base.slice(0, 64);
+  return NS_RE.test(base) ? base : "";
+}
+
 function startNew() {
   isNew.value = true;
   activeNs.value = "";
   newNamespaceInput.value = "";
   newSchemaJson.value = '{\n  "type": "object",\n  "properties": {}\n}';
   newRowsJson.value = '[]';
+  newAddMode.value = "text";
   newFile.value = null;
   rowSearchInput.value = "";
   rowSearchQuery.value = "";
@@ -725,29 +859,87 @@ function startNew() {
 
 function onNewFile(ev: Event) {
   const input = ev.target as HTMLInputElement;
-  if (input.files && input.files.length > 0) {
-    newFile.value = input.files[0];
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  newFile.value = file;
+  if (!newNamespaceInput.value.trim()) {
+    const derived = namespaceFromFilename(file.name);
+    if (derived) newNamespaceInput.value = derived;
   }
 }
 
+async function parseLookupJsonFile(
+  file: File,
+): Promise<{ schema?: Record<string, unknown>; rows: Array<Record<string, unknown>> }> {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(await file.text());
+  } catch {
+    throw new Error("JSON 文件格式无效");
+  }
+  if (Array.isArray(obj)) {
+    if (!obj.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
+      throw new Error("JSON 数组须为对象列表");
+    }
+    return { rows: obj as Array<Record<string, unknown>> };
+  }
+  if (obj && typeof obj === "object" && Array.isArray((obj as { rows?: unknown }).rows)) {
+    const rec = obj as { schema?: unknown; rows: unknown[] };
+    if (!rec.rows.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
+      throw new Error("rows 须为对象列表");
+    }
+    const parsedSchema =
+      rec.schema && typeof rec.schema === "object" && !Array.isArray(rec.schema)
+        ? (rec.schema as Record<string, unknown>)
+        : undefined;
+    return { schema: parsedSchema, rows: rec.rows as Array<Record<string, unknown>> };
+  }
+  throw new Error('JSON 须为对象数组，或包含 "schema" 与 "rows" 的对象');
+}
+
+async function createNamespaceFromFile(ns: string, file: File): Promise<void> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".json")) {
+    const parsed = await parseLookupJsonFile(file);
+    const table: LookupTable = {
+      schema: parsed.schema ?? { type: "object", properties: {} },
+      rows: parsed.rows,
+    };
+    await saveLookupTable(ns, table, selectedProfile.value);
+    return;
+  }
+  await saveLookupTable(
+    ns,
+    { schema: { type: "object", properties: {} }, rows: [] },
+    selectedProfile.value,
+  );
+  await importLookupFile(ns, file, "replace", "auto", selectedProfile.value);
+}
+
 async function createNamespace() {
-  const ns = newNamespaceInput.value.trim();
+  let ns = newNamespaceInput.value.trim();
+  if (!ns && newAddMode.value === "file" && newFile.value) {
+    ns = namespaceFromFilename(newFile.value.name);
+    if (ns) newNamespaceInput.value = ns;
+  }
   if (!ns || !NS_RE.test(ns)) return;
-  
+
   saving.value = true;
   error.value = "";
-  
+
   try {
-    let parsedSchema: Record<string, unknown> = { type: "object", properties: {} };
-    try {
-      parsedSchema = JSON.parse(newSchemaJson.value);
-    } catch {
-      // ignore schema parse error, use default
-    }
-    
-    let initialRows: Array<Record<string, unknown>> = [];
-    
-    if (newInitMode.value === 'paste') {
+    if (newAddMode.value === "file" && newFile.value) {
+      await createNamespaceFromFile(ns, newFile.value);
+    } else {
+      let parsedSchema: Record<string, unknown> = { type: "object", properties: {} };
+      try {
+        parsedSchema = JSON.parse(newSchemaJson.value);
+      } catch {
+        // ignore schema parse error, use default
+      }
+
+      let initialRows: Array<Record<string, unknown>> = [];
       try {
         const parsedRows = JSON.parse(newRowsJson.value);
         if (Array.isArray(parsedRows)) {
@@ -756,33 +948,14 @@ async function createNamespace() {
       } catch {
         throw new Error("粘贴的 JSON 数据格式无效，必须是对象数组");
       }
-      
+
       const table: LookupTable = {
         schema: parsedSchema,
         rows: initialRows,
       };
-      
-      await saveLookupTable(ns, table, selectedProfile.value);
-      
-    } else if (newInitMode.value === 'upload' && newFile.value) {
-      // First save empty table with schema
-      const table: LookupTable = {
-        schema: parsedSchema,
-        rows: [],
-      };
-      await saveLookupTable(ns, table, selectedProfile.value);
-      
-      // Then import file
-      await importLookupFile(ns, newFile.value, "replace", "auto", selectedProfile.value);
-    } else {
-      // Just save schema
-      const table: LookupTable = {
-        schema: parsedSchema,
-        rows: [],
-      };
       await saveLookupTable(ns, table, selectedProfile.value);
     }
-    
+
     isNew.value = false;
     activeNs.value = ns;
     await reload();
@@ -1011,21 +1184,16 @@ async function executeRemoveNs(ns: string) {
   }
 }
 
-async function onFile(ev: Event) {
-  const input = ev.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (!file) return;
-  if (!activeNs.value || !NS_RE.test(activeNs.value)) {
-    error.value = "请先填写有效命名空间";
-    return;
-  }
+async function submitImport(): Promise<void> {
+  const file = importPendingFile.value;
+  if (!file || !activeNs.value || !NS_RE.test(activeNs.value)) return;
   importHint.value = "";
   loading.value = true;
   error.value = "";
   try {
     const res = await importLookupFile(activeNs.value, file, importMode.value, importFormat.value, selectedProfile.value);
     importHint.value = `已导入 ${res.imported} 行（${res.mode}）`;
+    closeImportModal();
     await reload();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -1245,7 +1413,7 @@ void (async () => {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 0;
 }
 
@@ -1254,9 +1422,6 @@ void (async () => {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   overflow: auto;
   padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .search-box {
@@ -1315,25 +1480,50 @@ void (async () => {
   padding: 0;
 }
 
-.module-btn {
-  width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-  cursor: pointer;
+.ns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.module-btn:hover {
+.module-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.module-item:hover {
   background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
 }
 
-.module-btn.active {
+.module-item.active {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
+}
+
+.module-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.module-item-tail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .empty {
@@ -1370,12 +1560,121 @@ void (async () => {
   flex-wrap: wrap;
 }
 
-.meta-actions {
+.meta-ns .imp-hint {
   margin-left: auto;
-  display: inline-flex;
-  align-items: center;
+}
+
+.ns-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.ns-more-btn {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--muted);
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    background 0.14s ease;
+}
+
+.module-item:hover .ns-more-btn,
+.module-item:focus-within .ns-more-btn,
+.ns-more-btn.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ns-more-btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+.ns-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 140px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 50;
+}
+
+.menu-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+
+.menu-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.menu-item.danger {
+  color: #b91c1c;
+}
+
+.menu-item.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.import-dialog .import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+
+.import-field {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+}
+
+.import-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+.import-file-name {
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .lbl {
@@ -1687,10 +1986,19 @@ void (async () => {
   transition: box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
+.new-add-tabs {
+  margin-top: 4px;
+}
+
 .new-options {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.upload-selected {
+  margin-top: 8px;
+  font-size: 12px;
 }
 
 .new-option-card {
@@ -1732,9 +2040,8 @@ void (async () => {
     width: 100%;
     justify-content: flex-end;
   }
-  .meta-actions {
-    width: 100%;
-    margin-left: 0;
+  .meta-ns {
+    flex-wrap: wrap;
   }
 }
 </style>

@@ -79,6 +79,7 @@
 import { computed, ref, onBeforeUnmount, onMounted } from "vue";
 import type { FlowNode } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
+import { nodeMatchesSearch } from "@/utils/flowNodeSearch";
 import FlowTreeItem from "./FlowTreeItem.vue";
 
 const props = defineProps<{
@@ -197,42 +198,37 @@ function toggleFold(path: number[]) {
 }
 
 function isNodeMatched(path: number[]) {
-  const q = store.searchQuery.toLowerCase();
-  if (!q) return false;
+  const q = store.searchQuery;
+  if (!q.trim()) return false;
 
   const node = store.getNode(path);
   if (!node) return false;
 
-  const name = store.displayName(node) || "";
-  const desc = typeof node.description === "string" ? node.description : "";
-  return name.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
+  return nodeMatchesSearch(node, q);
 }
 
 function isChildMatched(path: number[]) {
-  const q = store.searchQuery.toLowerCase();
-  if (!q) return false;
-  
+  const q = store.searchQuery;
+  if (!q.trim()) return false;
+
   const node = store.getNode(path);
   if (!node || (node.type !== "loop" && node.type !== "subflow")) return false;
-  
+
   const checkChildren = (n: FlowNode): boolean => {
     if (n.type !== "loop" && n.type !== "subflow") return false;
-    
-    for (const child of n.children) {
-      const name = store.displayName(child) || "";
-      const desc = typeof child.description === "string" ? child.description : "";
-      if (name.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) return true;
 
+    for (const child of n.children) {
+      if (nodeMatchesSearch(child, q)) return true;
       if (checkChildren(child)) return true;
     }
     return false;
   };
-  
+
   return checkChildren(node);
 }
 
 function isParentMatched(path: number[]) {
-  const q = store.searchQuery.toLowerCase();
+  const q = store.searchQuery.trim();
   if (!q || path.length <= 1) return false;
   
   // Check if any ancestor matches the query

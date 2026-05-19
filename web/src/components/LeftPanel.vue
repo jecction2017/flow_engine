@@ -21,7 +21,7 @@
         <input 
           type="text" 
           v-model="store.searchQuery" 
-          placeholder="搜索节点..." 
+          placeholder="搜索名称、描述、脚本（如 resolve(&quot;$.global.rules&quot;)）…"
           class="search-input"
         />
         <button v-if="store.searchQuery" @click="store.searchQuery = ''" class="clear-search" title="清空搜索">×</button>
