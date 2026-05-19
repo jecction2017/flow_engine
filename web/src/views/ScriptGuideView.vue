@@ -385,8 +385,15 @@ else:
 
 const sampleBuiltins = `n = demo_add(3, 4)
 timeout = dict_get("app.http.timeout_sec", 10)
+order_id = resolve("$.global.order.id")
 
-{"sum": n, "timeout": timeout}`;
+# 流程控制（LOOP / 同层跳转）
+# flow_continue()   # 跳过当前迭代
+# flow_break()      # 结束循环
+# flow_jump("next_node_id")
+# flow_terminate()  # 终止本任务（跳过重试）
+
+{"sum": n, "timeout": timeout, "order_id": order_id}`;
 
 const sampleInternal = `load("internal://lib/helpers.star", "double_int", "prefix_key")
 

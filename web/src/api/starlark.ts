@@ -10,6 +10,8 @@ export type RegistryPythonFn = {
   signature: Array<{ name: string; type: string; required?: boolean }>;
   returns: string;
   side_effects?: string;
+  /** guarded | direct | flow_control | context */
+  attach_mode?: string;
 };
 
 export type RegistryInternalModule = {

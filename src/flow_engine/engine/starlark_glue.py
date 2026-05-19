@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -10,13 +9,7 @@ from typing import Any, Iterator
 import starlark as sl
 
 from flow_engine.engine.context import ContextStack
-from flow_engine.engine.exceptions import (
-    BreakInterrupt,
-    ContinueInterrupt,
-    JumpTarget,
-    TerminateInterrupt,
-    starlark_to_python,
-)
+from flow_engine.engine.exceptions import starlark_to_python
 
 # ---------------------------------------------------------------------------
 # Control-flow exception unwrapping
@@ -66,42 +59,6 @@ def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
 
 def _globals_extended() -> sl.Globals:
     return sl.Globals.extended_by([sl.LibraryExtension.Json])
-
-
-def _regex_match(pattern: str, text: str) -> bool:
-    return re.search(pattern, text) is not None
-
-
-def _attach_builtins(mod: sl.Module) -> None:
-    # ``http_request`` is now registered through ``@register_builtin`` in
-    # ``python_builtin_impl`` so it goes through ``_guard_builtin`` (budget
-    # + capability). It is attached uniformly via ``_attach_sdk_python``.
-    mod.add_callable("regex_match", _regex_match)
-
-    def _jump(target: str) -> None:
-        exc = JumpTarget(target)
-        _cf_set(exc)
-        raise exc
-
-    def _flow_continue() -> None:
-        exc = ContinueInterrupt()
-        _cf_set(exc)
-        raise exc
-
-    def _flow_break() -> None:
-        exc = BreakInterrupt()
-        _cf_set(exc)
-        raise exc
-
-    def _terminate() -> None:
-        exc = TerminateInterrupt()
-        _cf_set(exc)
-        raise exc
-
-    mod.add_callable("flow_jump", _jump)
-    mod.add_callable("flow_continue", _flow_continue)
-    mod.add_callable("flow_break", _flow_break)
-    mod.add_callable("flow_terminate", _terminate)
 
 
 def inject_context_paths(mod: sl.Module, ctx: ContextStack, boundary_inputs: dict[str, str]) -> None:

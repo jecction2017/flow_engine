@@ -17,6 +17,14 @@ def test_registry_includes_declarative_python_builtins() -> None:
     names = {f["starlark_name"] for f in reg["python_functions"]}
     assert "dict_get" in names
     assert "lookup_query" in names
+    for flow_name in ("flow_jump", "flow_continue", "flow_break", "flow_terminate"):
+        assert flow_name in names
+    assert "regex_match" in names
+    assert "resolve" in names
+
+    by_name = {f["starlark_name"]: f for f in reg["python_functions"]}
+    assert by_name["flow_jump"]["attach_mode"] == "flow_control"
+    assert by_name["resolve"]["attach_mode"] == "context"
 
 
 def test_runtime_warmup_and_eval() -> None:

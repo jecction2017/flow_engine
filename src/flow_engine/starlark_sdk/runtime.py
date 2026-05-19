@@ -26,6 +26,8 @@ from flow_engine.engine.exceptions import (
     starlark_to_python,
 )
 from flow_engine.starlark_sdk.builtin_registry import (
+    ATTACH_CONTEXT,
+    ATTACH_FLOW_CONTROL,
     PythonBuiltinSpec,
     list_registered_builtins,
 )
@@ -372,32 +374,38 @@ def _guard_builtin(name: str, fn: Any, spec: PythonBuiltinSpec | None = None) ->
     return _wrapped
 
 
+_LOG_BUILTINS = frozenset({"log", "log_info", "log_warn", "log_error", "log_debug"})
+
+
 def _attach_sdk_python(mod: sl.Module) -> None:
     # Use dynamic registry snapshot so all @register_builtin functions,
     # including runtime-provided log builtins, are attached uniformly.
     # Importing module here guarantees decorators have populated registry
     # even when runtime is used outside HTTP API bootstrap.
     from flow_engine.starlark_sdk import python_builtin_impl as _python_builtin_impl  # noqa: F401
+    from flow_engine.starlark_sdk import runtime_builtins as _runtime_builtins  # noqa: F401
     from flow_engine.starlark_sdk import integrations as _integrations  # noqa: F401
 
     for entry in list_registered_builtins():
-        name = entry.spec.starlark_name
+        spec = entry.spec
+        name = spec.starlark_name
+        if spec.attach_mode == ATTACH_CONTEXT:
+            continue
         fn = entry.fn
-        # `log*` are intentionally NOT wrapped by `_guard_builtin`: they're
-        # side-effect-free accumulators and we don't want debug prints inside
-        # a tight loop to burn through the Python-builtin call budget.
-        if name in {"log", "log_info", "log_warn", "log_error", "log_debug"}:
+        if spec.attach_mode == ATTACH_FLOW_CONTROL:
+            mod.add_callable(name, fn)
+        elif name in _LOG_BUILTINS:
+            # Side-effect-free accumulators; skip budget/capability wrapper.
             mod.add_callable(name, fn)
         else:
-            mod.add_callable(name, _guard_builtin(name, fn, entry.spec))
+            mod.add_callable(name, _guard_builtin(name, fn, spec))
 
 
 def _prepare_module(mod: sl.Module, ctx: ContextStack, boundary_inputs: dict[str, str]) -> None:
-    from flow_engine.engine.starlark_glue import _attach_builtins, inject_context_paths, inject_resolve
+    from flow_engine.engine.starlark_glue import inject_context_paths, inject_resolve
 
     inject_context_paths(mod, ctx, boundary_inputs)
     inject_resolve(mod, ctx)
-    _attach_builtins(mod)
     _attach_sdk_python(mod)
 
 
@@ -460,11 +468,7 @@ def debug_task_script(
     """
     from contextlib import nullcontext
 
-    from flow_engine.engine.starlark_glue import (
-        _attach_builtins,
-        cf_guard,
-        inject_resolve,
-    )
+    from flow_engine.engine.starlark_glue import cf_guard, inject_resolve
     from flow_engine.runner.mode_context import run_mode_scope
     from flow_engine.runner.models import CapabilityRule, RunMode
 
@@ -490,7 +494,6 @@ def debug_task_script(
         for name, value in vars_map.items():
             mod[name] = value
         inject_resolve(mod, ctx)
-        _attach_builtins(mod)
         _attach_sdk_python(mod)
         file_loader, _cache = build_file_loader()
         glb = _globals_main()
@@ -525,18 +528,12 @@ def eval_key_expr(
     runtime budget is shared with regular task scripts so a runaway key
     expression cannot evade enforcement.
     """
-    from flow_engine.engine.starlark_glue import (
-        _attach_builtins,
-        cf_guard,
-        inject_context_paths,
-        inject_resolve,
-    )
+    from flow_engine.engine.starlark_glue import cf_guard, inject_context_paths, inject_resolve
 
     with _budget_scope(), log_scope("key_expr"):
         mod = sl.Module()
         inject_context_paths(mod, ctx, boundary_inputs)
         inject_resolve(mod, ctx)
-        _attach_builtins(mod)
         _attach_sdk_python(mod)
         file_loader, _ = build_file_loader()
         glb = _globals_main()
@@ -553,11 +550,10 @@ def eval_condition(expr: str | None, ctx: ContextStack) -> bool:
     if not expr:
         return True
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
+    from flow_engine.engine.starlark_glue import cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    _attach_builtins(mod)
     glb = _globals_main()
     ast = _parse_cached("cond.star", f"({expr})")
     file_loader, _ = build_file_loader()
@@ -588,11 +584,10 @@ def _normalize_iterable_expr(expr: str) -> str:
 
 def eval_iterable_expr(expr: str, ctx: ContextStack) -> list[Any]:
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
+    from flow_engine.engine.starlark_glue import cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     _attach_sdk_python(mod)
-    _attach_builtins(mod)
     glb = _globals_main()
     normalized = _normalize_iterable_expr(expr)
     try:
@@ -629,13 +624,12 @@ def run_hook_script(
     if not snippet:
         return []
     mod = sl.Module()
-    from flow_engine.engine.starlark_glue import _attach_builtins, cf_guard, inject_resolve
+    from flow_engine.engine.starlark_glue import cf_guard, inject_resolve
 
     inject_resolve(mod, ctx)
     if extra:
         for k, v in extra.items():
             mod[k] = v
-    _attach_builtins(mod)
     _attach_sdk_python(mod)
     glb = _globals_main()
     ast = _parse_cached("hook.star", snippet)

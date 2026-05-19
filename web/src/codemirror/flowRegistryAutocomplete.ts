@@ -7,8 +7,29 @@ import {
   type CompletionContext,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import type { RegistryDoc } from "@/api/starlark";
+import type { RegistryDoc, RegistryPythonFn } from "@/api/starlark";
 import { contextPathCompletionSource } from "@/codemirror/contextPathAutocomplete";
+
+function buildBuiltinCompletionInfo(f: RegistryPythonFn): string {
+  const lines = [
+    f.summary,
+    "",
+    `签名: ${f.starlark_name}${formatSignature(f.signature)}`,
+    `返回: ${f.returns}`,
+    `类目: ${f.category}`,
+  ];
+  if (f.attach_mode === "context") {
+    lines.push("", "运行时由引擎注入上下文绑定；在任务/条件/Hook 脚本中直接调用。");
+  } else if (f.attach_mode === "flow_control") {
+    lines.push("", "流程控制：中断当前脚本并交由编排器处理（非普通返回值）。");
+  } else if (f.side_effects && f.side_effects !== "none") {
+    lines.push("", `副作用: ${f.side_effects}（调试/试运行下可能 SUPPRESS）`);
+  } else {
+    lines.push("", "在任务脚本中直接调用，无需 load。");
+  }
+  lines.push("", `id: ${f.id}`);
+  return lines.join("\n");
+}
 
 function formatSignature(
   signature: Array<{ name: string; type: string; required?: boolean }>,
@@ -38,7 +59,7 @@ function completionSource(registry: RegistryDoc) {
           label: l,
           type: "function",
           detail: `${l}${formatSignature(f.signature)}`,
-          info: `${f.summary}\n\n签名: ${l}${formatSignature(f.signature)}\n返回: ${f.returns}\n\n• id: ${f.id}\n• 在任务脚本中直接调用，无需 load。`,
+          info: buildBuiltinCompletionInfo(f),
         });
       }
     }

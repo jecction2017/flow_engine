@@ -321,5 +321,6 @@ def side_effect_probe(arg: str = "default") -> dict[str, Any]:
     }
 
 
-# Register integration builtins (ES, business writes, ...).
+# Register flow/context/util and integration builtins.
+from flow_engine.starlark_sdk import runtime_builtins as _runtime_builtins  # noqa: E402, F401
 from flow_engine.starlark_sdk import integrations as _integrations  # noqa: E402, F401
