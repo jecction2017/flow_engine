@@ -56,9 +56,9 @@ DROP TABLE IF EXISTS
   fe_worker,
   fe_worker_assignment,
   fe_flow_run,
+  fe_flow_test_batch_plan,
   fe_flow_test_batch,
-  fe_flow_test_plan,
-  fe_flow_test_batch_plan;
+  fe_flow_test_plan;
 ```
 
 1. Recreate:
@@ -71,6 +71,6 @@ flow-db apply
 
 - **This reset is destructive**. For this refactor, we intentionally chose **drop_old** (no history migration).
 - If you only added a **new table**, `flow-db apply` is enough.
-- If you changed existing columns (rename/remove/type change), you must reset; otherwise you’ll see runtime
-errors or missing fields despite code changes.
+- If you changed existing columns (rename/remove/type change), you must reset or run the migration SQL above;
+  otherwise you’ll see runtime errors or missing fields despite code changes.
 

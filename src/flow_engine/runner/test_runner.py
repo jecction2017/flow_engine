@@ -18,10 +18,11 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from flow_engine.db.models import FeFlowTestBatch, FeFlowTestBatchPlan, FeFlowTestPlan, FeFlowVersion
+from flow_engine.db.models import FeFlowTestBatch, FeFlowTestPlan, FeFlowVersion
 from flow_engine.db.session import db_session
 from flow_engine.engine.exceptions import FlowEngineError
 from flow_engine.engine.loader import load_flow_from_dict
+from flow_engine.engine.models import FlowDefinition
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.lookup.lookup_service import lookup_query_page
 from flow_engine.runner import assertions as assertions_mod
@@ -107,8 +108,17 @@ def _create_test_batch(
     profile_code: str,
     mock_config: dict[str, MockConfig],
     total_runs: int,
+    plan_id: int | None = None,
+    plan_snapshot: dict[str, Any] | str | None = None,
 ) -> int:
     serialized = {nid: cfg.model_dump() for nid, cfg in mock_config.items()}
+    snap: str | None = None
+    if plan_snapshot is not None:
+        snap = (
+            plan_snapshot
+            if isinstance(plan_snapshot, str)
+            else json.dumps(plan_snapshot, ensure_ascii=False, default=str)
+        )
     with db_session() as s:
         row = FeFlowTestBatch(
             flow_code=flow_code,
@@ -121,6 +131,8 @@ def _create_test_batch(
             total_runs=total_runs,
             completed_runs=0,
             error_runs=0,
+            plan_id=int(plan_id) if plan_id is not None else None,
+            plan_snapshot=snap,
         )
         s.add(row)
         s.flush()
@@ -207,6 +219,7 @@ async def run_test_batch(
         return batch_id
 
     flow_data = await asyncio.to_thread(_read_flow_version_body, flow_code, ver_no)
+    flow_template = await asyncio.to_thread(load_flow_from_dict, flow_data)
     dictionary = await asyncio.to_thread(data_dict.tree_copy, profile_code)
 
     sem = asyncio.Semaphore(max(1, int(concurrency)))
@@ -223,7 +236,7 @@ async def run_test_batch(
                 flow_code=flow_code,
                 ver_no=ver_no,
                 profile_code=profile_code,
-                flow_data=flow_data,
+                flow=flow_template,
                 dictionary=dictionary,
                 mock_config=mock_config,
                 test_input=row,
@@ -249,7 +262,8 @@ async def _run_single_test_case(
     flow_code: str,
     ver_no: int,
     profile_code: str,
-    flow_data: dict[str, Any],
+    flow: FlowDefinition | None = None,
+    flow_data: dict[str, Any] | None = None,
     dictionary: dict[str, Any],
     mock_config: dict[str, MockConfig],
     test_input: dict[str, Any],
@@ -258,14 +272,19 @@ async def _run_single_test_case(
     capability_policy: list[CapabilityRule] | None = None,
     profile_system_policy: list[CapabilityRule] | None = None,
 ) -> bool:
-    flow = load_flow_from_dict(copy.deepcopy(flow_data))
+    if flow is not None:
+        flow_def = flow.model_copy(deep=True)
+    elif flow_data is not None:
+        flow_def = load_flow_from_dict(copy.deepcopy(flow_data))
+    else:
+        raise ValueError("_run_single_test_case requires flow or flow_data")
     run_opts = RunOptions(
         mode=RunMode.DEBUG,
         mock_overrides=mock_config,
         deployment_capability_policy=list(capability_policy or []),
         profile_system_capability_policy=list(profile_system_policy or []),
     )
-    runtime = FlowRuntime(flow, dictionary=dictionary, run_opts=run_opts)
+    runtime = FlowRuntime(flow_def, dictionary=dictionary, run_opts=run_opts)
     row_clean = assertions_mod.strip_expect_keys(test_input)
     mapped_ctx = apply_lookup_row_to_context(row_clean, context_mapping)
     runtime.ctx.global_ns.update(mapped_ctx)
@@ -353,18 +372,9 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
         row = s.get(FeFlowTestBatch, batch_id)
         if row is None or row.deleted_at is not None:
             return None
-        plan_link = (
-            s.execute(
-                select(FeFlowTestBatchPlan)
-                .where(FeFlowTestBatchPlan.batch_id == batch_id)
-                .where(FeFlowTestBatchPlan.deleted_at.is_(None))
-            )
-            .scalars()
-            .one_or_none()
-        )
         plan_brief: dict[str, Any] | None = None
-        if plan_link is not None:
-            plan_row = s.get(FeFlowTestPlan, int(plan_link.plan_id))
+        if row.plan_id is not None:
+            plan_row = s.get(FeFlowTestPlan, int(row.plan_id))
             if plan_row is not None and plan_row.deleted_at is None:
                 plan_brief = {"id": int(plan_row.id), "name": plan_row.name}
         out: dict[str, Any] = {
@@ -388,28 +398,17 @@ def get_test_batch(batch_id: int) -> dict[str, Any] | None:
         return out
 
 
-def attach_plan_to_batch(
+def set_test_batch_plan(
     *,
     batch_id: int,
     plan_id: int,
     plan_snapshot: dict[str, Any],
 ) -> None:
+    """Attach plan lineage and snapshot to an existing batch (e.g. after async create)."""
     snap = json.dumps(plan_snapshot, ensure_ascii=False, default=str)
     with db_session() as s:
-        # Soft-delete any existing link (shouldn't happen, but keeps it idempotent).
-        res = s.execute(
-            select(FeFlowTestBatchPlan)
-            .where(FeFlowTestBatchPlan.batch_id == batch_id)
-            .where(FeFlowTestBatchPlan.deleted_at.is_(None))
-        )
-        old = res.scalars().first()
-        res.close()
-        if old is not None:
-            old.deleted_at = datetime.now(timezone.utc)
-        s.add(
-            FeFlowTestBatchPlan(
-                batch_id=int(batch_id),
-                plan_id=int(plan_id),
-                plan_snapshot=snap,
-            )
-        )
+        row = s.get(FeFlowTestBatch, batch_id)
+        if row is None or row.deleted_at is not None:
+            raise FlowEngineError(f"test batch not found: {batch_id}")
+        row.plan_id = int(plan_id)
+        row.plan_snapshot = snap

@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import traceback
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 
 from flow_engine.db.models import (
     FeDeployRun,
     FeFlowDeployment,
     FeFlowTestBatch,
-    FeFlowTestBatchPlan,
     FeFlowTestPlan,
     FeTestRun,
     FeWorker,
@@ -75,6 +75,8 @@ def _load_dotenv() -> None:
 
 
 _load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Global registry (replaces old FlowYamlStore singleton)
@@ -1478,7 +1480,10 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/test-plans/{plan_id}/run")
-    async def run_test_plan(plan_id: int) -> dict[str, Any]:
+    async def run_test_plan(
+        plan_id: int,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
         """Run a test plan once, creating a new test batch (Run)."""
         with db_session() as s:
             plan = s.get(FeFlowTestPlan, plan_id)
@@ -1510,13 +1515,14 @@ def create_app() -> FastAPI:
                 concurrency=int(plan_data["concurrency"]),
                 assertions=list(plan_data.get("assertions") or []),
                 capability_policy=list(plan_data.get("capability_policy") or []),
-            )
+            ),
+            background_tasks,
         )
 
         # Attach plan snapshot to the created batch for auditability.
         batch_id = int(res["batch_id"])
         await asyncio.to_thread(
-            test_runner.attach_plan_to_batch,
+            test_runner.set_test_batch_plan,
             batch_id=batch_id,
             plan_id=int(plan_id),
             plan_snapshot={
@@ -1542,24 +1548,22 @@ def create_app() -> FastAPI:
             if plan is None or plan.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="test plan not found")
 
-            # Load all batch ids for stable per-plan sequence numbers.
+            # Load all batches for stable per-plan sequence numbers.
             seq_stmt = (
-                select(FeFlowTestBatchPlan, FeFlowTestBatch)
-                .join(FeFlowTestBatch, FeFlowTestBatch.id == FeFlowTestBatchPlan.batch_id)
-                .where(FeFlowTestBatchPlan.deleted_at.is_(None))
+                select(FeFlowTestBatch)
                 .where(FeFlowTestBatch.deleted_at.is_(None))
-                .where(FeFlowTestBatchPlan.plan_id == plan_id)
+                .where(FeFlowTestBatch.plan_id == plan_id)
                 .order_by(FeFlowTestBatch.id.asc())
             )
-            seq_rows = list(s.execute(seq_stmt).all())
+            seq_rows = list(s.execute(seq_stmt).scalars().all())
             seq_map: dict[int, int] = {}
-            for i, (_link, _batch) in enumerate(seq_rows):
-                seq_map[int(_batch.id)] = i + 1
+            for i, batch in enumerate(seq_rows):
+                seq_map[int(batch.id)] = i + 1
 
             # Apply user-facing sort: newest first
             rows = list(reversed(seq_rows))
             if status:
-                rows = [rb for rb in rows if rb[1].status == status]
+                rows = [b for b in rows if b.status == status]
             total = len(rows)
             page = rows[offset : offset + limit]
 
@@ -1574,11 +1578,10 @@ def create_app() -> FastAPI:
                     return None
 
             out = []
-            for link, batch in page:
-                # plan_snapshot is MEDIUMTEXT JSON
+            for batch in page:
                 snapshot = {}
                 try:
-                    snapshot = json.loads(link.plan_snapshot or "{}")
+                    snapshot = json.loads(batch.plan_snapshot or "{}")
                 except Exception:  # noqa: BLE001
                     snapshot = {}
                 summ = test_persistence.summarize_batch_runs(int(batch.id))
@@ -1623,13 +1626,13 @@ def create_app() -> FastAPI:
 
         def _batch_belongs(pid: int, batch_id: int) -> bool:
             with db_session() as s:
-                link = s.execute(
-                    select(FeFlowTestBatchPlan)
-                    .where(FeFlowTestBatchPlan.plan_id == pid)
-                    .where(FeFlowTestBatchPlan.batch_id == batch_id)
-                    .where(FeFlowTestBatchPlan.deleted_at.is_(None))
-                ).scalar_one_or_none()
-                return link is not None
+                batch = s.get(FeFlowTestBatch, batch_id)
+                return (
+                    batch is not None
+                    and batch.deleted_at is None
+                    and batch.plan_id is not None
+                    and int(batch.plan_id) == int(pid)
+                )
 
         if not _batch_belongs(plan_id, left) or not _batch_belongs(plan_id, right):
             raise HTTPException(status_code=404, detail="batch not found for this plan")
@@ -1662,12 +1665,16 @@ def create_app() -> FastAPI:
             return _serialize_test_plan(row)
 
     @app.post("/api/test-batches")
-    async def create_test_batch(body: CreateTestBatchBody) -> dict[str, Any]:
+    async def create_test_batch(
+        body: CreateTestBatchBody,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
         """Create a test batch and dispatch case execution in the background.
 
         The batch row is created synchronously so the caller gets a real
         ``batch_id`` immediately for polling; the per-row run loop continues
-        asynchronously after the response returns.
+        via Starlette ``BackgroundTasks`` after the response is sent (fire-and-forget
+        ``asyncio.create_task`` is cancelled when the request scope ends).
         """
         rows = await asyncio.to_thread(
             test_runner._read_test_rows,  # noqa: SLF001
@@ -1690,6 +1697,14 @@ def create_app() -> FastAPI:
                 resolved_ver_no = int(resolved_ver_no or 0)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Resolve flow version failed: {e}") from e
+
+        try:
+            flow_template = await asyncio.to_thread(load_flow_from_dict, flow_data)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid flow definition: {e}",
+            ) from e
 
         batch_id = await asyncio.to_thread(
             test_runner._create_test_batch,  # noqa: SLF001
@@ -1720,37 +1735,53 @@ def create_app() -> FastAPI:
             try:
                 sem = asyncio.Semaphore(max(1, body.concurrency))
                 dict_tree = await asyncio.to_thread(data_dict.tree_copy, body.profile_code)
+                profile_policy = await asyncio.to_thread(
+                    lambda: profile_store().get_system_capability_policy(
+                        body.profile_code, run_mode=RunMode.DEBUG.value
+                    )
+                )
+                parsed_profile_policy = [
+                    CapabilityRule.model_validate(r) for r in profile_policy
+                ]
 
-                async def one(row: dict[str, Any]) -> None:
+                async def one(row: dict[str, Any]) -> bool:
                     async with sem:
-                        await test_runner._run_single_test_case(  # noqa: SLF001
+                        return await test_runner._run_single_test_case(  # noqa: SLF001
                             batch_id=batch_id,
                             flow_code=body.flow_code,
                             ver_no=resolved_ver_no,
                             profile_code=body.profile_code,
-                            flow_data=flow_data,
+                            flow=flow_template,
                             dictionary=dict_tree,
                             mock_config=body.mock_config,
                             test_input=row,
                             context_mapping=body.context_mapping,
                             assertions=body.assertions or [],
                             capability_policy=parsed_policy,
+                            profile_system_policy=parsed_profile_policy,
                         )
 
-                await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
+                results = await asyncio.gather(*(one(r) for r in rows), return_exceptions=True)
+                final_status = "completed"
+                for r in results:
+                    if isinstance(r, BaseException):
+                        logger.exception("test case crashed: %r", r)
+                        final_status = "failed"
+                        break
                 await asyncio.to_thread(
                     test_runner._finalize_test_batch,  # noqa: SLF001
                     batch_id,
-                    status="completed",
+                    status=final_status,
                 )
             except Exception:  # noqa: BLE001
+                logger.exception("test batch drive failed batch_id=%s", batch_id)
                 await asyncio.to_thread(
                     test_runner._finalize_test_batch,  # noqa: SLF001
                     batch_id,
                     status="failed",
                 )
 
-        asyncio.create_task(_drive())
+        background_tasks.add_task(_drive)
         return {
             "batch_id": batch_id,
             "status": "running",

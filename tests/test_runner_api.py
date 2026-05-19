@@ -229,14 +229,7 @@ def test_workers_listing_empty(client: TestClient) -> None:
 
 
 def test_test_batch_endpoint_creates_batch_row(client: TestClient) -> None:
-    """POST /api/test-batches creates the batch row synchronously and returns batch_id.
-
-    Note: the per-row run loop is dispatched as an asyncio Task that keeps
-    running on the request's event loop; TestClient tears that loop down on
-    response so only the batch creation step is observable here. The test
-    runner's end-to-end behaviour is covered separately in
-    ``test_runner_persistence.test_test_runner_creates_batch_and_runs``.
-    """
+    """POST /api/test-batches creates the batch and runs all cases via BackgroundTasks."""
     ver = _commit_flow(client, "tb_flow")
 
     r = client.put(
@@ -271,6 +264,10 @@ def test_test_batch_endpoint_creates_batch_row(client: TestClient) -> None:
     assert info["id"] == batch_id
     assert info["total_runs"] == 2
     assert info["test_ns_code"] == "tb_cases"
+    assert info["status"] == "completed"
+    assert info["completed_runs"] + info["error_runs"] == 2
+    runs = client.get(f"/api/test-batches/{batch_id}/runs").json()
+    assert runs["total"] == 2
 
 
 def test_test_plan_copy_and_batches_endpoints(client: TestClient) -> None:

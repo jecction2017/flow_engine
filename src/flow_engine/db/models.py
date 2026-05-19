@@ -1020,13 +1020,15 @@ class FeTestRun(_AuditCols, Base):
 class FeFlowTestBatch(_AuditCols, Base):
     """以 lookup namespace 行作为测试集的批次聚合表。
 
-    每行 lookup namespace 数据 → 一次 RunMode.DEBUG 流程运行 → 一条 fe_flow_run；
+    每行 lookup namespace 数据 → 一次 fe_test_run；
     本表持有汇总（total / completed / error）。
+    若由测试方案触发，plan_id / plan_snapshot 记录来源与运行时刻快照（ad-hoc 批次为 NULL）。
     """
 
     __tablename__ = "fe_flow_test_batch"
     __table_args__ = (
         Index("idx_fe_flow_test_batch_flow_code", "flow_code"),
+        Index("idx_fe_flow_test_batch_plan_id", "plan_id"),
         {**_FE_TABLE_OPTS, "comment": "测试批次聚合表"},
     )
 
@@ -1100,6 +1102,16 @@ class FeFlowTestBatch(_AuditCols, Base):
         server_default=text("0"),
         comment="失败运行数",
     )
+    plan_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="来源 fe_flow_test_plan.id；ad-hoc 批次为 NULL",
+    )
+    plan_snapshot: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="运行时刻的方案快照 JSON（含解析后的 ver_no 等）；ad-hoc 为 NULL",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1111,7 +1123,7 @@ class FeFlowTestPlan(_AuditCols, Base):
     """测试方案定义表（Plan）：
 
     将「流程版本选择 + 测试集 + profile + 并发 + mock + 上下文映射」固化为可复用资源；
-    每次运行方案会生成一个独立的 fe_flow_test_batch（Run），并通过关联表记录快照。
+    每次运行方案会生成一个独立的 fe_flow_test_batch（Run），并在 batch 行记录 plan 快照。
     """
 
     __tablename__ = "fe_flow_test_plan"
@@ -1183,48 +1195,6 @@ class FeFlowTestPlan(_AuditCols, Base):
         nullable=False,
         default=list,
         comment="计划级 CapabilityRule 列表 JSON；批次创建时若未显式传入则继承该值。可为空 []",
-    )
-
-
-# ---------------------------------------------------------------------------
-# fe_flow_test_batch_plan  批次与方案关联 + 快照
-# ---------------------------------------------------------------------------
-
-
-class FeFlowTestBatchPlan(_AuditCols, Base):
-    """批次与方案的绑定表（1 batch → 0/1 plan）。
-
-    - 兼容已有 fe_flow_test_batch 表结构（不改旧表字段）
-    - 为每次运行记录 plan 快照，保证“改方案不影响历史运行”
-    """
-
-    __tablename__ = "fe_flow_test_batch_plan"
-    __table_args__ = (
-        UniqueConstraint("batch_id", name="uk_fe_flow_test_batch_plan_batch_id"),
-        Index("idx_fe_flow_test_batch_plan_plan_id", "plan_id"),
-        {**_FE_TABLE_OPTS, "comment": "测试批次与测试方案关联表（含方案快照）"},
-    )
-
-    id: Mapped[int] = mapped_column(
-        BIGINT(unsigned=True),
-        primary_key=True,
-        autoincrement=True,
-        comment="自增主键",
-    )
-    batch_id: Mapped[int] = mapped_column(
-        BIGINT(unsigned=True),
-        nullable=False,
-        comment="关联 fe_flow_test_batch.id",
-    )
-    plan_id: Mapped[int] = mapped_column(
-        BIGINT(unsigned=True),
-        nullable=False,
-        comment="关联 fe_flow_test_plan.id",
-    )
-    plan_snapshot: Mapped[str] = mapped_column(
-        MEDIUMTEXT,
-        nullable=False,
-        comment="运行时刻的方案快照 JSON（含解析后的 ver_no 等）",
     )
 
 

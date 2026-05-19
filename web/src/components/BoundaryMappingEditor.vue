@@ -8,7 +8,7 @@
         <div class="bmap-sheet">
             <div class="bmap-cols bmap-head" aria-hidden="true">
               <span class="bmap-col-idx" />
-              <span>变量名</span>
+              <span>注入变量</span>
               <span class="bmap-col-flow" />
               <span>上下文路径</span>
               <span class="bmap-col-act" />
