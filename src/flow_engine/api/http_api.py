@@ -1113,7 +1113,10 @@ def create_app() -> FastAPI:
 
     @app.get("/api/starlark/user/scripts")
     def starlark_user_scripts() -> dict[str, Any]:
-        return {"scripts": user_script_list(), "root": "mysql://user-scripts"}
+        rows = get_user_script_store().list_scripts()
+        scripts = [f"{r['tenant']}/{r['rel_path']}" for r in rows]
+        descriptions = {f"{r['tenant']}/{r['rel_path']}": r["description"] for r in rows}
+        return {"scripts": scripts, "descriptions": descriptions, "root": "mysql://user-scripts"}
 
     @app.get("/api/starlark/internal/{path:path}")
     def get_internal_script(path: str) -> dict[str, Any]:
@@ -1134,6 +1137,14 @@ def create_app() -> FastAPI:
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Script not found") from None
         return record
+
+    @app.put("/api/starlark/user/{tenant}/module")
+    def ensure_user_module(tenant: str) -> dict[str, Any]:
+        try:
+            created = get_user_script_store().ensure_module(tenant)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "tenant": tenant, "created": created}
 
     @app.put("/api/starlark/user/{tenant}/{path:path}")
     def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:

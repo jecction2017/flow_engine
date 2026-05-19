@@ -130,6 +130,13 @@ export function userScriptFileName(path: string): string {
   return m?.[2] ?? path;
 }
 
+/** 空模块占位脚本，仅用于持久化模块名，不在列表中展示。 */
+export const USER_MODULE_PLACEHOLDER_FILE = "module__.star";
+
+export function isUserModulePlaceholderPath(path: string): boolean {
+  return userScriptFileName(path) === USER_MODULE_PLACEHOLDER_FILE;
+}
+
 export type UserScriptGroup = {
   module: string;
   scripts: string[];
@@ -146,7 +153,9 @@ export function groupUserScriptsByModule(paths: string[], extraModules: Iterable
     if (!mod) continue;
     const key = mod.toLowerCase();
     if (!map.has(key)) map.set(key, new Set());
-    map.get(key)!.add(p);
+    if (!isUserModulePlaceholderPath(p)) {
+      map.get(key)!.add(p);
+    }
   }
   const out: UserScriptGroup[] = [];
   for (const [module, scriptSet] of map) {
@@ -157,16 +166,22 @@ export function groupUserScriptsByModule(paths: string[], extraModules: Iterable
   return out;
 }
 
-/** Filter user script groups by module or file name. */
-export function filterUserScriptGroups(groups: UserScriptGroup[], query: string): UserScriptGroup[] {
+/** Filter user script groups by module, file name, or description. */
+export function filterUserScriptGroups(
+  groups: UserScriptGroup[],
+  query: string,
+  descriptions: Record<string, string> = {},
+): UserScriptGroup[] {
   const q = query.trim().toLowerCase();
   if (!q) return groups;
   return groups
     .map((g) => {
       const modMatch = g.module.includes(q);
-      const scripts = g.scripts.filter(
-        (p) => modMatch || userScriptFileName(p).toLowerCase().includes(q) || p.toLowerCase().includes(q),
-      );
+      const scripts = g.scripts.filter((p) => {
+        if (modMatch) return true;
+        if (userScriptFileName(p).toLowerCase().includes(q) || p.toLowerCase().includes(q)) return true;
+        return (descriptions[p] ?? "").toLowerCase().includes(q);
+      });
       return { module: g.module, scripts };
     })
     .filter((g) => g.scripts.length > 0);

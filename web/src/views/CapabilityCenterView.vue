@@ -37,9 +37,6 @@
           Starlark 内置
         </button>
       </nav>
-      <div class="actions">
-        <button type="button" class="btn ghost" :disabled="loading" @click="refreshAll">刷新</button>
-      </div>
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
@@ -80,7 +77,10 @@
     <div v-if="moduleDialogOpen" class="confirm-mask" @click.self="closeModuleDialog">
       <form class="confirm-dialog" role="dialog" aria-modal="true" aria-label="添加模块" @submit.prevent="confirmAddModule">
         <div class="confirm-title">添加模块</div>
-        <p class="confirm-text muted">模块对应路径第一段，脚本保存在 <code class="mono">模块/名称.star</code> 下。</p>
+        <p class="confirm-text muted">
+          用户脚本路径为 <code class="mono">模块/脚本名.star</code>：模块是路径的第一段，用于分组归类；在任务中通过
+          <code class="mono">load("user://模块/脚本名.star", …)</code> 引用。
+        </p>
         <label class="form-lbl" for="new-module-name">模块名</label>
         <input
           id="new-module-name"
@@ -93,7 +93,9 @@
         <p v-if="newModuleError" class="field-err">{{ newModuleError }}</p>
         <div class="confirm-actions">
           <button type="button" class="btn ghost" @click="closeModuleDialog">取消</button>
-          <button type="submit" class="btn primary">添加</button>
+          <button type="submit" class="btn primary" :disabled="creatingModule">
+            {{ creatingModule ? "添加中…" : "添加" }}
+          </button>
         </div>
       </form>
     </div>
@@ -109,6 +111,15 @@
           class="search-inp"
           placeholder="搜索模块、函数名、说明…"
           autocomplete="off"
+        />
+        <ModListTreeToolbar
+          aria-label="Python 内置列表"
+          :disabled="filteredPythonGroups.length === 0"
+          :module-count="filteredPythonGroups.length"
+          :item-count="filteredPythonItemCount"
+          item-label="函数"
+          @expand-all="expandAllPythonModules"
+          @collapse-all="collapseAllPythonModules"
         />
         <div class="mod-list">
           <div v-for="g in filteredPythonGroups" :key="g.module" class="mod-block">
@@ -176,11 +187,11 @@
           </section>
           <section class="detail-sec">
             <h3>返回值</h3>
-            <p class="mono ret">{{ selectedPythonFn.returns }}</p>
+            <p class="detail-mono-panel">{{ selectedPythonFn.returns }}</p>
           </section>
           <section v-if="selectedPythonFn.side_effects" class="detail-sec">
             <h3>副作用</h3>
-            <p>{{ selectedPythonFn.side_effects }}</p>
+            <p class="detail-value">{{ selectedPythonFn.side_effects }}</p>
           </section>
           <section class="detail-sec">
             <h3>调用示例</h3>
@@ -205,6 +216,15 @@
           class="search-inp"
           placeholder="搜索模块、脚本名、说明、导出符号…"
           autocomplete="off"
+        />
+        <ModListTreeToolbar
+          aria-label="Starlark 内置列表"
+          :disabled="filteredInternalGroups.length === 0"
+          :module-count="filteredInternalGroups.length"
+          :item-count="filteredInternalItemCount"
+          item-label="脚本"
+          @expand-all="expandAllInternalModules"
+          @collapse-all="collapseAllInternalModules"
         />
         <div class="mod-list">
           <div v-for="g in filteredInternalGroups" :key="g.module" class="mod-block">
@@ -287,7 +307,6 @@
         <div class="side-head side-head--row">
           <div class="side-head-main">
             <span class="side-title">模块与脚本</span>
-            <span class="muted small">{{ userScriptCount }} 个脚本</span>
           </div>
           <button type="button" class="btn ghost sm" @click="openModuleDialog">+ 添加模块</button>
         </div>
@@ -297,8 +316,17 @@
           v-model="userSearch"
           type="search"
           class="search-inp"
-          placeholder="搜索模块、脚本名…"
+          placeholder="搜索模块、脚本名、说明…"
           autocomplete="off"
+        />
+        <ModListTreeToolbar
+          aria-label="用户脚本列表"
+          :disabled="filteredUserGroups.length === 0"
+          :module-count="filteredUserGroups.length"
+          :item-count="filteredUserItemCount"
+          item-label="脚本"
+          @expand-all="expandAllUserModules"
+          @collapse-all="collapseAllUserModules"
         />
         <div class="mod-list user-mod-list">
           <div v-for="g in filteredUserGroups" :key="g.module" class="mod-block">
@@ -311,12 +339,12 @@
               >
                 <span class="chev">{{ expandedUserModules.has(g.module) ? "▼" : "▶" }}</span>
                 <span class="mod-name mono">{{ g.module }}</span>
-                <span class="mod-count">{{ g.scripts.length + (userDraftModule === g.module ? 1 : 0) }}</span>
+                <span class="mod-count">{{ userModuleScriptCount(g) }}</span>
               </button>
               <div class="mod-menu-wrap" @click.stop>
                 <button
                   type="button"
-                  class="mod-more-btn"
+                  class="btn ghost small mod-more-btn"
                   :aria-expanded="openUserModuleMenu === g.module"
                   aria-label="模块操作"
                   @click="toggleUserModuleMenu(g.module)"
@@ -335,7 +363,7 @@
                 <span class="fn-sum">未保存</span>
               </li>
               <li
-                v-for="p in g.scripts"
+                v-for="p in visibleUserScripts(g.scripts)"
                 :key="p"
                 class="fn-item"
                 :class="{ active: !userDraftModule && scriptPath === p }"
@@ -345,151 +373,198 @@
                 @keydown.enter="selectUserScript(g.module, p)"
               >
                 <span class="mono fn-name">{{ userScriptFileName(p) }}</span>
+                <span class="fn-sum">{{ userScriptListSummary(p) }}</span>
               </li>
-              <li v-if="!g.scripts.length && userDraftModule !== g.module" class="fn-empty muted">暂无脚本</li>
+              <li
+                v-if="!visibleUserScripts(g.scripts).length && userDraftModule !== g.module"
+                class="fn-empty muted"
+              >
+                暂无脚本
+              </li>
             </ul>
           </div>
         </div>
         <p v-if="filteredUserGroups.length === 0" class="empty-hint">无匹配项；请先添加模块。</p>
       </aside>
-      <main class="main-detail user-workspace">
-        <div v-if="!hasUserWorkspace" class="placeholder user-placeholder">
+      <main class="main-detail">
+        <div v-if="!hasUserWorkspace" class="placeholder">
           <p>从左侧选择脚本，或通过模块 <strong>…</strong> 菜单添加脚本。</p>
-          <p class="muted">路径 <code class="mono">模块/名称.star</code> · id <code class="mono">user://…</code></p>
+          <p class="muted">路径 <code class="mono">模块/名称.star</code> · 保存后可通过 <code class="mono">load("user://…")</code> 引入。</p>
         </div>
-        <article v-else class="user-panel">
-          <header class="panel-head user-panel-toolbar">
-            <div class="panel-head-main user-panel-head-main">
-              <template v-if="userIsNew">
-                <div class="panel-head-text">
-                  <span class="panel-title">新建脚本</span>
-                  <p class="muted small user-panel-sub">
-                    模块 <span class="mono">{{ effectiveUserModule }}</span>
-                    · 保存后路径 <span class="mono">{{ effectiveUserModule }}/名称.star</span>
-                  </p>
-                </div>
-              </template>
-              <template v-else>
-                <div class="detail-card-head user-edit-title">
-                  <h2 class="detail-title mono">{{ userScriptFileName(scriptPath) }}</h2>
+        <template v-else>
+          <div class="user-ws-head" :class="{ 'user-ws-head--new': userIsNew }">
+            <div class="user-ws-toolbar">
+              <div v-if="userIsNew" class="user-ws-toolbar-left user-ws-toolbar-left--new">
+                <div class="user-ws-title-row">
+                  <div class="user-name-inline name-suffix-row">
+                    <input
+                      id="user-script-name"
+                      v-model="activeScriptBase"
+                      class="inp mono user-title-inp"
+                      :class="{ 'inp-invalid': scriptNameInvalid }"
+                      placeholder="脚本名"
+                      spellcheck="false"
+                      autocomplete="off"
+                      :aria-invalid="scriptNameInvalid"
+                      :aria-describedby="scriptNameValidationMessage ? 'user-script-name-err' : undefined"
+                    />
+                    <span class="name-suffix mono">.star</span>
+                  </div>
                   <span v-if="effectiveUserModule" class="chip chip-mod">{{ effectiveUserModule }}</span>
+                  <span class="user-ws-load-wrap" :title="userLoadRefDisplay">
+                    <span class="user-ws-load-lbl">引入：</span>
+                    <span class="user-ws-load-ref mono">{{ userLoadRefDisplay }}</span>
+                  </span>
                 </div>
-                <p v-if="userScriptId" class="id-ref mono muted user-id-ref">id: {{ userScriptId }}</p>
-              </template>
-            </div>
-            <div class="panel-head-actions user-panel-actions">
-              <button
-                type="button"
-                class="btn primary sm"
-                :disabled="!canSaveUserScript || saving"
-                @click="save"
-              >
-                {{ saving ? "保存中…" : "保存" }}
-              </button>
-              <div class="user-ws-menu-wrap" @click.stop>
+                <p
+                  v-if="scriptNameValidationMessage"
+                  id="user-script-name-err"
+                  class="field-err user-name-err"
+                  role="alert"
+                >
+                  {{ scriptNameValidationMessage }}
+                </p>
+              </div>
+              <div v-else class="user-ws-toolbar-left">
+                <div class="user-ws-title-row">
+                  <h2 class="detail-title mono">{{ displayScriptFileName }}</h2>
+                  <span v-if="effectiveUserModule" class="chip chip-mod">{{ effectiveUserModule }}</span>
+                  <span class="user-ws-load-wrap" :title="userLoadRefDisplay">
+                    <span class="user-ws-load-lbl">引入：</span>
+                    <span class="user-ws-load-ref mono">{{ userLoadRefDisplay }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="user-ws-toolbar-actions">
                 <button
                   type="button"
-                  class="btn ghost sm user-ws-more-btn"
-                  :aria-expanded="openUserWorkspaceMenu"
-                  aria-label="更多操作"
-                  @click="toggleUserWorkspaceMenu"
+                  class="btn primary"
+                  :disabled="!canSaveUserScript || saving"
+                  :title="saveDisabledHint"
+                  @click="save"
                 >
-                  …
+                  {{ saving ? "保存中…" : "保存" }}
                 </button>
-                <div v-if="openUserWorkspaceMenu" class="menu">
+                <div class="user-ws-menu-wrap" @click.stop>
                   <button
-                    v-if="canDeleteUserScript"
                     type="button"
-                    class="menu-item danger"
-                    :disabled="deletingUser || saving"
-                    @click="onDeleteFromWorkspaceMenu"
+                    class="btn ghost user-ws-more-btn"
+                    :aria-expanded="openUserWorkspaceMenu"
+                    aria-label="更多操作"
+                    @click="toggleUserWorkspaceMenu"
                   >
-                    删除脚本
+                    …
                   </button>
-                  <p v-else class="menu-hint muted small">新建脚本保存后可删除</p>
+                  <div v-if="openUserWorkspaceMenu" class="menu">
+                    <button
+                      v-if="canDeleteUserScript"
+                      type="button"
+                      class="menu-item danger"
+                      :disabled="deletingUser || saving"
+                      @click="onDeleteFromWorkspaceMenu"
+                    >
+                      删除脚本
+                    </button>
+                    <p v-else class="menu-hint muted small">新建脚本保存后可删除</p>
+                  </div>
                 </div>
-              </div>
-            </div>
-          </header>
-
-          <div class="user-form-body">
-            <label class="field full" for="user-script-name">
-              <span class="field-lbl">方法名 <em class="req">*</em></span>
-              <div class="name-suffix-row name-suffix-row--inline">
-                <input
-                  id="user-script-name"
-                  v-model="activeScriptBase"
-                  class="inp mono user-name-inp"
-                  placeholder="hello"
-                  spellcheck="false"
-                  autocomplete="off"
-                />
-                <span class="name-suffix mono">.star</span>
-              </div>
-              <p v-if="scriptNameError" class="field-err">{{ scriptNameError }}</p>
-            </label>
-
-            <label class="field full" for="user-script-desc">
-              <span class="field-lbl">描述</span>
-              <textarea
-                id="user-script-desc"
-                v-model="userScriptDescription"
-                class="inp user-desc-inp"
-                rows="2"
-                placeholder="可选：说明脚本用途…"
-              />
-            </label>
-
-            <div class="field full user-exports-field">
-              <span class="field-lbl">导出符号</span>
-              <div v-if="userExportFunctions.length" class="user-export-chips">
-                <span v-for="(ex, idx) in userExportFunctions" :key="ex" class="chip chip-ex chip-removable">
-                  <span class="mono">{{ ex }}</span>
-                  <button type="button" class="chip-remove" aria-label="移除" @click="removeExportSymbol(idx)">×</button>
-                </span>
-              </div>
-              <p v-else class="muted small user-exports-empty">暂无导出符号</p>
-              <div class="export-add-row">
-                <input
-                  v-model="newExportInput"
-                  class="inp mono export-add-inp"
-                  placeholder="符号名，回车添加"
-                  spellcheck="false"
-                  autocomplete="off"
-                  @keydown.enter.prevent="addExportSymbol"
-                />
-                <button type="button" class="btn ghost sm" @click="addExportSymbol">添加</button>
-                <button type="button" class="btn ghost sm" @click="syncExportsFromCode">从源码同步</button>
               </div>
             </div>
           </div>
+          <article class="detail-card detail-card--wide user-detail-card">
+            <textarea
+              v-if="editingUserDesc"
+              ref="userDescInputRef"
+              v-model="userScriptDescription"
+              class="inp user-desc-inp detail-desc-edit"
+              rows="2"
+              placeholder="点击添加描述，说明脚本用途…"
+              @blur="finishEditingUserDesc"
+              @keydown.escape.prevent="cancelEditingUserDesc"
+            />
+            <p
+              v-else
+              class="detail-desc user-desc-display"
+              :class="{ 'is-empty': !userScriptDescription.trim() }"
+              tabindex="0"
+              role="button"
+              @click="startEditingUserDesc"
+              @keydown.enter.prevent="startEditingUserDesc"
+            >
+              {{ userScriptDescription.trim() || "点击添加描述…" }}
+            </p>
 
-          <section class="script-card script-card--dark script-card-editable user-script-editor">
-            <div class="script-sec-head">
-              <span class="script-sec-title">Starlark 源码</span>
-              <button
-                type="button"
-                class="btn ghost sm script-debug-btn"
-                :disabled="!canDebugUserScript"
-                title="调试当前脚本：配置 Profile、抑制规则并执行"
-                @click="openUserDebugDrawer"
+            <section class="detail-sec user-exports-sec">
+              <div class="detail-sec-head-row">
+                <h3>导出符号</h3>
+                <button type="button" class="btn-link sm" @click="syncExportsFromCode">从源码同步</button>
+              </div>
+              <div
+                class="export-tags-inp"
+                :class="{ focused: exportTagsFocused }"
+                @click="focusExportInput"
               >
-                调试
-              </button>
-            </div>
-            <div class="script-body">
-              <CodeEditor
-                v-model="userScriptContent"
-                :read-only="false"
-                fill
-                appearance="code-dark"
-                language="python"
-                :registry="registry"
-              />
-            </div>
-          </section>
+                <span
+                  v-for="(ex, idx) in userExportFunctions"
+                  :key="ex"
+                  class="export-tag chip-ex"
+                >
+                  <span class="mono">{{ ex }}</span>
+                  <button
+                    type="button"
+                    class="export-tag-remove"
+                    :aria-label="`移除 ${ex}`"
+                    @click.stop="removeExportSymbol(idx)"
+                  >
+                    ×
+                  </button>
+                </span>
+                <input
+                  ref="exportInputRef"
+                  v-model="newExportInput"
+                  class="export-tags-input mono"
+                  placeholder="符号名，回车添加"
+                  spellcheck="false"
+                  autocomplete="off"
+                  @focus="exportTagsFocused = true"
+                  @blur="exportTagsFocused = false"
+                  @keydown.enter.prevent="addExportSymbol"
+                  @keydown.backspace="onExportInputBackspace"
+                />
+              </div>
+            </section>
 
-        </article>
+            <section class="script-card script-card--dark script-card-editable user-script-editor">
+              <div class="script-sec-head">
+                <div class="script-sec-head-left">
+                  <span class="script-sec-title">Starlark 脚本</span>
+                </div>
+                <div class="script-sec-actions">
+                  <button
+                    type="button"
+                    class="btn primary sm"
+                    :disabled="!canDebugUserScript"
+                    :title="debugDisabledHint"
+                    @click="openUserDebugDrawer"
+                  >
+                    调试
+                  </button>
+                </div>
+              </div>
+              <div class="script-body">
+                <CodeEditor
+                  v-model="userScriptContent"
+                  :read-only="false"
+                  fill
+                  appearance="code-dark"
+                  language="python"
+                  :registry="registry"
+                />
+              </div>
+            </section>
+          </article>
+        </template>
+
       </main>
     </div>
     <DebugDrawer
@@ -511,13 +586,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import DebugDrawer from "@/components/DebugDrawer.vue";
 import DebugPanel from "@/components/DebugPanel.vue";
+import ModListTreeToolbar from "@/components/ModListTreeToolbar.vue";
 import {
   deleteUserModule,
   deleteUserScript,
+  ensureUserModule,
   fetchStarlarkRegistry,
   fetchUserScripts,
   getInternalScript,
@@ -539,6 +616,7 @@ import {
   internalModuleKey,
   internalScriptName,
   pythonModuleKey,
+  isUserModulePlaceholderPath,
   userScriptFileName,
   userScriptModuleKey,
 } from "@/utils/registryGroup";
@@ -586,9 +664,14 @@ const newModuleName = ref("");
 const newModuleError = ref("");
 const newScriptBase = ref("");
 const editScriptBase = ref("");
-const scriptNameError = ref("");
 const userExportFunctions = ref<string[]>([]);
 const newExportInput = ref("");
+const editingUserDesc = ref(false);
+const userDescBeforeEdit = ref("");
+const userDescInputRef = ref<HTMLTextAreaElement | null>(null);
+const exportInputRef = ref<HTMLInputElement | null>(null);
+const userScriptSummaries = ref<Record<string, string>>({});
+const exportTagsFocused = ref(false);
 
 const openUserModuleMenu = ref<string | null>(null);
 const openUserWorkspaceMenu = ref(false);
@@ -604,8 +687,8 @@ const userScriptContent = ref(`load("internal://lib/helpers.star", "double_int")
 const userDebugDrawerOpen = ref(false);
 const userDebugPanelRef = shallowRef<InstanceType<typeof DebugPanel> | null>(null);
 
-const loading = ref(false);
 const saving = ref(false);
+const creatingModule = ref(false);
 const error = ref("");
 
 const scriptPathValid = computed(() => USER_SCRIPT_PATH_RE.test(scriptPath.value.trim()));
@@ -667,10 +750,51 @@ const effectiveUserModule = computed(
   () => userDraftModule.value ?? selectedUserModule.value ?? userScriptModuleKey(scriptPath.value.trim()) ?? "",
 );
 
-const userScriptId = computed(() => {
-  const p = effectiveUserScriptPath.value;
-  if (!p || !USER_SCRIPT_PATH_RE.test(p)) return "";
-  return `user://${p}`;
+const displayScriptFileName = computed(() => {
+  const base = activeScriptBase.value.trim();
+  if (base) return base.endsWith(".star") ? base : `${base}.star`;
+  return userScriptFileName(scriptPath.value);
+});
+
+function validateUserScriptName(): string {
+  if (!hasUserWorkspace.value) return "";
+  const base = activeScriptBase.value.trim();
+  const mod = effectiveUserModule.value;
+
+  if (!base) {
+    return userIsNew.value ? "请填写脚本名" : "";
+  }
+  if (!USER_SCRIPT_BASE_RE.test(base)) {
+    if (/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(base)) {
+      return "脚本名不支持中文，请使用字母、数字、_、-";
+    }
+    return "脚本名须以字母或数字开头，仅可使用英文、数字、_、-";
+  }
+  if (!mod) return "";
+
+  const target = buildUserScriptPath(mod, base);
+  if (!USER_SCRIPT_PATH_RE.test(target)) return "路径格式无效";
+
+  if (userIsNew.value && scripts.value.includes(target)) return "该脚本已存在";
+  const current = scriptPath.value.trim();
+  if (!userIsNew.value && target !== current && scripts.value.includes(target)) {
+    return "目标路径已被占用";
+  }
+  return "";
+}
+
+const scriptNameValidationMessage = computed(() => validateUserScriptName());
+
+const scriptNameInvalid = computed(() => userIsNew.value && scriptNameValidationMessage.value !== "");
+
+const saveDisabledHint = computed(() => {
+  if (saving.value || canSaveUserScript.value) return undefined;
+  return scriptNameValidationMessage.value || "请先修正脚本名后再保存";
+});
+
+const debugDisabledHint = computed(() => {
+  if (canDebugUserScript.value) return "调试当前脚本：配置 Profile、抑制规则并执行";
+  return scriptNameValidationMessage.value || "请先填写合法的脚本名后再调试";
 });
 
 const userDebugPending = computed(() => {
@@ -699,10 +823,6 @@ watch([scriptPath, userDraftModule, newScriptBase, editScriptBase], () => {
   }
 });
 
-watch(activeScriptBase, () => {
-  scriptNameError.value = "";
-});
-
 watch(activeSegment, (seg) => {
   if (seg !== "user") userDebugDrawerOpen.value = false;
 });
@@ -718,9 +838,42 @@ const filteredInternalGroups = computed(() =>
 );
 
 const userGroups = computed(() => groupUserScriptsByModule(scripts.value, extraUserModules.value));
-const filteredUserGroups = computed(() => filterUserScriptGroups(userGroups.value, userSearch.value));
+const filteredUserGroups = computed(() =>
+  filterUserScriptGroups(userGroups.value, userSearch.value, userScriptSummaries.value),
+);
 
-const userScriptCount = computed(() => scripts.value.length);
+function setUserScriptSummary(path: string, description: string) {
+  userScriptSummaries.value = { ...userScriptSummaries.value, [path]: description };
+}
+
+function userScriptListSummary(path: string): string {
+  if (!userDraftModule.value && scriptPath.value.trim() === path) {
+    const live = userScriptDescription.value.trim();
+    if (live) return live;
+  }
+  const cached = (userScriptSummaries.value[path] ?? "").trim();
+  return cached || "暂无描述";
+}
+
+function visibleUserScripts(paths: string[]): string[] {
+  return paths.filter((p) => !isUserModulePlaceholderPath(p));
+}
+
+function userModuleScriptCount(g: { module: string; scripts: string[] }): number {
+  return visibleUserScripts(g.scripts).length + (userDraftModule.value === g.module ? 1 : 0);
+}
+
+const filteredPythonItemCount = computed(() =>
+  filteredPythonGroups.value.reduce((sum, g) => sum + g.functions.length, 0),
+);
+
+const filteredInternalItemCount = computed(() =>
+  filteredInternalGroups.value.reduce((sum, g) => sum + g.scripts.length, 0),
+);
+
+const filteredUserItemCount = computed(() =>
+  filteredUserGroups.value.reduce((sum, g) => sum + visibleUserScripts(g.scripts).length, 0),
+);
 
 const pythonExampleCall = computed(() =>
   selectedPythonFn.value ? formatPythonExampleCall(selectedPythonFn.value) : "",
@@ -731,6 +884,25 @@ const internalLoadExample = computed(() => {
   if (!m?.exports.length) return `load("${m?.uri ?? ""}")`;
   const syms = m.exports.map((s) => `"${s}"`).join(", ");
   return `load("${m.uri}", ${syms})`;
+});
+
+const userLoadRefDisplay = computed(() => {
+  const path = effectiveUserScriptPath.value.trim();
+  if (path && USER_SCRIPT_PATH_RE.test(path)) {
+    const uri = `user://${path}`;
+    const syms = userExportFunctions.value;
+    if (syms.length) {
+      return `load("${uri}", ${syms.map((s) => `"${s}"`).join(", ")})`;
+    }
+    return `load("${uri}")`;
+  }
+  const mod = effectiveUserModule.value;
+  if (mod) {
+    const base = activeScriptBase.value.trim();
+    const file = base ? (base.endsWith(".star") ? base : `${base}.star`) : "脚本名.star";
+    return `load("user://${mod}/${file}", …)`;
+  }
+  return 'load("user://模块/脚本名.star", …)';
 });
 
 function setSegment(s: Segment) {
@@ -758,6 +930,47 @@ function toggleUserModule(mod: string) {
   if (next.has(mod)) next.delete(mod);
   else next.add(mod);
   expandedUserModules.value = next;
+}
+
+function setExpandedModules(expanded: { value: Set<string> }, keys: string[]) {
+  expanded.value = new Set(keys);
+}
+
+function collapseExpandedModules(expanded: { value: Set<string> }) {
+  expanded.value = new Set();
+}
+
+function expandAllPythonModules() {
+  setExpandedModules(
+    expandedModules,
+    filteredPythonGroups.value.map((g) => g.module),
+  );
+}
+
+function collapseAllPythonModules() {
+  collapseExpandedModules(expandedModules);
+}
+
+function expandAllInternalModules() {
+  setExpandedModules(
+    expandedInternalModules,
+    filteredInternalGroups.value.map((g) => g.module),
+  );
+}
+
+function collapseAllInternalModules() {
+  collapseExpandedModules(expandedInternalModules);
+}
+
+function expandAllUserModules() {
+  setExpandedModules(
+    expandedUserModules,
+    filteredUserGroups.value.map((g) => g.module),
+  );
+}
+
+function collapseAllUserModules() {
+  collapseExpandedModules(expandedUserModules);
 }
 
 function selectPythonFn(f: RegistryPythonFn) {
@@ -825,6 +1038,44 @@ function removeExportSymbol(index: number) {
   userExportFunctions.value = userExportFunctions.value.filter((_, i) => i !== index);
 }
 
+function focusExportInput() {
+  exportInputRef.value?.focus();
+}
+
+function onExportInputBackspace() {
+  if (newExportInput.value) return;
+  const list = userExportFunctions.value;
+  if (!list.length) return;
+  userExportFunctions.value = list.slice(0, -1);
+}
+
+function resetUserDescEditing() {
+  editingUserDesc.value = false;
+  userDescBeforeEdit.value = "";
+}
+
+async function startEditingUserDesc() {
+  userDescBeforeEdit.value = userScriptDescription.value;
+  editingUserDesc.value = true;
+  await nextTick();
+  userDescInputRef.value?.focus();
+  userDescInputRef.value?.select();
+}
+
+function finishEditingUserDesc() {
+  editingUserDesc.value = false;
+  userDescBeforeEdit.value = "";
+  const p = scriptPath.value.trim();
+  if (p && !userIsNew.value) {
+    setUserScriptSummary(p, userScriptDescription.value);
+  }
+}
+
+function cancelEditingUserDesc() {
+  userScriptDescription.value = userDescBeforeEdit.value;
+  resetUserDescEditing();
+}
+
 function syncExportsFromCode() {
   userExportFunctions.value = [...extractStarlarkExportFunctions(userScriptContent.value)];
 }
@@ -864,7 +1115,7 @@ function pickFirstUserScriptAfterChange() {
   userDraftModule.value = null;
   newScriptBase.value = "";
   editScriptBase.value = "";
-  scriptNameError.value = "";
+  resetUserDescEditing();
   userDebugDrawerOpen.value = false;
   const groups = userGroups.value;
   const firstPath = groups[0]?.scripts[0];
@@ -905,6 +1156,7 @@ async function submitDelete() {
       }
       const usr = await fetchUserScripts();
       scripts.value = usr.scripts;
+      userScriptSummaries.value = usr.descriptions ?? {};
       if (removingCurrent || hadDraft) {
         pickFirstUserScriptAfterChange();
       }
@@ -913,6 +1165,7 @@ async function submitDelete() {
       await deleteUserScript(d.path);
       const usr = await fetchUserScripts();
       scripts.value = usr.scripts;
+      userScriptSummaries.value = usr.descriptions ?? {};
       if (removingCurrent) {
         pickFirstUserScriptAfterChange();
       }
@@ -941,7 +1194,7 @@ function selectUserScript(mod: string, path: string) {
   closeUserMenus();
   userDraftModule.value = null;
   newScriptBase.value = "";
-  scriptNameError.value = "";
+  resetUserDescEditing();
   selectedUserModule.value = mod;
   scriptPath.value = path;
   void loadFromPath();
@@ -953,7 +1206,7 @@ function resetUserWorkspaceDraft(mod: string) {
   scriptPath.value = "";
   newScriptBase.value = "";
   editScriptBase.value = "";
-  scriptNameError.value = "";
+  resetUserDescEditing();
   userScriptDescription.value = "";
   userScriptContent.value = USER_SCRIPT_DRAFT_TEMPLATE;
   userExportFunctions.value = [...extractStarlarkExportFunctions(USER_SCRIPT_DRAFT_TEMPLATE)];
@@ -972,7 +1225,7 @@ function closeModuleDialog() {
   newModuleError.value = "";
 }
 
-function confirmAddModule() {
+async function confirmAddModule() {
   newModuleError.value = "";
   const name = newModuleName.value.trim();
   if (!USER_MODULE_RE.test(name)) {
@@ -980,12 +1233,27 @@ function confirmAddModule() {
     return;
   }
   const key = name.toLowerCase();
-  extraUserModules.value = new Set([...extraUserModules.value, key]);
-  expandedUserModules.value = new Set([...expandedUserModules.value, key]);
-  selectedUserModule.value = key;
-  newModuleName.value = "";
-  moduleDialogOpen.value = false;
-  userSearch.value = "";
+  if (userGroups.value.some((g) => g.module === key)) {
+    newModuleError.value = "该模块已存在";
+    return;
+  }
+  creatingModule.value = true;
+  try {
+    await ensureUserModule(key);
+    const usr = await fetchUserScripts();
+    scripts.value = usr.scripts;
+    userScriptSummaries.value = { ...userScriptSummaries.value, ...usr.descriptions };
+    expandedUserModules.value = new Set([...expandedUserModules.value, key]);
+    selectedUserModule.value = key;
+    newModuleName.value = "";
+    moduleDialogOpen.value = false;
+    userSearch.value = "";
+    startNewUserScript(key);
+  } catch (e) {
+    newModuleError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    creatingModule.value = false;
+  }
 }
 
 function startNewUserScript(mod: string) {
@@ -1100,20 +1368,18 @@ watch(registry, (reg) => {
 
 async function refreshAll() {
   error.value = "";
-  loading.value = true;
   try {
     const [reg, usr] = await Promise.all([fetchStarlarkRegistry(), fetchUserScripts()]);
     registry.value = reg;
     scripts.value = usr.scripts;
     scriptsRoot.value = usr.root;
+    userScriptSummaries.value = usr.descriptions ?? {};
     if (!scriptPath.value.trim() && usr.scripts.length) {
       scriptPath.value = usr.scripts[0] ?? "default/hello.star";
       await loadFromPath();
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    loading.value = false;
   }
 }
 
@@ -1128,7 +1394,9 @@ async function loadFromPath() {
     const f = await getUserScript(p);
     userScriptContent.value = f.content;
     userScriptDescription.value = f.description ?? "";
+    setUserScriptSummary(p, f.description ?? "");
     editScriptBase.value = userScriptBaseName(p);
+    resetUserDescEditing();
     userExportFunctions.value = f.export_functions?.length
       ? [...f.export_functions]
       : [...extractStarlarkExportFunctions(f.content)];
@@ -1147,30 +1415,15 @@ async function loadFromPath() {
 
 async function save() {
   if (activeSegment.value !== "user") return;
+  const nameErr = scriptNameValidationMessage.value;
+  if (nameErr || !canSaveUserScript.value) return;
   const mod = effectiveUserModule.value;
   const base = activeScriptBase.value.trim();
-  if (!mod || !USER_SCRIPT_BASE_RE.test(base)) {
-    scriptNameError.value = "方法名：字母数字开头，可含 _、-";
-    return;
-  }
   const target = buildUserScriptPath(mod, base);
-  if (!USER_SCRIPT_PATH_RE.test(target)) {
-    scriptNameError.value = "路径格式无效";
-    return;
-  }
   const current = scriptPath.value.trim();
   const isNew = userIsNew.value;
-  if (isNew && scripts.value.includes(target)) {
-    scriptNameError.value = "该脚本已存在";
-    return;
-  }
-  if (!isNew && target !== current && scripts.value.includes(target)) {
-    scriptNameError.value = "目标路径已被占用";
-    return;
-  }
   saving.value = true;
   error.value = "";
-  scriptNameError.value = "";
   try {
     const payload = {
       content: userScriptContent.value,
@@ -1183,6 +1436,13 @@ async function save() {
     }
     const usr = await fetchUserScripts();
     scripts.value = usr.scripts;
+    userScriptSummaries.value = usr.descriptions ?? {};
+    setUserScriptSummary(target, userScriptDescription.value);
+    if (!isNew && target !== current) {
+      const nextSummaries = { ...userScriptSummaries.value };
+      delete nextSummaries[current];
+      userScriptSummaries.value = nextSummaries;
+    }
     extraUserModules.value = new Set([...extraUserModules.value, userScriptModuleKey(target)]);
     if (isNew) {
       userDraftModule.value = null;
@@ -1191,6 +1451,7 @@ async function save() {
     scriptPath.value = target;
     editScriptBase.value = userScriptBaseName(target);
     selectedUserModule.value = userScriptModuleKey(target);
+    resetUserDescEditing();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -1225,20 +1486,22 @@ onUnmounted(() => {
 }
 
 .top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 86%, transparent);
-  flex-wrap: wrap;
 }
 
 .brand {
+  grid-column: 1;
+  justify-self: start;
   display: flex;
   gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 
 .logo {
@@ -1266,10 +1529,13 @@ onUnmounted(() => {
 }
 
 .segments {
+  grid-column: 2;
+  justify-self: center;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  justify-content: center;
 }
 
 .seg {
@@ -1316,13 +1582,6 @@ onUnmounted(() => {
   color: #065f46;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
 .btn {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1334,7 +1593,8 @@ onUnmounted(() => {
   box-shadow: var(--shadow);
 }
 
-.btn.sm {
+.btn.sm,
+.btn.small {
   padding: 4px 8px;
   font-size: 11px;
 }
@@ -1535,53 +1795,79 @@ onUnmounted(() => {
 }
 
 .mod-row {
-  position: relative;
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
 }
 
 .mod-row .mod-head {
   flex: 1;
   min-width: 0;
-  padding-right: 30px;
+  padding-right: 6px;
+}
+
+.user-mod-list .mod-row:hover,
+.user-mod-list .mod-row.is-menu-open,
+.user-mod-list .mod-row:has(.mod-head.open) {
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+}
+
+.user-mod-list .mod-row:has(.mod-head.open) {
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface));
+}
+
+.user-mod-list .mod-head:hover,
+.user-mod-list .mod-head.open {
+  background: transparent;
 }
 
 .mod-menu-wrap {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
+  position: relative;
+  flex-shrink: 0;
 }
 
-.mod-more-btn {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
+.user-mod-list .mod-more-btn {
+  min-width: 28px;
   padding: 2px 6px;
-  font-size: 14px;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  cursor: pointer;
+  border: 1px solid transparent;
   border-radius: 6px;
-  opacity: 0;
-  pointer-events: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  letter-spacing: 0.08em;
   transition:
-    opacity 0.14s ease,
-    color 0.14s ease,
-    background 0.14s ease;
+    background 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
-.mod-row:hover .mod-more-btn,
-.mod-row.is-menu-open .mod-more-btn,
-.mod-row:focus-within .mod-more-btn {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.mod-more-btn:hover {
+.user-mod-list .mod-more-btn:hover:not(:disabled) {
   color: var(--text);
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.user-mod-list .mod-more-btn:focus-visible {
+  outline: none;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.user-mod-list .mod-more-btn:active:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 85%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.user-mod-list .mod-row.is-menu-open .mod-more-btn {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 75%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 .mod-menu-wrap .menu {
@@ -1755,6 +2041,9 @@ onUnmounted(() => {
 
 .detail-card {
   max-width: 720px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
 }
 
 .detail-card--wide {
@@ -1798,14 +2087,13 @@ onUnmounted(() => {
 }
 
 .detail-desc {
-  font-size: 13px;
   margin: 12px 0 16px;
-  line-height: 1.45;
 }
 
 .detail-sec h3 {
   margin: 0 0 8px;
   font-size: 11px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -1815,10 +2103,31 @@ onUnmounted(() => {
   margin-bottom: 14px;
 }
 
+.detail-value {
+  margin: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--text);
+}
+
+.detail-mono-panel {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
 .sig-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  line-height: 1.4;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
@@ -1829,19 +2138,21 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border);
   padding: 8px 10px;
   text-align: left;
+  font-size: 12px;
 }
 
 .sig-table th {
   background: color-mix(in srgb, var(--surface) 90%, var(--bg));
   font-weight: 600;
+  color: var(--muted);
 }
 
-.ret {
-  margin: 0;
-  padding: 8px 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+.sig-table td.mono {
+  font-family: var(--mono);
+}
+
+.sig-table .muted {
+  font-size: 12px;
 }
 
 .code-row {
@@ -1851,7 +2162,7 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.code-block {
+.detail-card .code-block {
   margin: 0;
   flex: 1;
   min-width: 200px;
@@ -1859,12 +2170,18 @@ onUnmounted(() => {
   background: #0f172a;
   color: #e2e8f0;
   border-radius: 8px;
+  font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.5;
   overflow: auto;
 }
 
-.id-ref {
+.detail-card .id-ref {
+  margin: 8px 0 0;
+  font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .script-card {
@@ -1911,6 +2228,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.script-sec-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .script-sec-title {
@@ -2014,92 +2338,172 @@ onUnmounted(() => {
   color: color-mix(in srgb, #10b981 55%, var(--muted));
 }
 
-.user-workspace {
-  padding: 12px 14px;
-  overflow: hidden;
-  min-height: 0;
+.user-ws-head {
+  flex-shrink: 0;
+  margin-bottom: 0;
 }
 
-.user-placeholder {
-  margin: auto;
-  text-align: center;
-  max-width: 360px;
+.user-ws-head--new .user-ws-toolbar {
+  align-items: flex-start;
 }
 
-.user-panel {
+.user-ws-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 12px 14px 14px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-}
-
-.panel-head {
-  display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: flex-start;
   gap: 12px;
-  flex-wrap: wrap;
-}
-
-.panel-head-main {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
-.panel-head-text {
-  min-width: 0;
-}
-
-.panel-head-actions {
-  display: flex;
-  gap: 8px;
   flex-shrink: 0;
 }
 
-.panel-title {
-  font-weight: 800;
-  font-size: 15px;
-  letter-spacing: -0.02em;
+.user-ws-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
-.user-panel-toolbar {
-  flex-shrink: 0;
-  padding-bottom: 10px;
-  margin-bottom: 2px;
-  border-bottom: 1px solid var(--border);
-}
-
-.user-panel-head-main {
+.user-ws-toolbar-left--new {
   flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  align-items: stretch;
+  gap: 4px;
 }
 
-.user-panel-sub {
-  margin: 4px 0 0;
+.user-ws-title-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.user-ws-title-row .detail-title {
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+.user-ws-title-row .chip-mod {
+  align-self: flex-end;
+  margin-bottom: 3px;
+}
+
+.user-ws-load-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  align-self: flex-end;
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg) 62%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--border-strong) 55%, var(--border));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.user-ws-load-lbl {
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+.user-ws-load-ref {
+  min-width: 0;
+  font-size: 9px;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-ws-head--new .user-ws-load-wrap {
+  flex-basis: 100%;
+}
+
+.user-ws-head--new .user-ws-load-ref {
+  white-space: normal;
+  word-break: break-all;
+}
+
+.user-name-err {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.user-ws-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.user-name-inline.name-suffix-row .inp,
+.user-name-inline .user-title-inp {
+  flex: 0 0 auto;
+  width: 280px;
+  max-width: min(56vw, 420px);
+  min-width: 160px;
+  padding: 5px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.user-detail-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.user-desc-display {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.12s ease;
+}
+
+.user-desc-display:hover,
+.user-desc-display:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+  outline: none;
+}
+
+.user-desc-display.is-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.detail-desc-edit {
+  margin: 12px 0 16px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 52px;
   line-height: 1.45;
 }
 
-.user-edit-title {
-  margin: 0;
-}
-
-.user-id-ref {
-  margin: 0;
-}
-
-.user-panel-actions {
+.detail-sec-head-row {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.detail-sec-head-row h3 {
+  margin: 0;
+}
+
+.user-exports-sec .export-tags-inp {
+  max-height: none;
+  flex-wrap: wrap;
+  overflow-x: visible;
+  overflow-y: visible;
+  min-height: 34px;
+  height: auto;
+  padding: 5px 6px;
 }
 
 .user-ws-menu-wrap {
@@ -2114,8 +2518,7 @@ onUnmounted(() => {
 }
 
 .user-ws-more-btn {
-  min-width: 32px;
-  padding: 0 8px;
+  min-width: 36px;
   letter-spacing: 0.1em;
 }
 
@@ -2125,65 +2528,87 @@ onUnmounted(() => {
   line-height: 1.4;
 }
 
-.user-form-body {
+.user-title-inp.inp-invalid {
+  border-color: color-mix(in srgb, #f87171 55%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, #fecaca 45%, transparent);
+}
+
+.btn-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.btn-link:hover {
+  color: color-mix(in srgb, var(--accent) 75%, #000);
+}
+
+.export-tags-inp {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.user-exports-field .user-export-chips {
-  margin-bottom: 6px;
-}
-
-.chip-removable {
-  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
-  padding-right: 4px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  overflow-x: auto;
+  overflow-y: hidden;
+  cursor: text;
 }
 
-.chip-remove {
+.export-tags-inp.focused {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.export-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 2px 4px 2px 6px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, #c7d2fe 55%, var(--border));
+  background: color-mix(in srgb, #e0e7ff 50%, #fff);
+}
+
+.export-tag-remove {
   border: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
   padding: 0 2px;
 }
 
-.chip-remove:hover {
+.export-tag-remove:hover {
   color: #b91c1c;
 }
 
-.export-add-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.export-add-inp {
-  flex: 1;
-  min-width: 120px;
+.export-tags-input {
+  flex: 1 1 72px;
+  min-width: 72px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  padding: 2px 4px;
+  box-shadow: none;
 }
 
 .em.req {
   color: #b91c1c;
   font-style: normal;
-}
-
-.name-suffix-row--inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-}
-
-.user-name-inp {
-  width: min(220px, 100%);
-  min-width: 120px;
 }
 
 .field {
@@ -2206,57 +2631,30 @@ onUnmounted(() => {
   line-height: 1.35;
 }
 
-.field-lbl-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 10px;
-}
-
-.user-export-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.user-exports-empty {
-  margin: 0;
-  line-height: 1.4;
-}
-
 .user-desc-inp {
   resize: vertical;
-  min-height: 52px;
-  max-height: 100px;
+  min-height: 34px;
+  max-height: 80px;
+  line-height: 1.35;
 }
 
 .user-script-editor {
   flex: 1 1 auto;
-  min-height: 220px;
-}
-
-.script-debug-btn {
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: none;
-}
-
-.script-debug-btn:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.12);
-  color: #f8fafc;
-}
-
-.script-debug-btn:disabled {
-  opacity: 0.45;
+  min-height: 280px;
+  margin-top: 8px;
 }
 
 .inp:focus,
-.user-desc-inp:focus {
+.user-desc-inp:focus,
+.export-tags-input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.export-tags-input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 @media (max-width: 900px) {
@@ -2273,13 +2671,6 @@ onUnmounted(() => {
   }
   .user-nav {
     max-height: 38vh;
-  }
-  .user-panel-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .user-panel-actions {
-    justify-content: flex-end;
   }
 }
 </style>

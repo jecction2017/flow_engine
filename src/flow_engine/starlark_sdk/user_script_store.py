@@ -21,6 +21,10 @@ _TENANT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _SAFE_REL = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./-]*\.star$")
 _EXPORT_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# 空模块占位脚本：仅用于在 fe_user_script 中注册 tenant，UI 不展示。
+MODULE_PLACEHOLDER_REL = "module__.star"
+MODULE_PLACEHOLDER_CONTENT = "null\n"
+
 
 def _normalize_export_functions(names: list[str]) -> list[str]:
     out: list[str] = []
@@ -50,6 +54,10 @@ def validate_script_path(rel_path: str) -> str:
     return rel_path
 
 
+def is_module_placeholder_rel(rel_path: str) -> bool:
+    return rel_path == MODULE_PLACEHOLDER_REL
+
+
 class UserScriptStore:
     """MySQL-backed user Starlark script store (fe_user_script)."""
 
@@ -62,11 +70,22 @@ class UserScriptStore:
                 stmt = stmt.where(FeUserScript.tenant == tenant)
             stmt = stmt.order_by(FeUserScript.tenant, FeUserScript.rel_path)
             rows = s.execute(stmt).scalars().all()
-            return [{"tenant": r.tenant, "rel_path": r.rel_path} for r in rows]
+            return [
+                {
+                    "tenant": r.tenant,
+                    "rel_path": r.rel_path,
+                    "description": r.description or "",
+                }
+                for r in rows
+            ]
 
     def list_rel_paths(self) -> list[str]:
         """Return paths as 'tenant/rel_path' strings (used by user_script_list builtin)."""
-        return [f"{r['tenant']}/{r['rel_path']}" for r in self.list_scripts()]
+        return [
+            f"{r['tenant']}/{r['rel_path']}"
+            for r in self.list_scripts()
+            if not is_module_placeholder_rel(r["rel_path"])
+        ]
 
     def exists(self, tenant: str, rel_path: str) -> bool:
         validate_tenant(tenant)
@@ -97,6 +116,29 @@ class UserScriptStore:
             if row is None:
                 raise FileNotFoundError(f"Script not found: user://{tenant}/{rel_path}")
             return _record_from_row(row)
+
+    def ensure_module(self, tenant: str) -> bool:
+        """Register an empty module (tenant). Returns True if placeholder was created."""
+        validate_tenant(tenant)
+        if self.exists(tenant, MODULE_PLACEHOLDER_REL):
+            return False
+        with db_session() as s:
+            stmt = (
+                select(FeUserScript.id)
+                .where(FeUserScript.tenant == tenant)
+                .where(FeUserScript.deleted_at.is_(None))
+                .limit(1)
+            )
+            if s.execute(stmt).scalar_one_or_none() is not None:
+                return False
+        self.put_script(
+            tenant,
+            MODULE_PLACEHOLDER_REL,
+            MODULE_PLACEHOLDER_CONTENT,
+            description="",
+            export_functions=[],
+        )
+        return True
 
     def put_script(
         self,
@@ -136,6 +178,8 @@ class UserScriptStore:
                 row.content = content
                 row.description = desc
                 row.export_functions = exports
+        if not is_module_placeholder_rel(rel_path) and self.exists(tenant, MODULE_PLACEHOLDER_REL):
+            self.delete_script(tenant, MODULE_PLACEHOLDER_REL)
 
     def delete_script(self, tenant: str, rel_path: str) -> bool:
         """Soft-delete one script. Returns True if a row was updated."""

@@ -27,6 +27,8 @@ export type RegistryDoc = {
 
 export type UserScriptsResponse = {
   scripts: string[];
+  /** path → description，与 scripts 同键 */
+  descriptions?: Record<string, string>;
   root: string;
 };
 
@@ -124,6 +126,15 @@ export async function deleteUserModule(module: string): Promise<{ deleted: numbe
     throw new Error(t || `delete module ${module}: ${r.status}`);
   }
   return r.json() as Promise<{ deleted: number }>;
+}
+
+export async function ensureUserModule(module: string): Promise<{ created: boolean }> {
+  const r = await fetch(`/api/starlark/user/${encodeURIComponent(module)}/module`, { method: "PUT" });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `ensure module ${module}: ${r.status}`);
+  }
+  return r.json() as Promise<{ created: boolean }>;
 }
 
 export type DebugNodeResponse = {
