@@ -76,6 +76,24 @@ export async function deleteLookupTable(namespace: string, profile?: string): Pr
   if (!r.ok) throw new Error(`delete ${namespace}: ${r.status}`);
 }
 
+export type LookupExportFormat = "json" | "csv" | "xlsx";
+
+export async function exportLookupTable(
+  namespace: string,
+  format: LookupExportFormat,
+  profile?: string,
+): Promise<Blob> {
+  const q = new URLSearchParams();
+  q.set("format", format);
+  if (profile) q.set("profile", profile);
+  const r = await fetch(`/api/lookups/${encodeURIComponent(namespace)}/export?${q.toString()}`);
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `export lookup ${namespace}: ${r.status}`);
+  }
+  return r.blob();
+}
+
 export async function importLookupFile(
   namespace: string,
   file: File,

@@ -48,13 +48,19 @@
           向命名空间 <code class="mono">{{ activeNs }}</code> 导入文件（支持 .json、.csv、.xlsx）。
         </p>
         <div class="import-form">
-          <label class="import-field">
+          <div class="import-field">
             <span class="lbl">导入方式</span>
-            <select v-model="importMode" class="sel">
-              <option value="replace">覆盖</option>
-              <option value="append">追加</option>
-            </select>
-          </label>
+            <div class="option-group" role="radiogroup" aria-label="导入方式">
+              <label class="option-pill" :class="{ active: importMode === 'replace' }" title="清空现有数据后写入">
+                <input v-model="importMode" type="radio" class="option-input" value="replace" />
+                覆盖
+              </label>
+              <label class="option-pill" :class="{ active: importMode === 'append' }" title="保留现有数据并追加行">
+                <input v-model="importMode" type="radio" class="option-input" value="append" />
+                追加
+              </label>
+            </div>
+          </div>
           <div class="import-field">
             <span class="lbl">选择文件</span>
             <div class="import-file-row">
@@ -76,6 +82,40 @@
             @click="submitImport"
           >
             {{ loading ? "导入中…" : "开始导入" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="exportModalOpen" class="confirm-mask" @click.self="closeExportModal">
+      <div class="confirm-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导出 Lookup 数据">
+        <div class="confirm-title">导出数据</div>
+        <p class="confirm-text">
+          导出命名空间 <code class="mono">{{ exportTargetNs }}</code> 的全部数据，请选择文件格式。
+        </p>
+        <div class="import-form">
+          <div class="import-field">
+            <span class="lbl">导出格式</span>
+            <div class="option-group" role="radiogroup" aria-label="导出格式">
+              <label class="option-pill" :class="{ active: exportFormat === 'json' }" title="含结构定义与数据行">
+                <input v-model="exportFormat" type="radio" class="option-input" value="json" />
+                JSON
+              </label>
+              <label class="option-pill" :class="{ active: exportFormat === 'csv' }" title="逗号分隔表格">
+                <input v-model="exportFormat" type="radio" class="option-input" value="csv" />
+                CSV
+              </label>
+              <label class="option-pill" :class="{ active: exportFormat === 'xlsx' }" title=".xlsx 工作簿">
+                <input v-model="exportFormat" type="radio" class="option-input" value="xlsx" />
+                Excel
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" @click="closeExportModal">取消</button>
+          <button type="button" class="btn primary" :disabled="loading || !exportTargetNs" @click="submitExport">
+            {{ loading ? "导出中…" : "开始导出" }}
           </button>
         </div>
       </div>
@@ -135,7 +175,7 @@
                   ···
                 </button>
                 <div v-if="openNsMenuFor === n" class="ns-menu">
-                  <button type="button" class="menu-item" @click="onExportFromMenu(n)">导出 JSON</button>
+                  <button type="button" class="menu-item" @click="onExportFromMenu(n)">导出</button>
                   <button type="button" class="menu-item" @click="onImportFromMenu(n)">导入</button>
                   <div class="menu-divider" />
                   <button type="button" class="menu-item danger" :disabled="loading" @click="onDeleteFromMenu(n)">
@@ -346,8 +386,10 @@ import {
   deleteLookupRowsByFilter,
   deleteLookupTable,
   fetchLookupList,
+  exportLookupTable,
   importLookupFile,
   queryLookupTable,
+  type LookupExportFormat,
   saveLookupSchema,
   saveLookupTable,
   type LookupTable,
@@ -387,6 +429,9 @@ const importHint = ref("");
 const openNsMenuFor = ref<string | null>(null);
 const importModalOpen = ref(false);
 const importPendingFile = ref<File | null>(null);
+const exportModalOpen = ref(false);
+const exportTargetNs = ref("");
+const exportFormat = ref<LookupExportFormat>("json");
 
 const rowSearchInput = ref("");
 const rowSearchQuery = ref("");
@@ -783,7 +828,18 @@ async function ensureActiveNs(ns: string): Promise<void> {
 async function onExportFromMenu(ns: string): Promise<void> {
   closeNsMenu();
   await ensureActiveNs(ns);
-  downloadJson();
+  openExportModal(ns);
+}
+
+function openExportModal(ns: string): void {
+  exportTargetNs.value = ns;
+  exportFormat.value = "json";
+  exportModalOpen.value = true;
+}
+
+function closeExportModal(): void {
+  exportModalOpen.value = false;
+  exportTargetNs.value = "";
 }
 
 async function onImportFromMenu(ns: string): Promise<void> {
@@ -819,6 +875,7 @@ async function pickNamespace(ns: string) {
   if (!ns) return;
   closeNsMenu();
   closeImportModal();
+  closeExportModal();
   isNew.value = false;
   activeNs.value = ns;
   page.value = 1;
@@ -1202,14 +1259,31 @@ async function submitImport(): Promise<void> {
   }
 }
 
-function downloadJson() {
-  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ schema: schema.value, rows: paginatedRows.value, page: page.value, total: totalRows.value }, null, 2));
-  const downloadAnchorNode = document.createElement('a');
-  downloadAnchorNode.setAttribute("href", dataStr);
-  downloadAnchorNode.setAttribute("download", `${activeNs.value}.json`);
-  document.body.appendChild(downloadAnchorNode);
-  downloadAnchorNode.click();
-  downloadAnchorNode.remove();
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function submitExport(): Promise<void> {
+  const ns = exportTargetNs.value.trim();
+  if (!ns || !NS_RE.test(ns)) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    const blob = await exportLookupTable(ns, exportFormat.value, selectedProfile.value);
+    downloadBlob(blob, `${ns}.${exportFormat.value}`);
+    closeExportModal();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loading.value = false;
+  }
 }
 
 void (async () => {
@@ -1665,6 +1739,55 @@ void (async () => {
   gap: 6px;
 }
 
+.option-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.option-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.option-pill:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+
+.option-pill.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.option-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .import-file-row {
   display: flex;
   align-items: center;
@@ -1909,12 +2032,14 @@ void (async () => {
 }
 
 .data-table th {
-  background: color-mix(in srgb, var(--surface) 50%, transparent);
+  background: #fbfdff;
   font-weight: 600;
+  font-size: 11px;
   color: var(--muted);
   position: sticky;
   top: 0;
   z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .data-table tbody tr:last-child td {

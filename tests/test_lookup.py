@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from flow_engine.lookup.lookup_export import table_to_bytes
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import lookup_query, merge_imported_rows, put_table
 from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store
@@ -31,6 +34,26 @@ def test_lookup_profiles_are_isolated() -> None:
         assert lookup_query("apps", {}) == [{"appid": "sit-1"}]
     with profile_scope("dev"):
         assert lookup_query("apps", {}) == [{"appid": "dev-1"}]
+
+
+def test_table_to_bytes_json_csv() -> None:
+    table = {
+        "schema": {"type": "object", "properties": {"id": {"type": "string"}}},
+        "rows": [{"id": "1", "name": "ok"}],
+    }
+    j, j_type, j_ext = table_to_bytes(table, format="json")
+    assert j_ext == "json"
+    assert "application/json" in j_type
+    parsed = json.loads(j.decode("utf-8"))
+    assert parsed["schema"]["type"] == "object"
+    assert parsed["rows"] == [{"id": "1", "name": "ok"}]
+
+    c, c_type, c_ext = table_to_bytes(table, format="csv")
+    assert c_ext == "csv"
+    assert "text/csv" in c_type
+    text = c.decode("utf-8-sig")
+    assert "id,name" in text
+    assert "1,ok" in text
 
 
 def test_rows_from_csv_json() -> None:

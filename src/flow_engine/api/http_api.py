@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 
@@ -35,6 +35,7 @@ from flow_engine.runner import deploy_persistence, test_persistence
 from flow_engine.runner import metric_persistence, span_persistence, test_runner
 from flow_engine.runner.mode_context import system_default_policy
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
+from flow_engine.lookup.lookup_export import table_to_bytes
 from flow_engine.lookup.lookup_import import rows_from_bytes
 from flow_engine.lookup.lookup_service import (
     delete_rows,
@@ -1044,6 +1045,35 @@ def create_app() -> FastAPI:
         except ProfileConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, **result}
+
+    @app.get("/api/lookups/{namespace}/export")
+    def export_lookup_table(
+        namespace: str,
+        format: str = Query(default="json"),  # noqa: A002
+        profile: str | None = Query(default=None),
+    ) -> Response:
+        try:
+            validate_lookup_namespace(namespace)
+            pid = profile_store().resolve_profile(profile)
+            kind = (format or "json").strip().lower()
+            if kind not in ("json", "csv", "xlsx"):
+                raise LookupStoreError("format must be json, csv, or xlsx")
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ProfileConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        st = get_lookup_store()
+        table = st.read_table(namespace, profile=pid) if st.exists(namespace, profile=pid) else {"rows": []}
+        try:
+            data, media_type, ext = table_to_bytes(table, format=kind)
+        except LookupStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        filename = f"{namespace}.{ext}"
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.post("/api/lookups/{namespace}/import")
     async def import_lookup_table(
