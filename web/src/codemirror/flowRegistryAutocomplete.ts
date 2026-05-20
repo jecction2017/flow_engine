@@ -58,7 +58,7 @@ function completionSource(registry: RegistryDoc) {
         options.push({
           label: l,
           type: "function",
-          detail: `${l}${formatSignature(f.signature)}`,
+          detail: formatSignature(f.signature),
           info: buildBuiltinCompletionInfo(f),
         });
       }
