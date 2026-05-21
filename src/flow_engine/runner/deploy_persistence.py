@@ -22,6 +22,13 @@ if TYPE_CHECKING:
 _FLOW_LOGS_MAX = 500
 
 
+def _extract_global_ns(result: "FlowRunResult") -> dict[str, Any] | None:
+    """Snapshot ``global_ns`` for run-detail APIs (strip internal dictionary)."""
+    gns = dict(getattr(result.context, "global_ns", {}) or {})
+    gns.pop("dictionary", None)
+    return gns or None
+
+
 def _normalize_flow_logs(logs: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
     if not logs:
         return None
@@ -124,6 +131,7 @@ def complete_deploy_run(run_id: int, result: "FlowRunResult") -> None:
         if result.message:
             row.error = result.message
         row.flow_logs = _normalize_flow_logs(list(result.flow_logs))
+        row.global_ns = _extract_global_ns(result)
 
 
 def fail_deploy_run(run_id: int, error: str) -> None:
@@ -226,4 +234,5 @@ def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:
             ),
             "error": row.error,
             "flow_logs": list(row.flow_logs) if row.flow_logs else None,
+            "global_ns": dict(row.global_ns) if row.global_ns else None,
         }

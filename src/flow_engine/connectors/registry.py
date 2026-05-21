@@ -11,6 +11,7 @@ import threading
 from typing import Any
 
 from flow_engine.connectors.config import ElasticsearchConfig, parse_elasticsearch_config
+from flow_engine.connectors.config_kafka import parse_kafka_config
 from flow_engine.connectors.errors import ConnectorError
 from flow_engine.connectors.protocol import ConnectorBackend, ConnectorHandle
 from flow_engine.secrets.service import resolve_secret_references
@@ -69,14 +70,45 @@ class ConnectorRegistry:
 
     def _register_backends(self) -> None:
         self._ensure_elasticsearch_backend()
+        self._ensure_kafka_backend()
+
+    @staticmethod
+    def _aiokafka_installed() -> bool:
+        return importlib.util.find_spec("aiokafka") is not None
+
+    def _ensure_kafka_backend(self) -> bool:
+        if "kafka" in self._backends:
+            return True
+        try:
+            from flow_engine.connectors.backends.kafka.backend import KafkaBackend
+
+            self._backends["kafka"] = KafkaBackend()
+            return True
+        except ImportError:
+            logger.debug("kafka backend not available", exc_info=True)
+            return False
 
     @property
     def elasticsearch_available(self) -> bool:
         return self._ensure_elasticsearch_backend()
 
+    @property
+    def kafka_available(self) -> bool:
+        return self._ensure_kafka_backend()
+
     @staticmethod
-    def integration_unavailable_message() -> str:
+    def integration_unavailable_message(kind: str = "elasticsearch") -> str:
         exe = sys.executable
+        if kind == "kafka":
+            if ConnectorRegistry._aiokafka_installed():
+                return (
+                    f"Kafka backend failed to load in this process ({exe}). "
+                    "Restart flow-worker using the project virtualenv."
+                )
+            return (
+                f"aiokafka is not installed ({exe}). "
+                "Run: pip install aiokafka, or pip install -e \".[kafka]\"."
+            )
         if ConnectorRegistry._elasticsearch_package_installed():
             return (
                 f"Elasticsearch backend failed to load in this process ({exe}). "
@@ -99,19 +131,30 @@ class ConnectorRegistry:
             middleware = {}
 
         es_raw = middleware.get("elasticsearch")
-        config_hash = _hash_config({"elasticsearch": es_raw})
+        kafka_raw = middleware.get("kafka")
+        config_hash = _hash_config({"elasticsearch": es_raw, "kafka": kafka_raw})
 
         with _LOCK:
-            # Re-bind when config/profile unchanged but handles are missing (e.g. prior
-            # bind called close_all() then bind_instances failed before populating).
             stale_empty = (
                 config_hash == self._bind_hash
                 and profile == self._profile
-                and es_raw is not None
-                and not any(k == "elasticsearch" for k, _ in self._handles)
+                and (
+                    (es_raw is not None and not any(k == "elasticsearch" for k, _ in self._handles))
+                    or (kafka_raw is not None and not any(k == "kafka" for k, _ in self._handles))
+                )
             )
             if config_hash == self._bind_hash and profile == self._profile and not stale_empty:
                 return
+            # Same dictionary payload, different profile label only — do not tear down
+            # long-lived Kafka subscription sessions (FlowRuntime.run re-binds often).
+            if config_hash == self._bind_hash and not stale_empty:
+                self._profile = profile
+                return
+            logger.debug(
+                "connector registry rebind closing sessions profile=%s hash_changed=%s",
+                profile,
+                config_hash != self._bind_hash,
+            )
             self.close_all()
             self._bind_hash = config_hash
             self._profile = profile
@@ -136,6 +179,24 @@ class ConnectorRegistry:
             elif es_raw is None:
                 logger.debug(
                     "no middleware.elasticsearch in dictionary for profile=%s",
+                    profile,
+                )
+
+            if kafka_raw is not None and self._ensure_kafka_backend():
+                resolved_k = resolve_secret_references(kafka_raw, profile=profile)
+                kcfg = parse_kafka_config(resolved_k)
+                if kcfg is not None:
+                    if not kcfg.instances:
+                        logger.warning(
+                            "middleware.kafka has no instances; "
+                            "module_code must be middleware.kafka"
+                        )
+                    backend = self._backends["kafka"]
+                    for iid, handle in backend.bind_instances(kcfg).items():
+                        self._handles[("kafka", iid)] = handle
+            elif kafka_raw is None:
+                logger.debug(
+                    "no middleware.kafka in dictionary for profile=%s",
                     profile,
                 )
 

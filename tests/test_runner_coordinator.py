@@ -137,6 +137,87 @@ def test_assign_pending_pin_worker_offline_fails_fast() -> None:
         assert dep.status == "failed"
 
 
+def test_renew_subscription_leader_leases() -> None:
+    _add_worker("w1", alive=True)
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code="sub_lease",
+            ver_no=1,
+            mode="production",
+            schedule_type="subscription",
+            schedule_config={},
+            worker_policy={"type": "single_active", "min_workers": 1},
+            capability_policy=[],
+            worker_targeting={},
+            status="running",
+            env_profile_code="default",
+        )
+        s.add(row)
+        s.flush()
+        dep_id = int(row.id)
+        expired = datetime.now(timezone.utc) - timedelta(seconds=120)
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w1",
+                role="leader",
+                lease_expires_at=expired,
+            )
+        )
+
+    renewed = coord_mod._renew_subscription_leader_leases_sync()
+    assert renewed == 1
+    with db_session() as s:
+        assn = (
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert assn is not None
+        assert assn.lease_expires_at is not None
+        lease = assn.lease_expires_at
+        if lease.tzinfo is None:
+            lease = lease.replace(tzinfo=timezone.utc)
+        assert lease > datetime.now(timezone.utc)
+
+
+def test_assign_pending_clears_stale_assignments() -> None:
+    """Pending restart must not be blocked by orphan assignment rows."""
+    _add_worker("w1", alive=True)
+    dep_id = _add_deployment(status="pending")
+    with db_session() as s:
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w1",
+                role="leader",
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            )
+        )
+
+    created = coord_mod._assign_pending_sync()
+    assert created == 1
+    with db_session() as s:
+        dep = s.get(FeFlowDeployment, dep_id)
+        assert dep is not None
+        assert dep.status == "running"
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 1
+        assert assn[0].worker_id == "w1"
+
+
 def test_assign_pending_pool_filters_eligible_workers() -> None:
     _add_worker("w1", alive=True)
     _add_worker("w2", alive=True)

@@ -181,6 +181,34 @@ def test_profile_system_policy_backward_compatible_list(client: TestClient) -> N
     assert got["production"][0]["action"] == "suppress"
 
 
+def test_create_subscription_deployment(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "subscription",
+            "schedule_config": {
+                "subscription": {
+                    "consumer_id": "memory.alerts.default",
+                },
+                "parse": {
+                    "codec": "json",
+                    "transform": "mapping",
+                    "mapping": {"mode": "spread"},
+                },
+            },
+            "worker_policy": {"type": "multi_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["schedule_type"] == "subscription"
+
+
 def test_create_cron_requires_cron_expr(client: TestClient) -> None:
     ver = _commit_flow(client)
     r = client.post(
@@ -197,6 +225,44 @@ def test_create_cron_requires_cron_expr(client: TestClient) -> None:
         },
     )
     assert r.status_code == 400
+
+
+def test_patch_pending_clears_stale_assignments(client: TestClient) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from flow_engine.db.models import FeFlowDeployment, FeWorkerAssignment
+    from flow_engine.db.session import db_session
+
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "schedule_type": "once",
+        },
+    )
+    dep_id = r.json()["id"]
+    with db_session() as s:
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="orphan_w",
+                role="leader",
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            )
+        )
+        dep = s.get(FeFlowDeployment, dep_id)
+        dep.status = "failed"
+        dep.status_detail = {"reason": "subscription_ingress_failed", "message": "test"}
+
+    r = client.patch(f"/api/deployments/{dep_id}", json={"status": "pending"})
+    assert r.status_code == 200
+    r = client.get(f"/api/deployments/{dep_id}")
+    body = r.json()
+    assert body["status"] == "pending"
+    assert body["status_detail"] is None
+    assert body["assignments"] == []
 
 
 def test_patch_and_delete_deployment(client: TestClient) -> None:

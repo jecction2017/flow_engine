@@ -45,7 +45,7 @@
             </div>
             <div class="batch-row2 mono">{{ p.name }}</div>
             <div class="batch-row3">
-              <span class="muted small mono">{{ p.flow_code }} · {{ p.version_channel }}</span>
+              <span class="muted small">{{ flowLabelById(p.flow_code) }} · {{ p.version_channel }}</span>
             </div>
           </li>
         </ul>
@@ -63,7 +63,7 @@
                 · {{ selectedPlanDetail.name }}
               </div>
               <div class="muted small">
-                <span class="mono">{{ selectedPlanDetail.flow_code }}</span>
+                <span>{{ flowLabelById(selectedPlanDetail.flow_code) }}</span>
                 · <span class="mono">{{ selectedPlanDetail.version_channel }}</span>
                 · test_ns: <span class="mono">{{ selectedPlanDetail.test_ns_code }}</span>
                 · profile: <span class="mono">{{ selectedPlanDetail.profile_code }}</span>
@@ -100,7 +100,7 @@
                 <input v-model="planForm.name" class="inp" />
               </label>
               <label class="field">
-                <span>flow_code <em class="req">*</em></span>
+                <span>流程 <em class="req">*</em></span>
                 <select v-model="planForm.flow_code" class="inp" disabled>
                   <option :value="planForm.flow_code">{{ flowLabelById(planForm.flow_code) }}</option>
                 </select>
@@ -337,11 +337,11 @@
               <input v-model="planForm.name" class="inp" placeholder="例如：回归-支付链路-主流程" />
             </label>
             <label class="field">
-              <span>flow_code <em class="req">*</em></span>
+              <span>流程 <em class="req">*</em></span>
               <select v-model="planForm.flow_code" class="inp" @change="onPlanFlowChange">
                 <option value="">选择流程</option>
                 <option v-for="f in flowOptions" :key="f.id" :value="f.id">
-                  {{ flowPickerLabel(f) }}
+                  {{ flowListItemLabel(f) }}
                 </option>
               </select>
             </label>
@@ -536,11 +536,11 @@
           </header>
           <div class="form-grid">
             <label class="field">
-              <span>flow_code <em class="req">*</em></span>
+              <span>流程 <em class="req">*</em></span>
               <select v-model="form.flow_code" class="inp" @change="onFlowChange">
                 <option value="">选择流程</option>
                 <option v-for="f in flowOptions" :key="f.id" :value="f.id">
-                  {{ flowPickerLabel(f) }}
+                  {{ flowListItemLabel(f) }}
                 </option>
               </select>
             </label>
@@ -745,7 +745,7 @@
               <div class="panel-head-text">
                 <div class="panel-title">
                   <span class="mono">#{{ selectedBatch.id }}</span>
-                  · {{ selectedBatch.flow_code }} v{{ selectedBatch.ver_no }}
+                  · {{ flowLabelById(selectedBatch.flow_code) }} v{{ selectedBatch.ver_no }}
                   <span class="tag" :class="batchStatusTag(selectedBatch.status)">{{ selectedBatch.status }}</span>
                 </div>
                 <div class="muted small">
@@ -900,7 +900,7 @@ import {
   type TestBatchDetail,
 } from "@/api/testBatches";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
-import { fetchFlowList, type FlowListItem } from "@/api/flows";
+import { useFlowLabels } from "@/composables/useFlowLabels";
 import { fetchDraft, fetchVersion, fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
@@ -971,7 +971,7 @@ const selectedBatch = computed<TestBatchDetail | null>(() =>
 
 // ---------------- form state ----------------
 
-const flowOptions = ref<FlowListItem[]>([]);
+const { flowOptions, ensureFlowList, flowLabelById } = useFlowLabels();
 const versionOptions = ref<FlowVersionMeta[]>([]);
 const profileOptions = ref<string[]>([]);
 const lookupNamespaces = ref<string[]>([]);
@@ -1189,16 +1189,6 @@ async function loadMockNodeOptionsForBatch() {
   }
 }
 
-function flowPickerLabel(f: FlowListItem): string {
-  return flowListItemLabel(f);
-}
-
-function flowLabelById(flowId: string): string {
-  if (!flowId) return "";
-  const hit = flowOptions.value.find((x) => x.id === flowId);
-  return hit ? flowListItemLabel(hit) : "未知流程";
-}
-
 function mockModeInfoText(m: MockMode): string {
   if (m === "script") {
     return "script：用 Starlark 在节点执行前计算返回值（字典），可读 ctx 等运行时对象。适合按上下文拼装结果或轻量分支。例：根据 ctx.input.type 返回不同 output。";
@@ -1332,6 +1322,7 @@ watch(
 
 onMounted(() => {
   document.addEventListener("pointerdown", onDocPointerDown, true);
+  void ensureFlowList();
 });
 
 onUnmounted(() => {
@@ -1344,6 +1335,7 @@ onUnmounted(() => {
 
 async function refreshPlans() {
   try {
+    await ensureFlowList();
     const r = await listTestPlans();
     plans.value = r.plans;
   } catch (e) {
@@ -1382,13 +1374,10 @@ async function selectPlan(planId: number) {
         // ignore
       }
     }
-    if (flowOptions.value.length === 0) {
-      try {
-        const r = await fetchFlowList();
-        flowOptions.value = r.flows;
-      } catch {
-        // ignore — flowLabelById 将回落为 flow_code
-      }
+    try {
+      await ensureFlowList();
+    } catch {
+      // ignore — flowLabelById 将显示「未知流程」
     }
 
     selectedPlanDetail.value = await getTestPlan(planId);
@@ -1571,13 +1560,10 @@ async function newBatch() {
   stopPolling();
   formError.value = "";
   formCapabilityPolicy.value = [];
-  if (flowOptions.value.length === 0) {
-    try {
-      const r = await fetchFlowList();
-      flowOptions.value = r.flows;
-    } catch (e) {
-      formError.value = e instanceof Error ? e.message : String(e);
-    }
+  try {
+    await ensureFlowList();
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
   }
   if (profileOptions.value.length === 0) {
     try {
@@ -1605,14 +1591,10 @@ async function newPlan() {
   selectedPlanDetail.value = null;
   stopPolling();
   formError.value = "";
-  // 初始化 options（复用 newBatch 的加载逻辑）
-  if (flowOptions.value.length === 0) {
-    try {
-      const r = await fetchFlowList();
-      flowOptions.value = r.flows;
-    } catch (e) {
-      formError.value = e instanceof Error ? e.message : String(e);
-    }
+  try {
+    await ensureFlowList();
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
   }
   if (profileOptions.value.length === 0) {
     try {
@@ -1676,7 +1658,7 @@ async function onPlanFlowChange() {
 async function submitPlan() {
   formError.value = "";
   if (!planForm.name.trim()) return void (formError.value = "请填写方案名称");
-  if (!planForm.flow_code) return void (formError.value = "请选择 flow_code");
+  if (!planForm.flow_code) return void (formError.value = "请选择流程");
   if (!planForm.test_ns_code) return void (formError.value = "请选择 test_ns_code");
   if (!planForm.profile_code) return void (formError.value = "请选择 profile_code");
   const mockResult = buildMockConfig();
@@ -1783,7 +1765,7 @@ function buildMockConfig(): { ok: true; data: Record<string, MockConfig> } | { o
 async function submitBatch() {
   formError.value = "";
   if (!form.flow_code) {
-    formError.value = "请选择 flow_code";
+    formError.value = "请选择流程";
     return;
   }
   if (!form.use_draft && !form.ver_no) {

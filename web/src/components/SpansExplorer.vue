@@ -10,7 +10,7 @@
       :collapsed="collapsedSpanKeys"
       :secondary-open-key="openDetailKey"
       :detail-on-row-click="true"
-      :log-button="false"
+      :log-button="true"
       :highlight-node-id="activeHighlightNodeId"
       @toggle-collapsed="onToggleCollapsed"
       @row-click="onRowClick"

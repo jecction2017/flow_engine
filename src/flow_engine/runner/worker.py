@@ -3,7 +3,7 @@
 设计文档 §8.3。Worker 是一个独立 asyncio 进程：
 * 启动：注册 ``FeWorker`` + 启动心跳与轮询两个后台 Task；
 * 运行：每个 ``FeWorkerAssignment`` 关联一个 asyncio.Task，按 schedule_type
-  执行 once / cron / resident 流程；
+  执行 once / cron / subscription 流程；
 * 停止：取消所有 Task、回写 ``FeWorker.status='dead'``。
 
 DB 操作均同步（SQLAlchemy）；async 调用方使用 ``asyncio.to_thread``。
@@ -207,12 +207,45 @@ def _read_flow_body(flow_code: str, ver_no: int) -> dict[str, Any]:
         return json.loads(row.body)
 
 
-def _set_deployment_status(deployment_id: int, status: str) -> None:
+def _set_deployment_status(
+    deployment_id: int,
+    status: str,
+    *,
+    status_detail: dict[str, Any] | None = None,
+    clear_status_detail: bool = False,
+) -> None:
     with db_session() as s:
         row = s.get(FeFlowDeployment, deployment_id)
         if row is None:
             return
         row.status = status
+        if clear_status_detail:
+            row.status_detail = None
+        elif status_detail is not None:
+            row.status_detail = status_detail
+
+
+def _can_consume_subscription(
+    deployment: dict[str, Any],
+    assignment: dict[str, Any],
+) -> bool:
+    """Whether this worker assignment may run subscription ingress."""
+    wp = deployment.get("worker_policy") or {}
+    wp_type = str(wp.get("type") or "single_active")
+    if wp_type == "multi_active":
+        return str(assignment.get("role") or "") in ("replica", "leader")
+
+    role = str(assignment.get("role") or "")
+    if role != "leader":
+        return False
+    lease = assignment.get("lease_expires_at")
+    if lease is None:
+        return True
+    if not isinstance(lease, datetime):
+        return True
+    if lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    return lease > datetime.now(timezone.utc)
 
 
 def _release_assignment(worker_id: str, deployment_id: int) -> None:
@@ -421,7 +454,7 @@ class Worker:
     def _start_assignment(self, deployment_id: int, info: dict[str, Any]) -> None:
         async def runner() -> None:
             try:
-                await self._run_assignment(deployment_id)
+                await self._run_assignment(deployment_id, info)
             except asyncio.CancelledError:
                 logger.info("assignment cancelled deployment_id=%s", deployment_id)
                 raise
@@ -434,23 +467,22 @@ class Worker:
 
         self._assignments[deployment_id] = asyncio.create_task(runner())
 
-    async def _run_assignment(self, deployment_id: int) -> None:
+    async def _run_assignment(self, deployment_id: int, assignment_info: dict[str, Any]) -> None:
         deployment = await asyncio.to_thread(_read_deployment, deployment_id)
         if deployment is None:
             logger.warning("deployment %s vanished before run", deployment_id)
             return
         st = deployment["schedule_type"]
         try:
-            if st == "resident":
-                await self._run_resident(deployment)
+            if st == "subscription":
+                await self._run_subscription(deployment)
             elif st in ("once", "cron"):
                 await self._run_once_flow(deployment)
             else:
                 logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)
                 await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
         finally:
-            # once/cron should be "consumed" after completion; otherwise the assignment
-            # poller will start it again and create endless runs.
+            # once/cron release assignment after a single run; subscription keeps it.
             if st in ("once", "cron"):
                 try:
                     await asyncio.to_thread(_release_assignment, self.worker_id, deployment_id)
@@ -528,64 +560,120 @@ class Worker:
             if st == "once":
                 await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
 
-    async def _run_resident(self, deployment: dict[str, Any]) -> None:
+    async def _await_subscription_consume_slot(
+        self, deployment_id: int
+    ) -> dict[str, Any] | None:
+        """Block until this worker may consume, or return None if assignment ended."""
+        warned_lease = False
+        while not self._stop_evt.is_set():
+            deployment = await asyncio.to_thread(_read_deployment, deployment_id)
+            if deployment is None:
+                return None
+            rows = await asyncio.to_thread(_list_assignments, self.worker_id)
+            info = next(
+                (r for r in rows if int(r["deployment_id"]) == deployment_id),
+                None,
+            )
+            if info is None:
+                return None
+            if _can_consume_subscription(deployment, info):
+                return info
+            if not warned_lease and str(info.get("role") or "") == "leader":
+                lease = info.get("lease_expires_at")
+                if lease is not None:
+                    logger.warning(
+                        "subscription leader lease expired or not yet valid "
+                        "deployment_id=%s worker_id=%s lease_expires_at=%s",
+                        deployment_id,
+                        self.worker_id,
+                        lease,
+                    )
+                    warned_lease = True
+            await asyncio.sleep(ASSIGNMENT_POLL_INTERVAL_S)
+        return None
+
+    async def _run_subscription(self, deployment: dict[str, Any]) -> None:
+        from flow_engine.runner.subscription.ingress import (
+            SubscriptionIngressError,
+            run_subscription_ingress,
+        )
+        from flow_engine.runner.subscription.spec import load_subscription_spec
+
         deployment_id = int(deployment["id"])
-        wp = deployment["worker_policy"] or {}
-        max_restarts = int(wp.get("max_restarts", 5))
-        backoff_base = int(wp.get("restart_backoff_s", 30))
+        spec = load_subscription_spec(deployment.get("schedule_config"))
+        wp = deployment.get("worker_policy") or {}
+        max_restarts = int(
+            spec.ingress_policy.max_restarts or wp.get("max_restarts", 5)
+        )
+        backoff_base = int(
+            spec.ingress_policy.restart_backoff_s or wp.get("restart_backoff_s", 30)
+        )
         restart_count = 0
 
+        async def _prepare(deploy: dict[str, Any], trigger_context: dict[str, Any] | None):
+            return await self._prepare_runtime(
+                deploy,
+                trigger_context=trigger_context,
+                trigger_type=_subscription_trigger_type(deploy),
+            )
+
         while not self._stop_evt.is_set():
-            run_id: int | None = None
-            backend: AsyncBufferedDBBackend | None = None
+            slot = await self._await_subscription_consume_slot(deployment_id)
+            if slot is None:
+                return
             try:
-                run_id, runtime, profile_id, backend = await self._prepare_runtime(
-                    deployment, trigger_context=None
+                await run_subscription_ingress(
+                    deployment,
+                    stop_evt=self._stop_evt,
+                    prepare_runtime=_prepare,
+                    worker_id=self.worker_id,
                 )
-                await backend.start()
-                try:
-                    with profile_scope(profile_id):
-                        result = await runtime.run()
-                finally:
-                    try:
-                        await backend.drain()
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "obs backend drain failed run_id=%s", run_id
-                        )
+                current = await asyncio.to_thread(_read_deployment, deployment_id)
+                if current is not None and current.get("status") in ("stopping", "running"):
+                    await asyncio.to_thread(_set_deployment_status, deployment_id, "stopped")
+                return
+            except SubscriptionIngressError as exc:
+                detail = {
+                    "reason": "subscription_ingress_failed",
+                    "code": exc.error.get("code"),
+                    "message": exc.error.get("message") or str(exc),
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
                 await asyncio.to_thread(
-                    deploy_persistence.complete_deploy_run, run_id, result
+                    _set_deployment_status,
+                    deployment_id,
+                    "failed",
+                    status_detail=detail,
                 )
-                # resident 流程正常退出（用户主动 terminate）：标记 stopped 并退出循环。
-                await asyncio.to_thread(_set_deployment_status, deployment_id, "stopped")
+                await asyncio.to_thread(
+                    _release_assignment, self.worker_id, deployment_id
+                )
                 return
             except asyncio.CancelledError:
-                if backend is not None:
-                    try:
-                        await backend.drain()
-                    except Exception:  # noqa: BLE001
-                        pass
-                if run_id is not None:
-                    await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, "cancelled")
                 raise
-            except Exception as e:  # noqa: BLE001
-                logger.exception("resident run failed deployment_id=%s", deployment_id)
-                if backend is not None:
-                    try:
-                        await backend.drain()
-                    except Exception:  # noqa: BLE001
-                        pass
-                if run_id is not None:
-                    await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "subscription ingress failed deployment_id=%s", deployment_id
+                )
                 restart_count += 1
                 if restart_count > max_restarts:
                     await asyncio.to_thread(
-                        _set_deployment_status, deployment_id, "failed"
+                        _set_deployment_status,
+                        deployment_id,
+                        "failed",
+                        status_detail={
+                            "reason": "subscription_ingress_failed",
+                            "message": "ingress exceeded max_restarts",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    await asyncio.to_thread(
+                        _release_assignment, self.worker_id, deployment_id
                     )
                     return
                 delay = backoff_base * (2 ** (restart_count - 1))
                 logger.warning(
-                    "resident restart in %.1fs (attempt %d/%d) deployment_id=%s",
+                    "subscription ingress restart in %.1fs (attempt %d/%d) deployment_id=%s",
                     delay,
                     restart_count,
                     max_restarts,
@@ -593,7 +681,7 @@ class Worker:
                 )
                 try:
                     await asyncio.wait_for(self._stop_evt.wait(), timeout=delay)
-                    return  # stop requested during backoff
+                    return
                 except asyncio.TimeoutError:
                     continue
 
@@ -605,6 +693,7 @@ class Worker:
         *,
         trigger_context: dict[str, Any] | None,
         existing_run_id: int | None = None,
+        trigger_type: str | None = None,
     ) -> tuple[int, FlowRuntime, str, AsyncBufferedDBBackend]:
         flow_code = deployment["flow_code"]
         ver_no = int(deployment["ver_no"])
@@ -647,7 +736,7 @@ class Worker:
                 ver_no=ver_no,
                 mode=mode,
                 schedule_type=str(deployment.get("schedule_type") or "once"),
-                trigger_type="manual",
+                trigger_type=trigger_type or "manual",
                 trigger_context=trigger_context,
             )
 
@@ -670,6 +759,14 @@ class Worker:
             runtime.ctx.global_ns.update(trigger_context)
 
         return run_id, runtime, profile_id, backend
+
+
+def _subscription_trigger_type(_deployment: dict[str, Any]) -> str:
+    """Categorical trigger source for ``fe_deploy_run.trigger_type`` (``String(32)``).
+
+    Consumer/topic identity is recorded in ``trigger_context.event_meta``, not here.
+    """
+    return "subscription"
 
 
 # ---------------------------------------------------------------------------

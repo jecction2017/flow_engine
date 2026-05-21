@@ -3,20 +3,9 @@
 display_name: cyber_alert_diagnosis
 version: "1.0.0"
 
-initial_context:
-  alert:
-    id: "ALT-2026-0412-01"
-    severity: "HIGH"
-    title: "Suspicious outbound connection"
-    source_ip: "203.0.113.44"
-    dest_ip: "198.51.100.7"
-    indicators:
-      - type: "ip"
-        value: "198.51.100.7"
-      - type: "domain"
-        value: "cdn.example.invalid"
-      - type: "hash"
-        value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+# Per-alert payload comes from subscription trigger_context (or Test Center).
+# initial_context only holds defaults when running without a trigger.
+initial_context: {}
 
 strategies:
   default_sync:

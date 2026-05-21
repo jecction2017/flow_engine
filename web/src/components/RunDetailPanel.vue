@@ -3,7 +3,7 @@
     <header class="rd-head">
       <div class="rd-title">
         <span class="rd-id mono">#{{ detail.id }}</span>
-        <span class="rd-flow mono">{{ detail.flow_code }}</span>
+        <span class="rd-flow">{{ flowLabelById(detail.flow_code) }}</span>
         <span class="rd-ver">v{{ detail.ver_no }}</span>
         <span class="badge mode">{{ detail.mode }}</span>
         <span v-if="detail.schedule_type" class="badge sched">{{ detail.schedule_type }}</span>
@@ -66,14 +66,14 @@
         :key="`deploy-${detail.id}-${drillNodeKey}`"
         :page-size="50"
         :initial-node-id="drillNodeId"
-        help-tip="按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes"
+        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与 attributes，与试运行时间线一致"
       />
       <SpansExplorer
         v-else
         :test-run-id="detail.id"
         :key="`test-${detail.id}`"
         :page-size="50"
-        help-tip="按父子关系嵌套展示，按 span_seq 表达执行先后；点击节点查看日志与 attributes"
+        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与 attributes，与试运行时间线一致"
       />
     </template>
 
@@ -99,6 +99,14 @@
       </ul>
     </section>
 
+    <section v-if="activeTab === 'result' && hasGlobalNs" class="rd-section">
+      <div class="rd-section-head">
+        <span>运行结果上下文（global_ns）</span>
+        <InfoTip text="流程运行结束时的全局命名空间快照（已剔除 dictionary），与试运行结果中的 global_ns 一致。" />
+      </div>
+      <pre class="ctx mono">{{ globalNsText }}</pre>
+    </section>
+
     <section v-if="activeTab === 'context' && detail.trigger_context" class="rd-section">
       <div class="rd-section-head">
         <span>触发上下文（trigger_context）</span>
@@ -113,15 +121,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import type { FlowRunDetail } from "@/api/flowRuns";
+import { useFlowLabels } from "@/composables/useFlowLabels";
 import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
+import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
 import SpansExplorer from "@/components/SpansExplorer.vue";
 
-type TabId = "overview" | "spans" | "evaluation" | "context" | "flow_logs";
+type TabId = "overview" | "spans" | "result" | "evaluation" | "context" | "flow_logs";
 
 const props = defineProps<{ detail: FlowRunDetail }>();
+
+const { flowLabelById, ensureFlowList } = useFlowLabels();
+
+onMounted(() => {
+  void ensureFlowList();
+});
 
 const isDeployRun = computed(() => props.detail.deployment_id != null);
 const isTestRun = computed(() => props.detail.test_batch_id != null);
@@ -140,6 +156,9 @@ const tabs = computed<{ id: TabId; label: string }[]>(() => {
     out.push({ id: "overview", label: "概览" });
   }
   out.push({ id: "spans", label: "执行链路" });
+  if (hasGlobalNs.value) {
+    out.push({ id: "result", label: "运行结果" });
+  }
   if (evaluationBlock.value) {
     out.push({ id: "evaluation", label: "评估结果" });
   }
@@ -154,6 +173,15 @@ const tabs = computed<{ id: TabId; label: string }[]>(() => {
 
 const flowLogs = computed(() =>
   Array.isArray(props.detail.flow_logs) ? props.detail.flow_logs : [],
+);
+
+const hasGlobalNs = computed(() => {
+  const g = props.detail.global_ns;
+  return g != null && typeof g === "object" && Object.keys(g).length > 0;
+});
+
+const globalNsText = computed(() =>
+  hasGlobalNs.value ? JSON.stringify(props.detail.global_ns, null, 2) : "",
 );
 
 const activeTab = ref<TabId>(tabs.value[0]?.id ?? "spans");

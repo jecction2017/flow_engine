@@ -11,7 +11,7 @@ async function checkOk(r: Response): Promise<Response> {
 }
 
 export type RunMode = "shadow" | "production";
-export type ScheduleType = "once" | "cron" | "resident";
+export type ScheduleType = "once" | "cron" | "subscription";
 export type DeploymentStatus =
   | "pending"
   | "running"

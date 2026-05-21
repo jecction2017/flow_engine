@@ -1,8 +1,7 @@
 """Persist test executions into ``fe_test_run`` (Test Center domain).
 
-Run-detail blobs (``node_runs`` / ``flow_logs`` / ``global_ns``) have been
-removed — the detail lives in ``fe_run_span`` keyed by ``test_run_id``.
-This module is now lifecycle + listing only.
+Per-node execution detail lives in ``fe_run_span`` keyed by ``test_run_id``.
+This module handles lifecycle, ``flow_logs``, ``global_ns``, and listing.
 """
 
 from __future__ import annotations
@@ -76,6 +75,7 @@ def complete_test_run(
     status: str,
     error: str | None,
     flow_logs: list[dict[str, Any]] | None = None,
+    global_ns: dict[str, Any] | None = None,
 ) -> None:
     """Finalize a test run. Detailed execution data is in ``fe_run_span``."""
     from flow_engine.runner.deploy_persistence import _normalize_flow_logs
@@ -89,6 +89,7 @@ def complete_test_run(
         if error:
             row.error = error
         row.flow_logs = _normalize_flow_logs(flow_logs)
+        row.global_ns = dict(global_ns) if global_ns else None
 
 
 def fail_test_run(run_id: int, error: str) -> None:
@@ -179,6 +180,7 @@ def get_test_run_detail(run_id: int) -> dict[str, Any] | None:
             "error": row.error,
             "evaluation": evaluation,
             "flow_logs": list(row.flow_logs) if row.flow_logs else None,
+            "global_ns": dict(row.global_ns) if row.global_ns else None,
         }
 
 

@@ -205,6 +205,16 @@ export function flowListItemLabel(item: { id: string; display_name?: string | nu
   return item.id;
 }
 
+/** Resolve flow_code (storage id) to UI label from a flow list snapshot. */
+export function flowCodeDisplayLabel(
+  flowCode: string,
+  items: readonly { id: string; display_name?: string | null }[],
+): string {
+  if (!flowCode) return "";
+  const hit = items.find((x) => x.id === flowCode);
+  return hit ? flowListItemLabel(hit) : "未知流程";
+}
+
 /**
  * 与已有流程的 ``display_name``（trim 后大小写不敏感）去重。
  * 冲突时依次使用 ``{base} copy``、``{base} copy 2``、``{base} copy 3``…（即 copyn）。

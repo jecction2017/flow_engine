@@ -566,19 +566,19 @@ class FeFlowDeployment(_AuditCols, Base):
     """流程部署配置：将 (flow_code, ver_no) 与运行模式 / 调度规则 / Worker 策略 / 能力策略绑定。
 
     schedule_type:
-        once     一次性触发（执行一次后 stopped）
-        cron     按 cron 表达式周期触发（每次在 fe_deploy_run 插入一条 queued 记录）
-        resident 常驻流程（带重启 backoff）
+        once         一次性触发（执行一次后 stopped）
+        cron         按 cron 表达式周期触发（每次在 fe_deploy_run 插入一条 queued 记录）
+        subscription 消息总线订阅（常驻 Ingress，每条消息一次 fe_deploy_run）
 
     schedule_config:
-        once:    {}
-        cron:    {"cron_expr": "0 8 * * *"}
-        resident:{}（无额外配置）
+        once:         {}
+        cron:         {"cron_expr": "0 8 * * *"}
+        subscription: SubscriptionSpec JSON（见 docs/subscription-scheduling-design.md）
 
     worker_policy:
         type:                "multi_active" | "single_active"
         min_workers:         至少分配的 worker 数（multi_active 控制副本数；single_active 控制候选）
-        max_restarts:        resident 崩溃最大重启次数，默认 5
+        max_restarts:        subscription Ingress 崩溃最大重启次数，默认 5
         restart_backoff_s:   重启退避基础秒数；实际 = base * 2^(attempt-1)
 
     capability_policy: list[CapabilityRule]，可空 list；JSON 持久化。
@@ -618,12 +618,12 @@ class FeFlowDeployment(_AuditCols, Base):
         String(16),
         nullable=False,
         server_default=text("'once'"),
-        comment="调度类型：once / cron / resident",
+        comment="调度类型：once / cron / subscription",
     )
     schedule_config: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
-        comment="调度配置 JSON；once={} / cron={cron_expr} / resident={}",
+        comment="调度配置 JSON；once={} / cron={cron_expr} / subscription=SubscriptionSpec",
     )
     worker_policy: Mapped[dict[str, Any]] = mapped_column(
         JSON,
@@ -861,18 +861,18 @@ class FeDeployRun(_AuditCols, Base):
         String(16),
         nullable=False,
         server_default=text("'once'"),
-        comment="触发方式：once / cron / resident",
+        comment="触发方式：once / cron / subscription",
     )
     trigger_type: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
         server_default=text("'manual'"),
-        comment="触发来源：manual / cron / resident_restart / unknown",
+        comment="触发来源：manual / cron / subscription / replay / unknown",
     )
     trigger_context: Mapped[dict[str, Any] | None] = mapped_column(
         JSON,
         nullable=True,
-        comment="触发上下文（可选），用于诊断/回放；resident 可为空",
+        comment="触发上下文（可选），用于诊断/回放；subscription 为解析后的告警载荷",
     )
     status: Mapped[str] = mapped_column(
         String(16),
@@ -909,6 +909,73 @@ class FeDeployRun(_AuditCols, Base):
         JSON,
         nullable=True,
         comment="流程级钩子日志（on_start/on_complete/on_failure）",
+    )
+    global_ns: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="运行结束时的全局上下文（已剔除 dictionary）",
+    )
+
+
+#
+# ---------------------------------------------------------------------------
+# fe_subscription_dedup  订阅消息位置账本（幂等 + 处理状态）
+# ---------------------------------------------------------------------------
+#
+
+
+class FeSubscriptionDedup(_AuditCols, Base):
+    """Per-message ledger for subscription deployments.
+
+    - Optional idempotency: first claim wins (unique deployment_id + position_key).
+    - Always records processing outcome (completed / failed) for operations visibility.
+    """
+
+    __tablename__ = "fe_subscription_dedup"
+    __table_args__ = (
+        UniqueConstraint(
+            "deployment_id",
+            "position_key",
+            name="uk_fe_subscription_dedup_dep_pos",
+        ),
+        Index("idx_fe_subscription_dedup_deployment_id", "deployment_id"),
+        Index("idx_fe_subscription_dedup_dep_status", "deployment_id", "status"),
+        {**_FE_TABLE_OPTS, "comment": "订阅消息位置账本（幂等去重 + 处理状态）"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        primary_key=True,
+        autoincrement=True,
+    )
+    deployment_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=False,
+        comment="fe_flow_deployment.id",
+    )
+    position_key: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+        comment="topic:partition:offset",
+    )
+    topic: Mapped[str] = mapped_column(String(256), nullable=False, server_default=text("''"))
+    partition: Mapped[int] = mapped_column(INTEGER, nullable=False, server_default=text("0"))
+    offset: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default=text("0"))
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=text("'processing'"),
+        comment="processing / completed / failed",
+    )
+    deploy_run_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="关联 fe_deploy_run.id（解析/运行成功或失败后写入）",
+    )
+    error: Mapped[str | None] = mapped_column(
+        MEDIUMTEXT,
+        nullable=True,
+        comment="失败原因（status=failed 时有值）",
     )
 
 
@@ -1014,6 +1081,11 @@ class FeTestRun(_AuditCols, Base):
         JSON,
         nullable=True,
         comment="流程级钩子日志（on_start/on_complete/on_failure）",
+    )
+    global_ns: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="运行结束时的全局上下文（已剔除 dictionary）",
     )
 
 
@@ -1285,7 +1357,7 @@ class FeRunSpan(_AuditCols, Base):
 
     `deploy_run_id` / `test_run_id` 二选一非空：
 
-      - 部署运行（once / cron / resident）→ deploy_run_id 非空
+      - 部署运行（once / cron / subscription）→ deploy_run_id 非空
       - 测试运行 → test_run_id 非空
 
     JSON 字段语义：

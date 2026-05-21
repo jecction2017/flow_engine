@@ -1,0 +1,42 @@
+# 数据字典模块：module_code = middleware.kafka
+# 运维中心 → 字典配置 → 新建/编辑模块，将本文件内容粘贴到 YAML 编辑器。
+
+middleware:
+  kafka:
+    defaults:
+      protection:
+        max_in_flight: 8
+        max_rps: 50
+        max_result_docs: 20
+        circuit_failure_threshold: 5
+        circuit_open_sec: 30
+      consumer_params:
+        enable_auto_commit: false
+        session_timeout_ms: 30000
+      producer_params:
+        acks: 1
+        retries: 3
+    instances:
+      local:
+        bootstrap_servers:
+          - "localhost:9092"
+        auth:
+          type: none
+        topics:
+          simple_alarms:
+            consumers:
+              demo_consumer:
+                group_id: flow-simple-alarms-demo
+                serializers:
+                  key: string
+                  value: json
+                strategy: earliest
+                params:
+                  auto_offset_reset: earliest
+            producers:
+              demo_producer:
+                serializers:
+                  key: string
+                  value: json
+                params:
+                  acks: 1

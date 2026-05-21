@@ -23,7 +23,7 @@
           <span class="sid-ts">+{{ entry.t_ms }}ms</span>
           <span class="sid-lvl">{{ entry.level }}</span>
           <span class="sid-src" :title="entry.source">{{ entry.source }}</span>
-          <span class="sid-msg">{{ entry.msg }}</span>
+          <span class="sid-msg">{{ entry.msg ?? entry.message }}</span>
         </li>
       </ul>
       <p v-else class="muted small">当前日志级别过滤下无条目</p>

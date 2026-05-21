@@ -1,0 +1,56 @@
+---
+description: 生成 Starlark 流程脚本时的硬性语法约束（非 Python）；完整说明见 docs/starlark-scripting-guide.md
+globs: "**/*.{star,yaml,yml}"
+alwaysApply: false
+---
+
+# Starlark 脚本生成约束（Agent）
+
+**不是 Python**。方言：`Dialect.standard()` + `enable_load`（`starlark-pyo3>=2024.0`）。用户文档：`docs/starlark-scripting-guide.md`。改方言前跑：`pytest tests/test_starlark_dialect_syntax.py -q`。
+
+## 脚本形态
+
+| 用途 | 要求 | 返回值 |
+|------|------|--------|
+| 任务 `script` | 模块级语句序列 | **末行表达式**须为 `dict` |
+| `when` / 断言 / `iterable` | **仅单表达式**（无 `def`、无多语句） | `bool` / 可迭代 |
+| `load(...)` 库 | 可含多个 `def` | — |
+
+## 必须遵守
+
+1. **顶层禁止** `if` / `for` → 包进 `def` 并末尾 `fn()`；顶层可用三元 `"a" if c else "b"` 与推导 `[x for x in L if ok]`。
+2. **全方言禁止**（含 `def` 内）：`import`/`while`/`try`/`class`/`global`/`nonlocal`/`raise`/`yield`/`assert`/`del`/`with`；f-string；`is`；`**`；`{1,2}` 集合字面量；`a, *r = seq`；`1 < x < 5`；隐式 `"a" "b"`。
+3. **仅 `def` 内**：`if`/`for`/`return`/`break`/`continue`。
+4. 字符串：`for c in s.elems()`（非 `for c in s`）；拼接用 `+`/`%`/`.format()`/`sep.join(list)`，**无 f-string**；非字符串须 `str(x)`。
+5. 迭代时**勿改**正在遍历的 list/dict → 遍历 `L[:]` 或副本。
+6. I/O 仅经 builtin：`resolve(...)`、`load(...)`、`kafka_*`、`log_*` 等，无 `open`/网络。
+7. 错误：前置检查 + `fail("msg")`，无 `try`/`raise`。
+8. 条件/iterable 示例：`resolve("$.global.x") and len(L) > 0`；`[x for x in resolve("$.global.items") if x["on"]]`。
+
+## 推荐模板（任务脚本）
+
+```python
+def build():
+    data = resolve("$.global.input")
+    if not data:
+        fail("missing input")
+    out = []
+    for item in data["items"]:
+        out = out + [{"id": item["id"]}]
+    return {"count": len(out), "items": out}
+
+build()
+```
+
+## 允许（常用）
+
+`load("internal://lib/x.star", "sym")` · `True`/`False`/`None` · `dict`/`list` 变异（`d["k"]=v`、`L.append`）· `len`/`range`/`sorted`/`enumerate`/`zip`/`fail`/`repr`/`str` · `json.encode` · `log_info`/`log_warn`/`log_error` · `flow_continue`/`flow_break`/`flow_terminate`/`flow_jump`（均在 `def` 内）。
+
+## 生成前自检
+
+- [ ] 无顶层 `if`/`for`？
+- [ ] 无 `while`/`try`/`import`/`is`/f-string/`**`/隐式 `"a" "b"`？
+- [ ] 字符串用 `str()`/`%`/`.format()`，未 `for c in 字符串`？
+- [ ] 未在 `for` 中 `remove`/`append` 同一容器？
+- [ ] `when`/iterable 为单表达式？
+- [ ] 任务脚本末行为 `dict` 或返回 dict 的调用？

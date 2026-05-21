@@ -1,0 +1,65 @@
+# 示例流程：从 Kafka topic simple_alarms 拉取告警并写入 global.alarms
+# 依赖数据字典模块 middleware.kafka（见 dict.middleware.kafka.yaml）
+display_name: kafka_simple_alarms_test
+version: "1.0.0"
+
+initial_context: {}
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  - name: fetch_alarms
+    id: fetch_alarms
+    type: task
+    strategy_ref: default_sync
+    script: |
+      recv = kafka_receive(
+          "local.simple_alarms.demo_consumer",
+          10,
+          2000,
+          None,
+          "earliest",
+      )
+      alarms = []
+      receive_ok = False
+      if "ok" in recv and recv["ok"]:
+          receive_ok = True
+          data = recv["data"]
+          if "messages" in data:
+              for m in data["messages"]:
+                  alarms = alarms + [m["value"]]
+      {
+          "receive_ok": receive_ok,
+          "alarm_count": len(alarms),
+          "alarms": alarms,
+          "kafka_meta": recv["meta"] if "meta" in recv else {},
+      }
+    boundary:
+      outputs:
+        receive_ok: "$.global.receive_ok"
+        alarm_count: "$.global.alarm_count"
+        alarms: "$.global.alarms"
+        kafka_meta: "$.global.kafka_meta"
+
+  - name: summarize
+    id: summarize
+    type: task
+    strategy_ref: default_sync
+    script: |
+      alarms = resolve("$.global.alarms")
+      ids = []
+      for a in alarms:
+          if "id" in a:
+              ids = ids + [a["id"]]
+      {
+          "summary": {
+              "count": resolve("$.global.alarm_count"),
+              "ids": ids,
+          }
+      }
+    boundary:
+      outputs:
+        summary: "$.global.summary"

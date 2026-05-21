@@ -159,24 +159,24 @@ def query_metric_buckets(
         stmt = stmt.order_by(FeNodeMetric.node_id.asc(), FeNodeMetric.bucket_at.asc())
         rows = list(s.execute(stmt).scalars().all())
 
-    by_node: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        by_node.setdefault(r.node_id, []).append(_bucket_dict(r))
+        by_node: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            by_node.setdefault(r.node_id, []).append(_bucket_dict(r))
 
-    if node_id:
+        if node_id:
+            return {
+                "deploy_run_id": int(deploy_run_id),
+                "node_id": node_id,
+                "buckets": by_node.get(node_id, []),
+            }
+        # Multi-node response: return a stable list shape.
         return {
             "deploy_run_id": int(deploy_run_id),
-            "node_id": node_id,
-            "buckets": by_node.get(node_id, []),
+            "nodes": [
+                {"node_id": nid, "buckets": buckets}
+                for nid, buckets in sorted(by_node.items())
+            ],
         }
-    # Multi-node response: return a stable list shape.
-    return {
-        "deploy_run_id": int(deploy_run_id),
-        "nodes": [
-            {"node_id": nid, "buckets": buckets}
-            for nid, buckets in sorted(by_node.items())
-        ],
-    }
 
 
 def query_metric_summary(
@@ -202,53 +202,53 @@ def query_metric_summary(
         stmt = stmt.order_by(FeNodeMetric.node_id.asc(), FeNodeMetric.bucket_at.asc())
         rows = list(s.execute(stmt).scalars().all())
 
-    by_node: dict[str, list[FeNodeMetric]] = {}
-    for r in rows:
-        by_node.setdefault(r.node_id, []).append(r)
+        by_node: dict[str, list[FeNodeMetric]] = {}
+        for r in rows:
+            by_node.setdefault(r.node_id, []).append(r)
 
-    def _summarize(nid: str, items: list[FeNodeMetric]) -> dict[str, Any]:
-        span_count = 0
-        success_count = 0
-        failed_count = 0
-        skipped_count = 0
-        total_ms = 0
-        latest = items[-1] if items else None
-        for r in items:
-            span_count += int(r.span_count or 0)
-            success_count += int(r.success_count or 0)
-            failed_count += int(r.failed_count or 0)
-            skipped_count += int(r.skipped_count or 0)
-            total_ms += int(r.total_ms or 0)
-        finished = success_count + failed_count
-        success_rate = (success_count / finished) if finished > 0 else None
-        avg_ms = (total_ms / span_count) if span_count > 0 else None
-        # Throughput: spans per second over the window.
-        throughput = span_count / (window_minutes * 60) if span_count > 0 else 0.0
+        def _summarize(nid: str, items: list[FeNodeMetric]) -> dict[str, Any]:
+            span_count = 0
+            success_count = 0
+            failed_count = 0
+            skipped_count = 0
+            total_ms = 0
+            latest = items[-1] if items else None
+            for r in items:
+                span_count += int(r.span_count or 0)
+                success_count += int(r.success_count or 0)
+                failed_count += int(r.failed_count or 0)
+                skipped_count += int(r.skipped_count or 0)
+                total_ms += int(r.total_ms or 0)
+            finished = success_count + failed_count
+            success_rate = (success_count / finished) if finished > 0 else None
+            avg_ms = (total_ms / span_count) if span_count > 0 else None
+            # Throughput: spans per second over the window.
+            throughput = span_count / (window_minutes * 60) if span_count > 0 else 0.0
+            return {
+                "node_id": nid,
+                "window_minutes": window_minutes,
+                "span_count": span_count,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
+                "success_rate": success_rate,
+                "avg_ms": avg_ms,
+                "throughput_per_s": throughput,
+                "p50_ms": int(latest.p50_ms) if latest and latest.p50_ms is not None else None,
+                "p95_ms": int(latest.p95_ms) if latest and latest.p95_ms is not None else None,
+                "p99_ms": int(latest.p99_ms) if latest and latest.p99_ms is not None else None,
+                "max_ms": int(latest.max_ms) if latest and latest.max_ms is not None else None,
+            }
+
+        if node_id:
+            items = by_node.get(node_id, [])
+            return _summarize(node_id, items)
+
         return {
-            "node_id": nid,
+            "deploy_run_id": int(deploy_run_id),
             "window_minutes": window_minutes,
-            "span_count": span_count,
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "skipped_count": skipped_count,
-            "success_rate": success_rate,
-            "avg_ms": avg_ms,
-            "throughput_per_s": throughput,
-            "p50_ms": int(latest.p50_ms) if latest and latest.p50_ms is not None else None,
-            "p95_ms": int(latest.p95_ms) if latest and latest.p95_ms is not None else None,
-            "p99_ms": int(latest.p99_ms) if latest and latest.p99_ms is not None else None,
-            "max_ms": int(latest.max_ms) if latest and latest.max_ms is not None else None,
+            "nodes": [_summarize(nid, items) for nid, items in sorted(by_node.items())],
         }
-
-    if node_id:
-        items = by_node.get(node_id, [])
-        return _summarize(node_id, items)
-
-    return {
-        "deploy_run_id": int(deploy_run_id),
-        "window_minutes": window_minutes,
-        "nodes": [_summarize(nid, items) for nid, items in sorted(by_node.items())],
-    }
 
 
 # ---------------------------------------------------------------------------

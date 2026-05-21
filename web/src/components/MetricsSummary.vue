@@ -30,7 +30,7 @@
       统计加载中…
     </div>
     <div v-else-if="!loading && nodes.length === 0" class="muted center pad">
-      当前窗口内尚无聚合数据（resident 流程刚启动需等待首个 5min 桶滚动）。
+      当前窗口内尚无聚合数据（subscription 流程刚启动需等待首个 5min 桶滚动）。
     </div>
 
     <div v-else class="ms-grid">

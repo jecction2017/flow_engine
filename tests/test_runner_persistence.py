@@ -63,7 +63,7 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
     backend = AsyncBufferedDBBackend(
         run_ref=RunRef(deploy_run_id=run_id),
         flow_code="f",
-        obs_cfg=ObsRuntimeConfig(),  # full sampling, ERROR-only logs
+        obs_cfg=ObsRuntimeConfig(),  # full sampling, INFO+ logs (default)
     )
     rt = FlowRuntime(
         flow,
@@ -83,6 +83,8 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
     detail = deploy_persistence.get_deploy_run_detail(run_id)
     assert detail is not None
     assert detail["status"] == "completed"
+    assert detail.get("global_ns") is not None
+    assert detail["global_ns"].get("x") == 1
     # Counters are populated by the flush loop.
     assert (detail.get("sampled_span_count") or 0) >= 1
 

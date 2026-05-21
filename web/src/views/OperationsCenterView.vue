@@ -57,7 +57,7 @@
 
           <div class="dep2-filters">
             <div class="dep2-filterbar">
-              <input v-model="depFilters.flow_code" class="inp mono dep2-search" placeholder="搜索 flow_code" />
+              <input v-model="depFilters.flow_code" class="inp dep2-search" placeholder="搜索流程名称" />
               <button type="button" class="btn small ghost" :disabled="loadingDep" @click="loadDeployments">查询</button>
               <button
                 type="button"
@@ -98,11 +98,11 @@
 
           <ul class="dep2-list" role="listbox" aria-label="deployments">
             <li v-if="loadingDep" class="muted small pad center">加载中…</li>
-            <li v-else-if="deployments.length === 0" class="muted small pad center">
-              暂无部署，建议先创建一个 production/shadow 部署
+            <li v-else-if="filteredDeployments.length === 0" class="muted small pad center">
+              {{ deployments.length === 0 ? "暂无部署，建议先创建一个 production/shadow 部署" : "无匹配的部署" }}
             </li>
             <li
-              v-for="d in deployments"
+              v-for="d in filteredDeployments"
               :key="d.id"
               class="dep2-item"
               :class="{ active: selectedDeploymentId === d.id }"
@@ -148,7 +148,7 @@
                 </div>
               </div>
               <div class="dep2-row2">
-                <div class="mono dep2-flow">{{ d.flow_code }}</div>
+                <div class="dep2-flow">{{ flowLabelById(d.flow_code) }}</div>
                 <div class="muted small">v{{ d.ver_no }} · {{ d.schedule_type }}<span v-if="d.schedule_type === 'cron' && d.schedule_config?.cron_expr" class="mono"> · {{ d.schedule_config.cron_expr }}</span></div>
               </div>
               <div class="dep2-row3 muted small">
@@ -219,7 +219,7 @@
                       <tr v-else-if="!runsResp || runsResp.runs.length === 0"><td colspan="4" class="muted center">暂无运行记录</td></tr>
                       <tr v-for="r in (runsResp?.runs ?? []).slice(0, 6)" :key="r.id" @click="selectRun(r.id); switchTab('runs')">
                         <td class="mono">#{{ r.id }}</td>
-                        <td><div class="mono">{{ r.flow_code }}</div><div class="muted small">v{{ r.ver_no }}</div></td>
+                        <td><div>{{ flowLabelById(r.flow_code) }}</div><div class="muted small">v{{ r.ver_no }}</div></td>
                         <td><span class="tag" :class="runStatusTag(r.status)">{{ r.status }}</span></td>
                         <td class="mono small">{{ runElapsed(r) }}</td>
                       </tr>
@@ -278,7 +278,7 @@
                 </div>
                 <div class="form-grid">
                   <label class="field">
-                    <span>flow_code <em class="req">*</em></span>
+                    <span>流程 <em class="req">*</em></span>
                     <select v-model="form.flow_code" class="inp" @change="onFlowChange">
                       <option value="">选择流程</option>
                       <option v-for="f in flowOptions" :key="f.id" :value="f.id">
@@ -307,10 +307,15 @@
                       <button
                         type="button"
                         class="seg"
-                        :class="{ active: form.schedule_type === 'resident' }"
-                        @click="form.schedule_type = 'resident'"
+                        :class="{ active: form.schedule_type === 'subscription' }"
+                        @click="
+                          form.schedule_type = 'subscription';
+                          if (workerPolicyForm.type === 'single_active' && workerPolicyForm.min_workers > 1) {
+                            workerPolicyForm.min_workers = 1;
+                          }
+                        "
                       >
-                        resident
+                        subscription
                       </button>
                     </div>
                   </label>
@@ -326,6 +331,242 @@
                       <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
                     </select>
                   </label>
+                </div>
+              </section>
+
+              <section v-if="form.schedule_type === 'subscription'" class="form-section sub-schedule-panel">
+                <div class="section-head">
+                  <div class="section-title">消息订阅</div>
+                  <div class="muted small">
+                    常驻 Ingress：每条消息触发一次流程运行。Kafka 实例在环境字典
+                    <span class="mono">middleware.kafka.instances</span> 中配置。
+                  </div>
+                </div>
+
+                <div class="sub-cards">
+                  <div class="sub-card">
+                    <div class="sub-card-title">① 消息源</div>
+                    <div class="form-grid">
+                      <label class="field full">
+                        <span>consumer_id <em class="req">*</em></span>
+                        <input
+                          v-model="subscriptionForm.consumer_id"
+                          class="inp mono"
+                          placeholder="soc_cluster_a.alerts.ingress"
+                        />
+                        <span class="muted small">
+                          数据字典
+                          <span class="mono">middleware.kafka.instances.&lt;cluster&gt;.topics.&lt;topic&gt;.consumers.&lt;name&gt;</span>
+                        </span>
+                      </label>
+                      <label class="field full">
+                        <span>producer_id（DLQ 等，可选）</span>
+                        <input
+                          v-model="subscriptionForm.producer_id"
+                          class="inp mono"
+                          placeholder="soc_cluster_a.alerts.dlq"
+                        />
+                      </label>
+                      <label class="field">
+                        <span>起始位点</span>
+                        <select v-model="subscriptionForm.start_position" class="inp">
+                          <option value="latest">latest（仅新消息）</option>
+                          <option value="earliest">earliest（从头消费）</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span>分区（可选）</span>
+                        <input
+                          v-model="subscriptionForm.partitionsText"
+                          class="inp mono"
+                          placeholder="0,1,2 留空=全部分区"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="sub-card">
+                    <div class="sub-card-title">② 消费与背压</div>
+                    <div class="form-grid">
+                      <label class="field">
+                        <span>batch_max_records</span>
+                        <input
+                          v-model.number="subscriptionForm.batch_max_records"
+                          type="number"
+                          min="1"
+                          max="10000"
+                          class="inp mono"
+                        />
+                      </label>
+                      <label class="field">
+                        <span>poll_timeout_ms</span>
+                        <input
+                          v-model.number="subscriptionForm.poll_timeout_ms"
+                          type="number"
+                          min="100"
+                          max="60000"
+                          class="inp mono"
+                        />
+                      </label>
+                      <label class="field">
+                        <span>max_in_flight</span>
+                        <input
+                          v-model.number="subscriptionForm.max_in_flight"
+                          type="number"
+                          min="1"
+                          max="500"
+                          class="inp mono"
+                        />
+                        <span class="muted small">饱和时暂停拉取，背压 colocated 运行。</span>
+                      </label>
+                      <label class="field">
+                        <span>run_timeout_s</span>
+                        <input
+                          v-model.number="subscriptionForm.run_timeout_s"
+                          type="number"
+                          min="0"
+                          class="inp mono"
+                          placeholder="0=默认"
+                        />
+                        <span class="muted small">0 表示不设置（v1 后端待实现）。</span>
+                      </label>
+                      <label class="field full sub-toggle-row">
+                        <span class="check">
+                          <input v-model="subscriptionForm.idempotencyEnabled" type="checkbox" />
+                          <span>启用幂等去重（topic/partition/offset）</span>
+                        </span>
+                        <span class="muted small">
+                          每条消息都会写入
+                          <span class="mono">fe_subscription_dedup</span>（含失败原因）；启用幂等时同表按
+                          topic/partition/offset 去重。
+                        </span>
+                      </label>
+                      <label v-if="subscriptionForm.idempotencyEnabled" class="field">
+                        <span>幂等窗口 window_s</span>
+                        <input
+                          v-model.number="subscriptionForm.idempotency_window_s"
+                          type="number"
+                          min="1"
+                          class="inp mono"
+                        />
+                        <span class="muted small">秒；过期记录清理后可重放旧 offset。</span>
+                      </label>
+                      <label class="field full">
+                        <span>失败队列 DLQ topic（可选）</span>
+                        <input
+                          v-model="subscriptionForm.dlq_producer_id"
+                          class="inp mono"
+                          placeholder="security.alerts.dlq"
+                        />
+                        <span class="muted small">
+                          处理失败时向<strong>同一 bus 实例</strong>发布 JSON 信封并提交 offset；留空则由你在流程或其它订阅中自行处理失败消息。
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="sub-card sub-card-wide">
+                    <div class="sub-card-title">③ 消息 → 流程上下文</div>
+                    <p class="muted small sub-card-lead">
+                      与测试中心 <span class="mono">context_mapping</span> 相同；平台固定追加
+                      <span class="mono">event_meta</span>（topic/offset/correlation_id）。
+                    </p>
+                    <div class="sub-parse-toolbar">
+                      <label class="field" style="margin: 0">
+                        <span>转换方式</span>
+                        <select v-model="subscriptionForm.transform" class="inp">
+                          <option value="mapping">mapping</option>
+                          <option value="script">script（Starlark）</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <template v-if="subscriptionForm.transform === 'mapping'">
+                      <div class="sub-parse-grid">
+                        <div class="sub-parse-col">
+                          <label class="field">
+                            <span>mode</span>
+                            <select v-model="(subscriptionContextMapping as any).mode" class="inp">
+                              <option value="spread">spread（字段展开到 global）</option>
+                              <option value="wrap">wrap（包一层 key）</option>
+                              <option value="rules">rules（字段映射）</option>
+                            </select>
+                          </label>
+                          <label v-if="(subscriptionContextMapping as any).mode === 'wrap'" class="field">
+                            <span>wrap_key</span>
+                            <input
+                              v-model="(subscriptionContextMapping as any).wrap_key"
+                              class="inp mono"
+                              placeholder="alert"
+                            />
+                          </label>
+                          <label
+                            v-if="(subscriptionContextMapping as any).mode === 'wrap'"
+                            class="check"
+                          >
+                            <input v-model="(subscriptionContextMapping as any).wrap_as_list" type="checkbox" />
+                            <span>wrap 为数组</span>
+                          </label>
+                          <label v-if="(subscriptionContextMapping as any).mode === 'rules'" class="field">
+                            <span>rules (JSON)</span>
+                            <textarea
+                              class="ta mono"
+                              rows="6"
+                              spellcheck="false"
+                              :value="JSON.stringify((subscriptionContextMapping as any).rules ?? [], null, 2)"
+                              @input="
+                                (e: any) => {
+                                  try {
+                                    (subscriptionContextMapping as any).rules = JSON.parse(
+                                      e.target.value || '[]',
+                                    );
+                                  } catch {}
+                                }
+                              "
+                              placeholder='[{"source":"alert_id","target":"alert.id"}]'
+                            />
+                          </label>
+                        </div>
+                        <div class="sub-parse-col">
+                          <label class="field">
+                            <span>样例 payload</span>
+                            <textarea
+                              v-model="subscriptionSamplePayloadText"
+                              class="ta mono"
+                              rows="10"
+                              spellcheck="false"
+                            />
+                          </label>
+                          <label class="field">
+                            <span>预览（映射后）</span>
+                            <textarea
+                              :value="subscriptionMappedPreviewText"
+                              class="ta mono sub-preview"
+                              rows="10"
+                              spellcheck="false"
+                              readonly
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </template>
+
+                    <template v-else>
+                      <label class="field full">
+                        <span>Starlark script <em class="req">*</em></span>
+                        <textarea
+                          v-model="subscriptionForm.scriptText"
+                          class="ta mono"
+                          rows="10"
+                          spellcheck="false"
+                          placeholder='payload\n\n{"alert": payload["alert"] if "alert" in payload else payload}'
+                        />
+                        <span class="muted small">
+                          须返回 dict；全局 <span class="mono">payload</span> 为 UTF-8 JSON 解码结果。
+                        </span>
+                      </label>
+                    </template>
+                  </div>
                 </div>
               </section>
 
@@ -349,6 +590,7 @@
                     <span class="muted small">
                       未选择工作节点时为“不限制”；选择 1 个为“指定节点运行”；选择多个为“候选池（从所选中挑选/分配）”。
                     </span>
+                    <p v-if="subscriptionWorkerHint" class="sub-hint">{{ subscriptionWorkerHint }}</p>
                   </label>
                   <label class="field">
                     <span>min_workers</span>
@@ -357,10 +599,12 @@
                   <label class="field">
                     <span>max_restarts</span>
                     <input v-model.number="workerPolicyForm.max_restarts" type="number" min="0" class="inp mono" />
+                    <span v-if="form.schedule_type === 'subscription'" class="muted small">同步至 ingress_policy</span>
                   </label>
                   <label class="field">
                     <span>restart_backoff_s</span>
                     <input v-model.number="workerPolicyForm.restart_backoff_s" type="number" min="0" class="inp mono" />
+                    <span v-if="form.schedule_type === 'subscription'" class="muted small">Ingress 崩溃退避基数</span>
                   </label>
                 </div>
 
@@ -426,7 +670,7 @@
               <div>
                 <div class="panel-title">
                   <span class="mono">#{{ selectedDeployment.id }}</span>
-                  · <span class="mono">{{ selectedDeployment.flow_code }}</span>
+                  · <span>{{ flowLabelById(selectedDeployment.flow_code) }}</span>
                   · v{{ selectedDeployment.ver_no }}
                   <span class="tag mode">{{ selectedDeployment.mode }}</span>
                   <span class="tag" :class="statusTag(selectedDeployment.status)">{{ selectedDeployment.status }}</span>
@@ -459,6 +703,13 @@
 
             <nav class="seg-tabs" aria-label="deployment detail tabs">
               <button type="button" class="seg" :class="{ active: depDetailTab === 'overview' }" @click="depDetailTab = 'overview'">概览</button>
+              <button
+                v-if="selectedDeployment.schedule_type === 'subscription'"
+                type="button"
+                class="seg"
+                :class="{ active: depDetailTab === 'messages' }"
+                @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()"
+              >消费</button>
               <button type="button" class="seg" :class="{ active: depDetailTab === 'runs' }" @click="depDetailTab = 'runs'; depRunsOffset=0; loadEmbeddedDepRuns()">运行</button>
               <button type="button" class="seg" :class="{ active: depDetailTab === 'config' }" @click="depDetailTab = 'config'">配置</button>
               <button type="button" class="seg jump" @click="viewRuns(selectedDeployment, { forceGlobal: true })">
@@ -469,7 +720,7 @@
             <section v-if="depDetailTab === 'overview'" class="panel-body">
               <div class="kv-grid">
                 <div class="kv"><div class="k">deployment_id</div><div class="v mono">#{{ selectedDeployment.id }}</div></div>
-                <div class="kv"><div class="k">flow_code</div><div class="v mono">{{ selectedDeployment.flow_code }}</div></div>
+                <div class="kv"><div class="k">流程</div><div class="v">{{ flowLabelById(selectedDeployment.flow_code) }}</div></div>
                 <div class="kv"><div class="k">ver_no</div><div class="v mono">v{{ selectedDeployment.ver_no }}</div></div>
                 <div class="kv"><div class="k">mode</div><div class="v"><span class="tag mode">{{ selectedDeployment.mode }}</span></div></div>
                 <div class="kv"><div class="k">status</div><div class="v"><span class="tag" :class="statusTag(selectedDeployment.status)">{{ selectedDeployment.status }}</span></div></div>
@@ -489,6 +740,104 @@
                     </template>
                   </div>
                 </div>
+              </div>
+
+              <div
+                v-if="selectedDeployment.schedule_type === 'subscription'"
+                class="side-section sub-obs-section"
+                style="margin-top:12px;"
+              >
+                <div class="lbl">订阅消费可观测</div>
+                <div v-if="loadingSubSummary" class="muted small pad">加载中…</div>
+                <template v-else-if="subSummary">
+                  <div v-if="subSummary.consumer_id" class="muted small" style="margin-bottom:8px;">
+                    consumer <span class="mono">{{ subSummary.consumer_id }}</span>
+                    <span v-if="subSummary.messages.last_updated_at">
+                      · 最近消息 {{ formatTs(subSummary.messages.last_updated_at) }}
+                    </span>
+                  </div>
+                  <div class="sub-obs-grid">
+                    <article class="sub-obs-card">
+                      <div class="sub-obs-card-title">消息账本</div>
+                      <div class="ov-metrics">
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.messages.total }}</div>
+                          <div class="ov-label">全部</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.messages.by_status.processing ?? 0 }}</div>
+                          <div class="ov-label">processing</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.messages.by_status.completed ?? 0 }}</div>
+                          <div class="ov-label">completed</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono" :class="{ bad: (subSummary.messages.by_status.failed ?? 0) > 0 }">
+                            {{ subSummary.messages.by_status.failed ?? 0 }}
+                          </div>
+                          <div class="ov-label">failed</div>
+                        </div>
+                      </div>
+                    </article>
+                    <article class="sub-obs-card">
+                      <div class="sub-obs-card-title">流程运行</div>
+                      <div class="ov-metrics">
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.runs.total }}</div>
+                          <div class="ov-label">全部</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.runs.by_status.running ?? 0 }}</div>
+                          <div class="ov-label">running</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono">{{ subSummary.runs.by_status.completed ?? 0 }}</div>
+                          <div class="ov-label">completed</div>
+                        </div>
+                        <div class="ov-metric">
+                          <div class="ov-num mono" :class="{ bad: (subSummary.runs.by_status.failed ?? 0) > 0 }">
+                            {{ subSummary.runs.by_status.failed ?? 0 }}
+                          </div>
+                          <div class="ov-label">failed</div>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+                  <div v-if="subSummary.recent_failed_messages.length" class="sub-obs-failures">
+                    <div class="lbl">最近失败消息</div>
+                    <table class="grid-table mini">
+                      <thead>
+                        <tr>
+                          <th>position</th>
+                          <th style="width:90px">状态</th>
+                          <th>error</th>
+                          <th style="width:150px">时间</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="m in subSummary.recent_failed_messages"
+                          :key="m.id"
+                          class="clickable"
+                          @click="openSubscriptionMessage(m)"
+                        >
+                          <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
+                          <td><span class="tag small" :class="messageStatusTag(m.status)">{{ m.status }}</span></td>
+                          <td class="small err-cell">{{ truncateText(m.error, 120) }}</td>
+                          <td class="mono small">{{ formatTs(m.updated_at) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="ov-actions" style="margin-top:8px;">
+                    <button type="button" class="btn small ghost" @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()">
+                      查看全部消息
+                    </button>
+                    <button type="button" class="btn small ghost" @click="loadSubscriptionSummary()">刷新</button>
+                  </div>
+                </template>
+                <div v-else class="muted small pad">暂无消费统计</div>
               </div>
 
               <div v-if="selectedDeployment.status_detail" class="side-section" style="margin-top:12px;">
@@ -551,7 +900,91 @@
               <pre class="cfg mono">{{ deploymentCfgText(selectedDeployment) }}</pre>
             </section>
 
+            <section v-else-if="depDetailTab === 'messages'" class="panel-body">
+              <div class="run-embed-toolbar">
+                <span class="muted small">
+                  消息账本 · 共 {{ subMessagesResp?.total ?? 0 }} 条 · 第 {{ Math.floor((subMessagesResp?.offset ?? 0) / depMessagesPageSize) + 1 }} 页
+                </span>
+                <span class="muted small">· 状态</span>
+                <button
+                  type="button"
+                  class="chip"
+                  :class="{ active: depMessagesStatusFilter === '' }"
+                  @click="depMessagesStatusFilter = ''; depMessagesOffset = 0; loadSubscriptionMessages()"
+                >全部</button>
+                <button
+                  type="button"
+                  class="chip"
+                  :class="{ active: depMessagesStatusFilter === 'processing' }"
+                  @click="depMessagesStatusFilter = 'processing'; depMessagesOffset = 0; loadSubscriptionMessages()"
+                >processing</button>
+                <button
+                  type="button"
+                  class="chip"
+                  :class="{ active: depMessagesStatusFilter === 'completed' }"
+                  @click="depMessagesStatusFilter = 'completed'; depMessagesOffset = 0; loadSubscriptionMessages()"
+                >completed</button>
+                <button
+                  type="button"
+                  class="chip"
+                  :class="{ active: depMessagesStatusFilter === 'failed' }"
+                  @click="depMessagesStatusFilter = 'failed'; depMessagesOffset = 0; loadSubscriptionMessages()"
+                >failed</button>
+                <span class="spacer" />
+                <button type="button" class="btn small ghost" :disabled="loadingSubMessages" @click="loadSubscriptionMessages()">刷新</button>
+                <button type="button" class="btn small ghost" :disabled="(subMessagesResp?.offset ?? 0) === 0" @click="subMessagesPrevPage">上一页</button>
+                <button type="button" class="btn small ghost" :disabled="!subMessagesHasNext" @click="subMessagesNextPage">下一页</button>
+              </div>
+              <table class="grid-table">
+                <thead>
+                  <tr>
+                    <th style="width:200px">position</th>
+                    <th style="width:100px">状态</th>
+                    <th style="width:90px">run</th>
+                    <th>error</th>
+                    <th style="width:170px">updated_at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="loadingSubMessages">
+                    <td colspan="5" class="muted center">加载中…</td>
+                  </tr>
+                  <tr v-else-if="!subMessagesResp || subMessagesResp.messages.length === 0">
+                    <td colspan="5" class="muted center">暂无消息记录</td>
+                  </tr>
+                  <tr v-for="m in subMessagesResp?.messages ?? []" :key="m.id">
+                    <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
+                    <td><span class="tag small" :class="messageStatusTag(m.status)">{{ m.status }}</span></td>
+                    <td class="mono">
+                      <button
+                        v-if="m.deploy_run_id"
+                        type="button"
+                        class="linkish"
+                        @click="openSubscriptionRun(m.deploy_run_id)"
+                      >#{{ m.deploy_run_id }}</button>
+                      <span v-else class="muted">—</span>
+                    </td>
+                    <td class="small err-cell">{{ truncateText(m.error, 200) }}</td>
+                    <td class="mono small">{{ formatTs(m.updated_at) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+
             <section v-else class="panel-body">
+              <div
+                v-if="selectedDeployment.schedule_type === 'subscription' && subSummary"
+                class="sub-obs-banner"
+              >
+                <span class="muted small">订阅消费</span>
+                <span class="mono small">消息 {{ subSummary.messages.total }}</span>
+                <span class="mono small" :class="{ bad: (subSummary.messages.by_status.failed ?? 0) > 0 }">
+                  失败 {{ subSummary.messages.by_status.failed ?? 0 }}
+                </span>
+                <span class="mono small">运行 {{ subSummary.runs.total }}</span>
+                <button type="button" class="btn small ghost" @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()">消息账本</button>
+                <button type="button" class="btn small ghost" @click="loadSubscriptionSummary()">刷新统计</button>
+              </div>
               <div class="run-embed-toolbar">
                 <span class="muted small">
                   共 {{ depRunsResp?.total ?? 0 }} 条 · 第 {{ Math.floor((depRunsResp?.offset ?? 0) / depRunsPageSize) + 1 }} 页
@@ -673,8 +1106,13 @@
           <input v-model="runFilters.deployment_id" type="number" class="inp mono" placeholder="（全部）" />
         </label>
         <label class="ctl">
-          <span>flow_code</span>
-          <input v-model="runFilters.flow_code" class="inp mono" placeholder="（全部）" />
+          <span>流程</span>
+          <select v-model="runFilters.flow_code" class="inp">
+            <option value="">（全部）</option>
+            <option v-for="f in flowOptions" :key="f.id" :value="f.id">
+              {{ flowListItemLabel(f) }}
+            </option>
+          </select>
         </label>
         <label class="ctl">
           <span>worker</span>
@@ -736,7 +1174,7 @@
           >
             <td class="mono">#{{ r.id }}</td>
             <td>
-              <div class="mono">{{ r.flow_code }}</div>
+              <div>{{ flowLabelById(r.flow_code) }}</div>
               <div class="muted small">v{{ r.ver_no }}</div>
             </td>
             <td>
@@ -815,12 +1253,23 @@ import {
 } from "@/api/deployments";
 import { listWorkers, type Worker } from "@/api/workers";
 import { getDeployRun, listDeployRuns } from "@/api/deployRuns";
+import {
+  getSubscriptionSummary,
+  listSubscriptionMessages,
+  type SubscriptionMessagesListResponse,
+  type SubscriptionSummary,
+} from "@/api/subscriptionObservability";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
-import { fetchFlowList, type FlowListItem } from "@/api/flows";
+import { useFlowLabels } from "@/composables/useFlowLabels";
 import { flowListItemLabel } from "@/types/flow";
 import { fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfiles } from "@/api/profiles";
 import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
+import { previewContextMapping } from "@/testCenter/mappingPreview";
+import {
+  buildSubscriptionScheduleConfig,
+  DEFAULT_SUBSCRIPTION_FORM,
+} from "@/operations/subscriptionScheduleConfig";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
 
@@ -881,7 +1330,7 @@ const depFilters = reactive<{ flow_code: string; status: string; mode: string }>
 });
 const selectedDeploymentId = ref<number | null>(null);
 const selectedDeployment = ref<DeploymentDetail | null>(null);
-const depDetailTab = ref<"overview" | "runs" | "config">("overview");
+const depDetailTab = ref<"overview" | "messages" | "runs" | "config">("overview");
 const depWorkspace = ref<"overview" | "create" | "detail">("overview");
 
 // Deployment list item "more" menu
@@ -914,6 +1363,22 @@ const selectedDepRunDetail = ref<FlowRunDetail | null>(null);
 const loadingSelectedDepRun = ref(false);
 const depRunsStatusFilter = ref("");
 
+const subSummary = ref<SubscriptionSummary | null>(null);
+const loadingSubSummary = ref(false);
+const depMessagesPageSize = 25;
+const depMessagesOffset = ref(0);
+const depMessagesStatusFilter = ref("");
+const loadingSubMessages = ref(false);
+const subMessagesResp = ref<SubscriptionMessagesListResponse | null>(null);
+
+const subMessagesHasNext = computed(() => {
+  if (!subMessagesResp.value) return false;
+  return (
+    subMessagesResp.value.offset + subMessagesResp.value.messages.length
+    < subMessagesResp.value.total
+  );
+});
+
 const depRunsHasNext = computed(() => {
   if (!depRunsResp.value) return false;
   return depRunsResp.value.offset + depRunsResp.value.runs.length < depRunsResp.value.total;
@@ -931,7 +1396,16 @@ const depCount = computed(() => {
 const creatingDeployment = ref(false);
 const creating = ref(false);
 const formError = ref("");
-const flowOptions = ref<FlowListItem[]>([]);
+const { flowOptions, ensureFlowList, flowLabelById } = useFlowLabels();
+
+const filteredDeployments = computed(() => {
+  const q = depFilters.flow_code.trim().toLowerCase();
+  if (!q) return deployments.value;
+  return deployments.value.filter((d) => {
+    const label = flowLabelById(d.flow_code).toLowerCase();
+    return label.includes(q) || d.flow_code.toLowerCase().includes(q);
+  });
+});
 const versionOptions = ref<FlowVersionMeta[]>([]);
 const profileOptions = ref<string[]>([]);
 
@@ -957,6 +1431,40 @@ const form = reactive<{
   cron_expr: "",
   env_profile_code: "",
 });
+
+const subscriptionForm = reactive({ ...DEFAULT_SUBSCRIPTION_FORM });
+
+const subscriptionContextMapping = reactive<
+  | { mode: "spread" }
+  | { mode: "wrap"; wrap_key: string; wrap_as_list?: boolean }
+  | { mode: "rules"; rules: Array<{ source: string; target: string }> }
+>({ mode: "spread" });
+
+const subscriptionSamplePayloadText = ref(
+  '{\n  "alert": {\n    "id": "ALT-1",\n    "severity": "HIGH",\n    "indicators": []\n  }\n}',
+);
+
+const subscriptionMappedPreviewText = computed(() => {
+  try {
+    const row = JSON.parse(subscriptionSamplePayloadText.value || "{}") as Record<string, unknown>;
+    return JSON.stringify(previewContextMapping(row, subscriptionContextMapping as any), null, 2);
+  } catch (e) {
+    return `预览失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+});
+
+const subscriptionWorkerHint = computed(() => {
+  if (form.schedule_type !== "subscription") return "";
+  if (workerPolicyForm.type === "multi_active") {
+    return "多活：各 Worker 使用相同 group_id，由 Kafka 在消费组内分配分区；吞吐约 N × max_in_flight。";
+  }
+  return "单活：仅 leader 节点运行 Ingress 消费；standby 等待故障切换。请勿将 min_workers 设为大于 1 除非需要热备。";
+});
+
+function resetSubscriptionForm() {
+  Object.assign(subscriptionForm, DEFAULT_SUBSCRIPTION_FORM);
+  Object.assign(subscriptionContextMapping, { mode: "spread" });
+}
 const workerPolicyForm = reactive<{
   type: "single_active" | "multi_active";
   min_workers: number;
@@ -1012,8 +1520,8 @@ async function loadDeployments() {
   loadingDep.value = true;
   error.value = "";
   try {
+    await ensureFlowList();
     const res = await listDeployments({
-      flow_code: depFilters.flow_code.trim() || undefined,
       status: depFilters.status || undefined,
       mode: depFilters.mode || undefined,
       root_only: true,
@@ -1036,8 +1544,17 @@ async function selectDeployment(id: number) {
   depRunsResp.value = null;
   selectedDepRunId.value = null;
   selectedDepRunDetail.value = null;
+  subSummary.value = null;
+  subMessagesResp.value = null;
+  depMessagesOffset.value = 0;
   try {
     selectedDeployment.value = await getDeployment(id);
+    if (selectedDeployment.value?.schedule_type === "subscription") {
+      await loadSubscriptionSummary();
+      if (depDetailTab.value === "messages") {
+        await loadSubscriptionMessages();
+      }
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -1057,7 +1574,7 @@ async function patchStatus(id: number, status: "stopping" | "pending") {
 
 function requestStopDeployment(id: number) {
   const d = deployments.value.find((x) => x.id === id);
-  const label = d ? `${d.flow_code} v${d.ver_no}` : "";
+  const label = d ? `${flowLabelById(d.flow_code)} v${d.ver_no}` : "";
   openConfirm({
     title: "确认停止部署",
     text: `确认停止部署 #${id}${label ? `（${label}）` : ""} 吗？Worker 将尝试停止该部署的运行。`,
@@ -1069,7 +1586,7 @@ function requestStopDeployment(id: number) {
 function requestRestartDeployment(id: number) {
   // restart is less risky than stop, but still makes side effects; keep it explicit.
   const d = deployments.value.find((x) => x.id === id);
-  const label = d ? `${d.flow_code} v${d.ver_no}` : "";
+  const label = d ? `${flowLabelById(d.flow_code)} v${d.ver_no}` : "";
   openConfirm({
     title: "确认重启部署",
     text: `确认重启部署 #${id}${label ? `（${label}）` : ""} 吗？系统将重新入队并分配 worker。`,
@@ -1080,7 +1597,7 @@ function requestRestartDeployment(id: number) {
 
 async function removeDeployment(id: number) {
   const d = deployments.value.find((x) => x.id === id);
-  const label = d ? `${d.flow_code} v${d.ver_no}` : "";
+  const label = d ? `${flowLabelById(d.flow_code)} v${d.ver_no}` : "";
   openConfirm({
     title: "确认删除部署",
     text: `确认删除部署 #${id}${label ? `（${label}）` : ""} 吗？该操作为软删除。`,
@@ -1120,6 +1637,9 @@ async function loadEmbeddedDepRuns() {
   loadingDepRuns.value = true;
   error.value = "";
   try {
+    if (selectedDeployment.value?.schedule_type === "subscription") {
+      await loadSubscriptionSummary();
+    }
     depRunsResp.value = await listDeployRuns({
       deployment_id: selectedDeploymentId.value,
       status: depRunsStatusFilter.value || undefined,
@@ -1131,6 +1651,64 @@ async function loadEmbeddedDepRuns() {
   } finally {
     loadingDepRuns.value = false;
   }
+}
+
+async function loadSubscriptionSummary() {
+  if (!selectedDeploymentId.value) return;
+  if (selectedDeployment.value?.schedule_type !== "subscription") return;
+  loadingSubSummary.value = true;
+  try {
+    subSummary.value = await getSubscriptionSummary(selectedDeploymentId.value);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingSubSummary.value = false;
+  }
+}
+
+async function loadSubscriptionMessages() {
+  if (!selectedDeploymentId.value) return;
+  loadingSubMessages.value = true;
+  error.value = "";
+  try {
+    subMessagesResp.value = await listSubscriptionMessages(selectedDeploymentId.value, {
+      status: depMessagesStatusFilter.value || undefined,
+      offset: depMessagesOffset.value,
+      limit: depMessagesPageSize,
+    });
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingSubMessages.value = false;
+  }
+}
+
+function subMessagesPrevPage() {
+  depMessagesOffset.value = Math.max(0, depMessagesOffset.value - depMessagesPageSize);
+  void loadSubscriptionMessages();
+}
+
+function subMessagesNextPage() {
+  if (!subMessagesHasNext.value) return;
+  depMessagesOffset.value += depMessagesPageSize;
+  void loadSubscriptionMessages();
+}
+
+function openSubscriptionMessage(m: { status: string; deploy_run_id: number | null }) {
+  depMessagesStatusFilter.value = m.status;
+  depMessagesOffset.value = 0;
+  depDetailTab.value = "messages";
+  void loadSubscriptionMessages();
+  if (m.deploy_run_id) {
+    void openSubscriptionRun(m.deploy_run_id);
+  }
+}
+
+async function openSubscriptionRun(runId: number) {
+  depDetailTab.value = "runs";
+  depRunsOffset.value = 0;
+  await loadEmbeddedDepRuns();
+  await selectEmbeddedDepRun(runId);
 }
 
 async function copyText(text: string) {
@@ -1199,13 +1777,11 @@ async function openCreateForm() {
   formError.value = "";
   clearWorkerSelection();
   applyWorkerPolicyPreset("single");
-  if (flowOptions.value.length === 0) {
-    try {
-      const res = await fetchFlowList();
-      flowOptions.value = res.flows;
-    } catch (e) {
-      formError.value = e instanceof Error ? e.message : String(e);
-    }
+  resetSubscriptionForm();
+  try {
+    await ensureFlowList();
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
   }
   if (profileOptions.value.length === 0) {
     try {
@@ -1255,7 +1831,7 @@ async function onFlowChange() {
 async function submitDeployment() {
   formError.value = "";
   if (!form.flow_code) {
-    formError.value = "请选择 flow_code";
+    formError.value = "请选择流程";
     return;
   }
   if (!form.ver_no) {
@@ -1265,6 +1841,22 @@ async function submitDeployment() {
   if (form.schedule_type === "cron" && !form.cron_expr.trim()) {
     formError.value = "cron 调度必须指定 cron_expr";
     return;
+  }
+  let subscriptionScheduleConfig: Record<string, unknown> | null = null;
+  if (form.schedule_type === "subscription") {
+    const built = buildSubscriptionScheduleConfig(
+      subscriptionForm,
+      subscriptionContextMapping,
+      {
+        max_restarts: workerPolicyForm.max_restarts,
+        restart_backoff_s: workerPolicyForm.restart_backoff_s,
+      },
+    );
+    if (!built.ok) {
+      formError.value = built.error;
+      return;
+    }
+    subscriptionScheduleConfig = built.config;
   }
 
   const workerPolicy: WorkerPolicy = {
@@ -1296,7 +1888,12 @@ async function submitDeployment() {
     ver_no: form.ver_no,
     mode: form.mode,
     schedule_type: form.schedule_type,
-    schedule_config: form.schedule_type === "cron" ? { cron_expr: form.cron_expr.trim() } : {},
+    schedule_config:
+      form.schedule_type === "cron"
+        ? { cron_expr: form.cron_expr.trim() }
+        : form.schedule_type === "subscription"
+          ? subscriptionScheduleConfig!
+          : {},
     worker_policy: workerPolicy,
     capability_policy: capabilityPolicy,
     env_profile_code: form.env_profile_code,
@@ -1365,6 +1962,7 @@ async function loadRuns() {
   loadingRuns.value = true;
   error.value = "";
   try {
+    await ensureFlowList();
     runsResp.value = await listDeployRuns({
       deployment_id: runFilters.deployment_id != null && Number(runFilters.deployment_id) > 0
         ? Number(runFilters.deployment_id)
@@ -1521,6 +2119,20 @@ function runStatusTag(status: string): string {
   return "info";
 }
 
+function messageStatusTag(status: string): string {
+  if (status === "processing") return "running";
+  if (status === "completed") return "ok";
+  if (status === "failed") return "bad";
+  return "info";
+}
+
+function truncateText(text: string | null | undefined, maxLen: number): string {
+  const t = String(text ?? "").trim();
+  if (!t) return "—";
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, maxLen)}…`;
+}
+
 function workerStatusClass(status: string): string {
   if (status === "active") return "ok";
   if (status === "dead") return "dead";
@@ -1555,6 +2167,7 @@ function statusDetailReasonLabel(detail: any): string {
   const reason = String(detail?.reason || "").trim();
   if (reason === "no_eligible_worker") return "无可用工作节点";
   if (reason === "pin_worker_offline") return "绑定节点离线";
+  if (reason === "subscription_ingress_failed") return "订阅接入失败";
   return reason || "异常";
 }
 
@@ -1597,6 +2210,7 @@ if (tab.value === "deployments") openDeployOverview();
 
 onMounted(() => {
   document.addEventListener("pointerdown", onDocPointerDown, true);
+  void ensureFlowList();
 });
 
 onUnmounted(() => {
@@ -1743,6 +2357,71 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.sub-obs-section .sub-obs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sub-obs-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fbfdff;
+}
+
+.sub-obs-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+.sub-obs-failures {
+  margin-top: 12px;
+}
+
+.sub-obs-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+
+.err-cell {
+  color: color-mix(in srgb, var(--danger, #c0392b) 85%, var(--text));
+  word-break: break-word;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover td {
+  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
+}
+
+.linkish {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+}
+
+@media (max-width: 900px) {
+  .sub-obs-section .sub-obs-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .overview-grid {
@@ -2231,6 +2910,83 @@ onUnmounted(() => {
   align-items: start;
 }
 
+.create-grid .sub-schedule-panel {
+  grid-column: 1 / -1;
+}
+
+.sub-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sub-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sub-card-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.sub-card-lead {
+  margin: -4px 0 0;
+  line-height: 1.45;
+}
+
+.sub-toggle-row {
+  gap: 6px;
+}
+
+.sub-parse-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sub-parse-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.sub-parse-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sub-preview {
+  background: color-mix(in srgb, var(--accent-soft) 35%, white);
+}
+
+.sub-hint {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 55%, white);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .sub-parse-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .policy-row {
   display: flex;
   justify-content: flex-end;
@@ -2421,6 +3177,19 @@ onUnmounted(() => {
   font-size: 11px;
   background: #fff;
   resize: vertical;
+}
+
+.rr-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
 }
 
 .form-actions {

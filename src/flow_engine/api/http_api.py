@@ -31,7 +31,7 @@ from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import ExecutionStrategy, FlowDefinition, NodeState, StrategyMode
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.engine.starlark_glue import debug_task_script
-from flow_engine.runner import deploy_persistence, test_persistence
+from flow_engine.runner import deploy_persistence, subscription_persistence, test_persistence
 from flow_engine.runner import metric_persistence, span_persistence, test_runner
 from flow_engine.runner.mode_context import system_default_policy
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
@@ -202,7 +202,7 @@ class CreateDeploymentBody(BaseModel):
     flow_code: str = Field(..., min_length=1, max_length=128)
     ver_no: int = Field(..., ge=1)
     mode: str = Field(default="production", pattern=r"^(shadow|production)$")
-    schedule_type: str = Field(..., pattern=r"^(once|cron|resident)$")
+    schedule_type: str = Field(..., pattern=r"^(once|cron|subscription)$")
     schedule_config: dict[str, Any] = Field(default_factory=dict)
     worker_policy: dict[str, Any] = Field(
         default_factory=lambda: {
@@ -1282,6 +1282,13 @@ def create_app() -> FastAPI:
                 raise HTTPException(
                     status_code=400, detail="cron schedule requires schedule_config.cron_expr"
                 )
+        if body.schedule_type == "subscription":
+            try:
+                from flow_engine.runner.subscription.spec import load_subscription_spec
+
+                load_subscription_spec(body.schedule_config)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
         with db_session() as s:
             # cron deployments are templates; they should be active immediately so the
             # Scheduler can fire child once deployments. Do not enqueue them as pending.
@@ -1349,12 +1356,54 @@ def create_app() -> FastAPI:
             ]
             return {**_serialize_deployment(row), "assignments": assignments}
 
+    @app.get("/api/deployments/{deployment_id}/subscription/summary")
+    def get_subscription_summary(deployment_id: int) -> dict[str, Any]:
+        try:
+            return subscription_persistence.get_subscription_summary(deployment_id)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/deployments/{deployment_id}/subscription/messages")
+    def list_subscription_messages(
+        deployment_id: int,
+        status: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        try:
+            return subscription_persistence.list_subscription_messages(
+                deployment_id=deployment_id,
+                status=status,
+                offset=offset,
+                limit=limit,
+            )
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.patch("/api/deployments/{deployment_id}")
     def patch_deployment(deployment_id: int, body: PatchDeploymentBody) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
         with db_session() as s:
             row = s.get(FeFlowDeployment, deployment_id)
             if row is None or row.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="deployment not found")
+            if body.status == "pending":
+                assns = list(
+                    s.execute(
+                        select(FeWorkerAssignment)
+                        .where(FeWorkerAssignment.deployment_id == deployment_id)
+                        .where(FeWorkerAssignment.deleted_at.is_(None))
+                    )
+                    .scalars()
+                    .all()
+                )
+                for a in assns:
+                    a.deleted_at = now
+                row.status_detail = None
             row.status = body.status
             return {"id": row.id, "status": row.status}
 

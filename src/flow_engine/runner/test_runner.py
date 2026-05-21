@@ -27,6 +27,7 @@ from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.lookup.lookup_service import lookup_query_page
 from flow_engine.runner import assertions as assertions_mod
 from flow_engine.runner import test_persistence
+from flow_engine.runner.context_mapping import apply_context_mapping
 from flow_engine.runner.models import CapabilityRule, MockConfig, RunMode, RunOptions
 from flow_engine.stores import data_dict
 from flow_engine.stores.profile_store import profile_scope, store as profile_store
@@ -39,49 +40,8 @@ def apply_lookup_row_to_context(
     row: dict[str, Any],
     mapping: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Map a lookup row to a context fragment that will be merged into global_ns."""
-    if not mapping:
-        return dict(row)
-    mode = str(mapping.get("mode") or "spread")
-    if mode == "spread":
-        return dict(row)
-    if mode == "wrap":
-        key = str(mapping.get("wrap_key") or "input").strip() or "input"
-        wrap_as_list = bool(mapping.get("wrap_as_list"))
-        return {key: [dict(row)] if wrap_as_list else dict(row)}
-    if mode == "rules":
-        rules = mapping.get("rules") or []
-        if not isinstance(rules, list):
-            return dict(row)
-        out: dict[str, Any] = {}
-
-        def set_dotted(root: dict[str, Any], path: str, value: Any) -> None:
-            parts = [p.strip() for p in path.split(".") if p.strip()]
-            if not parts:
-                return
-            cur: dict[str, Any] = root
-            for p in parts[:-1]:
-                nxt = cur.get(p)
-                if nxt is None or not isinstance(nxt, dict):
-                    fresh: dict[str, Any] = {}
-                    cur[p] = fresh
-                    cur = fresh
-                else:
-                    cur = nxt
-            cur[parts[-1]] = value
-
-        for r in rules:
-            if not isinstance(r, dict):
-                continue
-            src = str(r.get("source") or "").strip()
-            tgt = str(r.get("target") or "").strip()
-            if not src or not tgt:
-                continue
-            if src not in row:
-                continue
-            set_dotted(out, tgt, row.get(src))
-        return out
-    return dict(row)
+    """Backward-compatible alias for Test Center and tests."""
+    return apply_context_mapping(row, mapping)
 
 
 def _read_flow_version_body(flow_code: str, ver_no: int) -> dict[str, Any]:
@@ -308,7 +268,9 @@ async def _run_single_test_case(
         ObsRuntimeConfig,
     )
 
-    obs_cfg = ObsRuntimeConfig()  # defaults: 1.0 rate, ERROR-only logs
+    from flow_engine.engine.observability import LOG_LEVELS
+
+    obs_cfg = ObsRuntimeConfig(log_level_min=LOG_LEVELS["DEBUG"])
     backend = AsyncBufferedDBBackend(
         run_ref=RunRef(test_run_id=run_id),
         flow_code=flow_code,
@@ -340,6 +302,7 @@ async def _run_single_test_case(
             status=status,
             error=result.message,
             flow_logs=list(result.flow_logs),
+            global_ns=gns,
         )
         rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
             test_input

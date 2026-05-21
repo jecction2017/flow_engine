@@ -55,7 +55,7 @@ export type FlowRunSummary = {
   span_count?: number | null;
   /** 部署运行：实际写库的 Span 数量（即被采样的样本）。仅 deploy_runs 提供。 */
   sampled_span_count?: number | null;
-  /** 调度类型：resident / once / cron / test，影响详情页布局。 */
+  /** 调度类型：subscription / once / cron / test，影响详情页布局。 */
   schedule_type?: string | null;
   trigger_type?: string | null;
   /** 测试批次专用列。 */
@@ -106,6 +106,8 @@ export type FlowRunDetail = {
   evaluation?: RunEvaluation | null;
   /** 流程级钩子日志（部署/测试运行持久化）。 */
   flow_logs?: LogEntry[] | null;
+  /** 运行结束时的全局上下文（已剔除 dictionary），与试运行 global_ns 对齐。 */
+  global_ns?: Record<string, unknown> | null;
 };
 
 export type ListFlowRunsParams = {

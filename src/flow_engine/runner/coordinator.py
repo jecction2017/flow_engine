@@ -338,6 +338,21 @@ def _assign_pending_sync() -> int:
 
             picks = eligible[:min_workers]
 
+            if not picks and existing:
+                # Stale assignments (e.g. subscription failed without release) block restart.
+                for wid in existing:
+                    stale_stmt = (
+                        select(FeWorkerAssignment)
+                        .where(FeWorkerAssignment.deployment_id == dep["id"])
+                        .where(FeWorkerAssignment.worker_id == wid)
+                        .where(FeWorkerAssignment.deleted_at.is_(None))
+                    )
+                    for a in s.execute(stale_stmt).scalars().all():
+                        a.deleted_at = now
+                existing = set()
+                eligible = [w for w in workers if w in eligible_set]
+                picks = eligible[:min_workers]
+
             if wp_type == "multi_active":
                 for w in picks:
                     _upsert_assignment(
@@ -527,6 +542,39 @@ def _assign_cron_queued_sync() -> int:
     return created
 
 
+def _renew_subscription_leader_leases_sync() -> int:
+    """Extend leader leases for running subscription deployments.
+
+    Without renewal, ``LEADER_LEASE_S`` (default 60s) expires while ingress is
+    still healthy; after an ingress restart the worker will never pass
+    ``_can_consume_subscription`` and the deployment stops consuming.
+    """
+    now = _now()
+    lease_until = now + timedelta(seconds=LEADER_LEASE_S)
+    renewed = 0
+    with db_session() as s:
+        rows = list(
+            s.execute(
+                select(FeWorkerAssignment)
+                .join(
+                    FeFlowDeployment,
+                    FeFlowDeployment.id == FeWorkerAssignment.deployment_id,
+                )
+                .where(FeFlowDeployment.schedule_type == "subscription")
+                .where(FeFlowDeployment.status == "running")
+                .where(FeFlowDeployment.deleted_at.is_(None))
+                .where(FeWorkerAssignment.role == "leader")
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
+        )
+        for assn in rows:
+            assn.lease_expires_at = lease_until
+            renewed += 1
+    return renewed
+
+
 def _check_dead_workers_sync() -> int:
     """Promote / re-assign assignments owned by dead workers. Returns # actions taken."""
     actions = 0
@@ -572,7 +620,7 @@ def _check_dead_workers_sync() -> int:
                         promoted.lease_expires_at = lease_until
                         actions += 1
                     else:
-                        # No standby → re-queue the deployment (once/resident).
+                        # No standby → re-queue the deployment (once/subscription).
                         dep_row = s.get(FeFlowDeployment, a.deployment_id)
                         if dep_row is not None and dep_row.status == "running":
                             if dep_row.schedule_type != "cron":
@@ -635,6 +683,7 @@ class Coordinator:
                     await asyncio.to_thread(_stop_stopping_deployments_sync)
                     await asyncio.to_thread(_assign_pending_sync)
                     await asyncio.to_thread(_assign_cron_queued_sync)
+                    await asyncio.to_thread(_renew_subscription_leader_leases_sync)
                     await asyncio.to_thread(_check_dead_workers_sync)
                     await asyncio.to_thread(_reap_stale_runs_sync)
                 except Exception:  # noqa: BLE001

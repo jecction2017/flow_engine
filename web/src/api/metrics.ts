@@ -5,7 +5,7 @@
  * timer. They are the right answer for "what does the last hour look
  * like?" — Spans are the right answer for "what happened to alert X?".
  *
- * Only deploy runs (resident / once / cron) write metrics. Test runs
+ * Only deploy runs (subscription / once / cron) write metrics. Test runs
  * deliberately skip the metric pipeline; their span counters alone are
  * enough for batch comparison.
  */

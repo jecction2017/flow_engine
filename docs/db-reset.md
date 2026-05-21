@@ -24,6 +24,7 @@ flow-db url
 ### Recent model additions
 
 - `fe_deploy_run.flow_logs` / `fe_test_run.flow_logs` (JSON): persisted flow-level hook logs
+- `fe_deploy_run.global_ns` / `fe_test_run.global_ns` (JSON): run result context snapshot (dictionary stripped)
   (`on_start` / `on_complete` / `on_failure`). After pulling model changes, run `flow-db apply`
   on an existing DB only if your MySQL user can `ALTER TABLE`; otherwise use drop & recreate below.
 

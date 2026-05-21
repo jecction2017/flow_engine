@@ -90,12 +90,24 @@ class _ExecBudget:
         if time.monotonic() > self._deadline:
             raise TimeoutError(f"starlark budget timeout after calling builtin: {name}")
 
+    def remaining_ms(self) -> int:
+        """Milliseconds left in this eval budget (0 if expired)."""
+        return max(0, int((self._deadline - time.monotonic()) * 1000))
+
 
 _EXEC_BUDGET_LOCAL = threading.local()
 
 
 def _active_budget() -> _ExecBudget | None:
     return getattr(_EXEC_BUDGET_LOCAL, "budget", None)
+
+
+def remaining_budget_ms() -> int | None:
+    """Remaining Starlark eval time in ms, or None outside a budget scope."""
+    b = _active_budget()
+    if b is None:
+        return None
+    return b.remaining_ms()
 
 
 @contextmanager
@@ -514,6 +526,27 @@ def debug_task_script(
     if not isinstance(val, dict):
         raise TypeError(f"Debug task script must evaluate to a dict, got {type(val).__name__}")
     return val, logs, None
+
+
+def eval_transform_script(
+    script: str,
+    variables: dict[str, Any],
+    *,
+    run_mode: Any = None,
+    capability_policy: Any = None,
+) -> dict[str, Any]:
+    """Map inbound record to trigger_context via user Starlark (subscription parse.script)."""
+    result, _logs, control_flow = debug_task_script(
+        script,
+        variables,
+        run_mode=run_mode,
+        capability_policy=capability_policy,
+    )
+    if control_flow is not None:
+        raise TypeError(
+            f"transform script must return a dict, got flow control {control_flow!r}"
+        )
+    return result
 
 
 def eval_key_expr(

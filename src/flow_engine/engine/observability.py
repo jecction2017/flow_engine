@@ -134,9 +134,14 @@ LOG_LEVELS: dict[str, int] = {
 
 
 def log_level_value(name: str | None) -> int:
+    """Map a config level name to a numeric floor.
+
+    When *name* is absent the default is INFO so Starlark ``log``/``print``
+    output (info-level) is retained on persisted spans — matching trial-run UX.
+    """
     if not name:
-        return LOG_LEVELS["ERROR"]
-    return LOG_LEVELS.get(str(name).upper(), LOG_LEVELS["ERROR"])
+        return LOG_LEVELS["INFO"]
+    return LOG_LEVELS.get(str(name).upper(), LOG_LEVELS["INFO"])
 
 
 # ---------------------------------------------------------------------------

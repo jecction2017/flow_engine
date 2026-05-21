@@ -714,7 +714,14 @@ class FlowRuntime:
             ):
                 with integration_correlation_scope(correlation_id):
                     with dictionary_scope(self.dictionary):
-                        get_registry().bind(self.dictionary)
+                        bind_profile: str | None = None
+                        try:
+                            from flow_engine.stores.profile_store import active_profile
+
+                            bind_profile = active_profile()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        get_registry().bind(self.dictionary, profile=bind_profile)
                         return await self._run_scoped()
         finally:
             self.executors.shutdown()

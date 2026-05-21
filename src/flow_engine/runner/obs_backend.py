@@ -86,7 +86,7 @@ class ObsRuntimeConfig:
     driven by the worker's purge loop.
     """
 
-    log_level_min: int = LOG_LEVELS["ERROR"]
+    log_level_min: int = LOG_LEVELS["INFO"]
     span_retention_days: int = 3
     default: NodeObsConfig = field(default_factory=NodeObsConfig)
     nodes: dict[str, NodeObsConfig] = field(default_factory=dict)
@@ -475,12 +475,14 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
                 open_span = self._open_spans.get(handle)
                 if open_span is None or open_span.closed:
                     return
-                log_dict = {
-                    "level": entry.level,
-                    "msg": entry.msg,
-                    "source": entry.source,
-                    "t_ms": int(entry.t_ms),
-                }
+                log_dict = self._normalize_log_entry(
+                    {
+                        "level": entry.level,
+                        "message": entry.msg,
+                        "source": entry.source,
+                        "ts_ms": int(entry.t_ms),
+                    }
+                )
                 if open_span.record.logs is None:
                     open_span.record.logs = [log_dict]
                 else:
@@ -607,14 +609,37 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
     # Internal
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_log_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        """Canonical span log shape: ``msg`` + ``t_ms`` (trial uses ``message``/``ts_ms``)."""
+        msg = entry.get("msg")
+        if msg is None:
+            msg = entry.get("message")
+        t_ms = entry.get("t_ms")
+        if t_ms is None:
+            t_ms = entry.get("ts_ms", 0)
+        out: dict[str, Any] = {
+            "level": str(entry.get("level") or "info"),
+            "msg": str(msg) if msg is not None else "",
+            "source": str(entry.get("source") or ""),
+            "t_ms": int(t_ms) if t_ms is not None else 0,
+        }
+        if entry.get("truncated"):
+            out["truncated"] = True
+        if entry.get("attempt") is not None:
+            out["attempt"] = entry["attempt"]
+        return out
+
     def _filter_logs(self, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         min_v = self._cfg.log_level_min
         out: list[dict[str, Any]] = []
         for entry in logs:
-            level = entry.get("level") if isinstance(entry, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            level = entry.get("level")
             if log_level_value(level) < min_v:
                 continue
-            out.append(dict(entry))
+            out.append(self._normalize_log_entry(entry))
         return out
 
     async def _flush_loop(self) -> None:
