@@ -1,6 +1,6 @@
 <template>
   <div class="ctx-map" :class="`ctx-map--${surface}`">
-    <label class="ctx-map-field">
+    <label class="ctx-map-field" :class="{ 'ctx-map-field--mode': surface === 'ingress' }">
       <FormFieldLabel
         v-if="surface === 'ingress'"
         label="映射方式"

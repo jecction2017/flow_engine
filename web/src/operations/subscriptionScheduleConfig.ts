@@ -11,7 +11,8 @@ export {
   DEFAULT_INGRESS_MAPPING as DEFAULT_CONTEXT_MAPPING,
 } from "@/operations/contextMappingConfig";
 
-export type StartPositionMode = "default" | "earliest" | "latest" | "offset" | "timestamp";
+/** Empty = not chosen yet (UI placeholder). */
+export type StartPositionMode = "" | "default" | "earliest" | "latest" | "offset" | "timestamp";
 
 export type SubscriptionFormState = {
   consumer_id: string;
@@ -35,8 +36,8 @@ export type SubscriptionFormState = {
 };
 
 export const DEFAULT_SUBSCRIPTION_FORM: SubscriptionFormState = {
-  consumer_id: "memory.alerts.default",
-  start_position_mode: "default",
+  consumer_id: "",
+  start_position_mode: "",
   offsetsText: "",
   timestamp_ms: 0,
   partitionsText: "",
@@ -85,8 +86,11 @@ export function buildStartPosition(
   form: Pick<SubscriptionFormState, "start_position_mode" | "offsetsText" | "timestamp_ms">,
 ): { ok: true; value: string | Record<string, unknown> | undefined } | { ok: false; error: string } {
   const mode = form.start_position_mode;
+  if (!mode) {
+    return { ok: false, error: "请选择从哪条消息开始读" };
+  }
   if (mode === "default") {
-    return { ok: true, value: undefined };
+    return { ok: true, value: "default" };
   }
   if (mode === "earliest" || mode === "latest") {
     return { ok: true, value: mode };
@@ -157,9 +161,7 @@ export function buildSubscriptionScheduleConfig(
   const subscription: Record<string, unknown> = {
     consumer_id: form.consumer_id.trim(),
   };
-  if (startPos.value !== undefined) {
-    subscription.start_position = startPos.value;
-  }
+  subscription.start_position = startPos.value;
   if (partitions?.length) {
     subscription.partitions = partitions;
   }

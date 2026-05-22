@@ -1,5 +1,5 @@
 <template>
-  <section class="workbench-panel dep-create-panel">
+  <section class="dep-create-panel">
     <header class="panel-head">
       <div class="panel-head-text">
         <span class="panel-title">新建部署</span>
@@ -23,7 +23,7 @@
               <option v-for="f in flowOptions" :key="f.id" :value="f.id">{{ flowListItemLabel(f) }}</option>
             </select>
           </label>
-          <label class="form-field">
+          <label class="form-field form-field--narrow form-field--narrow-ver">
             <FormFieldLabel label="版本" tech="ver_no" tech-placement="tooltip" required />
             <select v-model.number="form.ver_no" class="form-inp" :disabled="!form.flow_code">
               <option :value="0">选择版本</option>
@@ -103,7 +103,7 @@
             </button>
           </div>
           <p v-if="form.schedule_type === 'cron'" class="schedule-advanced-hint muted small">
-            Cron 表达式请在「高级配置」中填写。
+            Cron 表达式请在「高级配置」中填写。创建后为 stopped，须在详情页启动后定时调度才会生效。
           </p>
           <p v-else-if="form.schedule_type === 'subscription'" class="schedule-advanced-hint muted small">
             消费者与上下文映射等请在「高级配置」中填写。
@@ -124,7 +124,7 @@
                 :class="{ active: workerPolicyForm.type === 'single_active' }"
                 @click="setWorkerPolicyType('single_active')"
               >
-                单活（同一时刻仅 1 个节点运行）
+                单活（同一时刻仅 1 个节点）
               </button>
               <button
                 type="button"
@@ -132,7 +132,7 @@
                 :class="{ active: workerPolicyForm.type === 'multi_active' }"
                 @click="setWorkerPolicyType('multi_active')"
               >
-                多活（多个节点同时运行）
+                多活（多个节点同时）
               </button>
             </div>
             <label class="run-node-min">
@@ -224,11 +224,13 @@
                 <SubscriptionDeploymentSection
                   v-model:form="subscriptionForm"
                   v-model:mapping="subscriptionMapping"
+                  :env-profile-code="form.env_profile_code"
                   pane="consumer"
                 />
                 <SubscriptionDeploymentSection
                   v-model:form="subscriptionForm"
                   v-model:mapping="subscriptionMapping"
+                  :env-profile-code="form.env_profile_code"
                   pane="side"
                 />
             </details>
@@ -237,18 +239,23 @@
       </aside>
     </div>
 
-    <p v-if="formError" class="err">{{ formError }}</p>
+    <p v-if="displayError" class="err">{{ displayError }}</p>
   </section>
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import FormFieldLabel from "@/components/FormFieldLabel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import SubscriptionDeploymentSection from "@/components/SubscriptionDeploymentSection.vue";
-import type { CreateDeploymentBody, WorkerPolicy } from "@/api/deployments";
-import type { CapabilityRule, RunMode, ScheduleType } from "@/api/deployments";
-import { createDeployment } from "@/api/deployments";
+import {
+  createDeployment,
+  type CapabilityRule,
+  type CreateDeploymentBody,
+  type RunMode,
+  type ScheduleType,
+  type WorkerPolicy,
+} from "@/api/deployments";
 import type { FlowListItem } from "@/api/flows";
 import { fetchVersionList } from "@/api/flowVersions";
 import type { FlowVersionMeta } from "@/api/flowVersions";
@@ -262,12 +269,14 @@ import {
   type SubscriptionFormState,
 } from "@/operations/subscriptionScheduleConfig";
 
-defineProps<{
+const props = defineProps<{
   flowOptions: FlowListItem[];
   profileOptions: string[];
   workers: Worker[];
   activeWorkers: Worker[];
   workerStatusClass: (status: string) => string;
+  /** Parent-level errors (e.g. flow list load failed when opening create form). */
+  externalError?: string;
 }>();
 
 const emit = defineEmits<{
@@ -278,6 +287,7 @@ const emit = defineEmits<{
 
 const submitting = ref(false);
 const formError = ref("");
+const displayError = computed(() => formError.value || props.externalError || "");
 const versionOptions = ref<FlowVersionMeta[]>([]);
 
 const form = reactive({
@@ -302,6 +312,44 @@ const workerPolicyForm = reactive({
 const workerSelected = reactive(new Set<string>());
 const capabilityPolicyText = ref("[]");
 
+watch(
+  () => props.activeWorkers.map((w) => w.worker_id),
+  (activeIds) => {
+    const active = new Set(activeIds);
+    for (const wid of [...workerSelected]) {
+      if (!active.has(wid)) workerSelected.delete(wid);
+    }
+  },
+);
+
+const CAPABILITY_ACTIONS = new Set(["allow", "suppress", "redirect"]);
+const CAPABILITY_RULE_KEYS = new Set([
+  "builtin_category",
+  "builtin_name",
+  "action",
+  "redirect_params",
+]);
+
+function validateCapabilityPolicy(rules: unknown[]): string | null {
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    if (typeof r !== "object" || r === null || Array.isArray(r)) {
+      return `能力策略第 ${i + 1} 条须为对象`;
+    }
+    const obj = r as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (!CAPABILITY_RULE_KEYS.has(key)) {
+        return `能力策略第 ${i + 1} 条含未知字段「${key}」`;
+      }
+    }
+    const action = obj.action;
+    if (typeof action !== "string" || !CAPABILITY_ACTIONS.has(action)) {
+      return `能力策略第 ${i + 1} 条 action 须为 allow、suppress 或 redirect`;
+    }
+  }
+  return null;
+}
+
 function validateAll(): { error: string; sectionId: string } | null {
   if (!form.flow_code) return { error: "请选择流程", sectionId: "dep-sec-flow" };
   if (!form.ver_no) return { error: "请选择版本", sectionId: "dep-sec-flow" };
@@ -309,11 +357,8 @@ function validateAll(): { error: string; sectionId: string } | null {
     return { error: "定时运行须填写 Cron 表达式", sectionId: "dep-sec-cron" };
   }
   if (form.schedule_type === "subscription") {
-    if (!subscriptionForm.consumer_id.trim()) {
-      return { error: "请填写消费者 ID", sectionId: "dep-sec-subscription" };
-    }
     const built = buildSubscriptionScheduleConfig(subscriptionForm, subscriptionMapping.value);
-    if (!built.ok) return { error: built.error, sectionId: "dep-sec-advanced" };
+    if (!built.ok) return { error: built.error, sectionId: "dep-sec-subscription" };
   }
   return null;
 }
@@ -399,9 +444,9 @@ function toggleWorker(id: string) {
 function applySuppressWrites() {
   capabilityPolicyText.value = JSON.stringify(
     [
+      { builtin_category: "integration", action: "suppress" },
       { builtin_category: "db_write", action: "suppress" },
       { builtin_category: "mq_publish", action: "suppress" },
-      { builtin_category: "external_api_write", action: "suppress" },
     ],
     null,
     2,
@@ -424,7 +469,7 @@ async function submit() {
     const built = buildSubscriptionScheduleConfig(subscriptionForm, subscriptionMapping.value);
     if (!built.ok) {
       formError.value = built.error;
-      scrollToSection("dep-sec-advanced");
+      scrollToSection("dep-sec-subscription");
       return;
     }
     schedule_config = built.config;
@@ -434,9 +479,11 @@ async function submit() {
   try {
     const parsed = JSON.parse(capabilityPolicyText.value || "[]");
     if (!Array.isArray(parsed)) throw new Error("须为 JSON 数组");
+    const capErr = validateCapabilityPolicy(parsed);
+    if (capErr) throw new Error(capErr);
     capabilityPolicy = parsed as CapabilityRule[];
   } catch (e) {
-    formError.value = `能力策略 JSON 无效：${e instanceof Error ? e.message : String(e)}`;
+    formError.value = `能力策略无效：${e instanceof Error ? e.message : String(e)}`;
     scrollToSection("dep-sec-advanced");
     return;
   }
@@ -482,7 +529,7 @@ async function submit() {
 </script>
 
 <style scoped>
-.form-sec-title {
+.dep-create-main .form-sec-title.sub {
   flex-wrap: wrap;
 }
 
@@ -562,10 +609,6 @@ async function submit() {
 .run-node-min .form-inp {
   width: 72px;
   padding: 6px 8px;
-}
-
-.form-sec-title.sub {
-  margin-top: 12px;
 }
 
 @media (max-width: 720px) {

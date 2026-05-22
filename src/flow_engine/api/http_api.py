@@ -252,6 +252,26 @@ def _normalize_worker_targeting(raw: Any) -> dict[str, Any]:
     return {"mode": "pool", "worker_ids": dedup}
 
 
+def _coerce_worker_targeting_for_read(raw: Any) -> dict[str, Any]:
+    """Best-effort normalize for GET responses; invalid shapes become mode=any."""
+    if not isinstance(raw, dict):
+        return {"mode": "any"}
+    mode = str(raw.get("mode") or "any").strip().lower()
+    if mode == "pin":
+        worker_id = str(raw.get("worker_id") or "").strip()
+        if worker_id:
+            return {"mode": "pin", "worker_id": worker_id}
+        return {"mode": "any"}
+    if mode == "pool":
+        worker_ids = raw.get("worker_ids")
+        if isinstance(worker_ids, list):
+            ids = [str(x).strip() for x in worker_ids if str(x).strip()]
+            if ids:
+                return {"mode": "pool", "worker_ids": list(dict.fromkeys(ids))}
+        return {"mode": "any"}
+    return {"mode": "any"}
+
+
 class PatchDeploymentBody(BaseModel):
     status: str = Field(..., pattern=r"^(stopping|pending)$")
 
@@ -1270,7 +1290,7 @@ def create_app() -> FastAPI:
             "schedule_config": row.schedule_config,
             "worker_policy": row.worker_policy,
             "capability_policy": row.capability_policy,
-            "worker_targeting": _normalize_worker_targeting(getattr(row, "worker_targeting", None) or {}),
+            "worker_targeting": _coerce_worker_targeting_for_read(getattr(row, "worker_targeting", None) or {}),
             "status": row.status,
             "status_detail": getattr(row, "status_detail", None),
             "env_profile_code": row.env_profile_code,
@@ -1294,10 +1314,22 @@ def create_app() -> FastAPI:
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
         with db_session() as s:
-            # cron deployments are templates; they should be active immediately so the
-            # Scheduler can fire child once deployments. Do not enqueue them as pending.
+            from flow_engine.db.models import FeFlowVersion
+
+            ver_row = s.execute(
+                select(FeFlowVersion)
+                .where(FeFlowVersion.flow_code == body.flow_code)
+                .where(FeFlowVersion.ver_no == body.ver_no)
+                .where(FeFlowVersion.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if ver_row is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"flow version not found: flow_code={body.flow_code} ver_no={body.ver_no}",
+                )
+            # cron templates: running only when auto_start; stopped disables scheduler.
             if body.schedule_type == "cron":
-                initial_status = "running"
+                initial_status = "running" if body.auto_start else "stopped"
             elif body.auto_start:
                 initial_status = "pending"
             else:

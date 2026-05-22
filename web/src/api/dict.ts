@@ -55,10 +55,11 @@ export async function fetchDictSummary(): Promise<DictSummaryResponse> {
   return r.json() as Promise<DictSummaryResponse>;
 }
 
-export async function fetchDictResolved(profile: string): Promise<DictResolveResponse> {
+export async function fetchDictResolved(profile?: string): Promise<DictResolveResponse> {
   const q = new URLSearchParams();
-  q.set("profile", profile);
-  const r = await fetch(`/api/dict/resolve?${q.toString()}`);
+  const pid = profile?.trim();
+  if (pid) q.set("profile", pid);
+  const r = await fetch(`/api/dict/resolve${q.toString() ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(`dict resolve: ${r.status}`);
   return r.json() as Promise<DictResolveResponse>;
 }

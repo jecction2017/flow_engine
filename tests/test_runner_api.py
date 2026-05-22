@@ -247,6 +247,63 @@ def test_create_cron_requires_cron_expr(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+def test_create_cron_with_auto_start_false_is_stopped(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "cron",
+            "schedule_config": {"cron_expr": "0 8 * * *"},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+            "auto_start": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "stopped"
+
+
+def test_create_cron_default_auto_start_is_running(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "cron",
+            "schedule_config": {"cron_expr": "0 8 * * *"},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "running"
+
+
+def test_create_deployment_invalid_flow_version(client: TestClient) -> None:
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "nonexistent_flow",
+            "ver_no": 99,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 400
+    assert "flow version not found" in r.json()["detail"]
+
+
 def test_patch_pending_clears_stale_assignments(client: TestClient) -> None:
     from datetime import datetime, timedelta, timezone
 

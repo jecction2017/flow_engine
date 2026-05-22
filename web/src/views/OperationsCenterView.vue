@@ -234,15 +234,17 @@
           </section>
 
           <DeploymentCreateForm
-            v-if="creatingDeployment || depWorkspace === 'create'"
+            v-if="depWorkspace === 'create'"
             ref="deployCreateFormRef"
             :flow-options="flowOptions"
             :profile-options="profileOptions"
             :workers="workers"
             :active-workers="activeWorkers"
             :worker-status-class="workerStatusClass"
+            :external-error="formError"
             @cancel="openDeployOverview()"
             @created="onDeploymentCreated"
+            @error="(msg) => { error = msg; }"
           />
 
           <!-- 部署详情工作台 -->
@@ -968,7 +970,6 @@ const depCount = computed(() => {
   return out;
 });
 
-const creatingDeployment = ref(false);
 const formError = ref("");
 const deployCreateFormRef = ref<InstanceType<typeof DeploymentCreateForm> | null>(null);
 const { flowOptions, ensureFlowList, flowLabelById } = useFlowLabels();
@@ -1002,7 +1003,6 @@ async function loadDeployments() {
 }
 
 async function selectDeployment(id: number) {
-  creatingDeployment.value = false;
   selectedDeploymentId.value = id;
   depDetailTab.value = "overview";
   depWorkspace.value = "detail";
@@ -1247,7 +1247,6 @@ function depRunsNextPage() {
 }
 
 async function openCreateForm() {
-  creatingDeployment.value = true;
   depWorkspace.value = "create";
   selectedDeploymentId.value = null;
   selectedDeployment.value = null;
@@ -1277,7 +1276,6 @@ async function openCreateForm() {
 }
 
 function openDeployOverview() {
-  creatingDeployment.value = false;
   depWorkspace.value = "overview";
   selectedDeploymentId.value = null;
   selectedDeployment.value = null;
@@ -1290,7 +1288,6 @@ function openDeployOverview() {
 }
 
 async function onDeploymentCreated(id: number) {
-  creatingDeployment.value = false;
   formError.value = "";
   await loadDeployments();
   selectDeployment(id);
@@ -1431,17 +1428,6 @@ const loadingWorkers = ref(false);
 const activeWorkers = computed(() => {
   return workers.value.filter((w) => String(w.status || "") === "active");
 });
-
-watch(
-  () => workers.value.map((w) => `${w.worker_id}:${w.status}`),
-  () => {
-    // Keep selection consistent: only allow selecting active workers.
-    const active = new Set(activeWorkers.value.map((w) => w.worker_id));
-    for (const wid of [...workerSelected]) {
-      if (!active.has(wid)) workerSelected.delete(wid);
-    }
-  },
-);
 
 const workerCount = computed(() => {
   const out = { active: 0, idle: 0, dead: 0, other: 0 };
@@ -2567,7 +2553,7 @@ tr.clickable:hover td {
   gap: 12px;
 }
 
-.dep2-main > .workbench-panel {
+.dep2-main > .dep-create-panel {
   flex: 1;
   min-height: 0;
 }

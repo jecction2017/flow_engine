@@ -3,9 +3,8 @@
  * 用于属性编辑、新建部署等单列配置页。
  */
 
-/* === Workbench 配置表单（测试中心新建方案 / 运行中心新建部署 统一） === */
+/* === 运行中心 · 新建部署 === */
 
-.workbench-panel,
 .dep-create-panel {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -19,31 +18,26 @@
   overflow: hidden;
 }
 
-.workbench-panel > .dep-create-columns {
+.dep-create-panel > .dep-create-columns {
   flex: 1;
   min-height: 0;
 }
 
-.workbench-panel::-webkit-scrollbar,
 .dep-create-panel::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
-.workbench-panel::-webkit-scrollbar-thumb,
 .dep-create-panel::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 4px;
 }
-.workbench-panel::-webkit-scrollbar-thumb:hover,
 .dep-create-panel::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
-.workbench-panel::-webkit-scrollbar-track,
 .dep-create-panel::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.workbench-panel .panel-head,
 .dep-create-panel .panel-head {
   display: flex;
   justify-content: space-between;
@@ -52,7 +46,6 @@
   flex-wrap: wrap;
 }
 
-.workbench-panel .panel-head-text,
 .dep-create-panel .panel-head-text {
   display: flex;
   flex-direction: column;
@@ -60,7 +53,6 @@
   min-width: 0;
 }
 
-.workbench-panel .panel-head-actions,
 .dep-create-panel .panel-head-actions {
   display: flex;
   align-items: center;
@@ -69,29 +61,18 @@
   flex-wrap: wrap;
 }
 
-.workbench-panel .panel-title,
 .dep-create-panel .panel-title {
   font-weight: 700;
   font-size: 13px;
   color: var(--text);
 }
 
-.workbench-panel .muted,
 .dep-create-panel .muted {
   color: var(--muted);
 }
 
-.workbench-panel .small,
 .dep-create-panel .small {
   font-size: 11px;
-}
-
-.workbench-panel .form-actions,
-.dep-create-panel .form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 2px;
 }
 
 /* 分区：去掉内层卡片，用分隔线 + 区块标题保持结构 */
@@ -173,10 +154,7 @@
   transform: rotate(90deg);
 }
 
-.workbench-panel .btn,
-.workbench-panel .form-btn,
-.dep-create-panel .btn,
-.dep-create-panel .form-btn {
+.dep-create-panel .btn {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -190,50 +168,32 @@
   font-family: inherit;
 }
 
-.workbench-panel .btn.sm,
-.workbench-panel .form-btn.sm,
-.dep-create-panel .btn.sm,
-.dep-create-panel .form-btn.sm {
+.dep-create-panel .btn.sm {
   padding: 4px 8px;
   font-size: 11px;
 }
 
-.workbench-panel .btn.ghost:hover,
-.workbench-panel .form-btn.ghost:hover,
-.dep-create-panel .btn.ghost:hover,
-.dep-create-panel .form-btn.ghost:hover {
+.dep-create-panel .btn.ghost:hover {
   border-color: var(--border-strong);
   background: #f8fafc;
 }
 
-.workbench-panel .btn.primary,
-.workbench-panel .form-btn.primary,
-.dep-create-panel .btn.primary,
-.dep-create-panel .form-btn.primary {
+.dep-create-panel .btn.primary {
   background: var(--accent);
   color: #fff;
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-.workbench-panel .btn.primary:hover:not(:disabled),
-.workbench-panel .form-btn.primary:hover:not(:disabled),
-.dep-create-panel .btn.primary:hover:not(:disabled),
-.dep-create-panel .form-btn.primary:hover:not(:disabled) {
+.dep-create-panel .btn.primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, #000);
 }
 
-.workbench-panel .btn:disabled,
-.workbench-panel .form-btn:disabled,
-.dep-create-panel .btn:disabled,
-.dep-create-panel .form-btn:disabled {
+.dep-create-panel .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.workbench-panel .err,
-.workbench-panel .form-err,
-.dep-create-panel .err,
-.dep-create-panel .form-err {
+.dep-create-panel .err {
   margin: 0;
   font-size: 12px;
   color: #b91c1c;
@@ -397,7 +357,7 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* 通用按钮（非 workbench-panel 内页仍可用） */
+/* 通用按钮（FlowMetaEditor 等独立表单页） */
 .form-btn {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -698,13 +658,6 @@
   color: #334155;
 }
 
-.dep-create-panel .dep-create-side :deep(.sub-group-title) {
-  font-size: 11px;
-  font-weight: 600;
-  color: #64748b;
-  letter-spacing: 0.02em;
-}
-
 .dep-create-panel .dep-create-side .advanced .advanced > summary {
   font-size: 10.5px;
   font-weight: 500;
@@ -719,16 +672,55 @@
   border-radius: 4px;
 }
 
-.form-field-prominent .form-inp {
-  font-size: 13px;
-  font-weight: 600;
+/* 新建部署：按内容收窄控件宽度（标签行仍可占满，输入/选择框不拉伸） */
+.dep-create-panel .form-field--narrow > .form-inp,
+.dep-create-panel .form-field--narrow > select.form-inp,
+.dep-create-panel .form-field--narrow .dict-id-inp {
+  width: 100%;
+  max-width: var(--dep-inp-max, 12rem);
 }
 
-.form-field-prominent {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 40%, #fff);
+.dep-create-panel .form-field--narrow-ver {
+  --dep-inp-max: 9.5rem;
+}
+
+.dep-create-panel .form-field--narrow-kafka {
+  --dep-inp-max: 20rem;
+}
+
+.dep-create-panel .form-field--narrow-kafka .dict-id-wrap {
+  max-width: var(--dep-inp-max);
+  width: 100%;
+}
+
+.dep-create-panel .form-field--narrow-pos {
+  --dep-inp-max: 14.5rem;
+}
+
+.dep-create-panel .form-field--narrow-part {
+  --dep-inp-max: 8.5rem;
+}
+
+.dep-create-panel .form-field--narrow-offset {
+  --dep-inp-max: 13rem;
+}
+
+.dep-create-panel .form-field--narrow-ts {
+  --dep-inp-max: 10.5rem;
+}
+
+.dep-create-panel .form-field--narrow-dt {
+  --dep-inp-max: 14.5rem;
+}
+
+.dep-create-panel .mapping-block .ctx-map-field--mode .ctx-map-inp {
+  max-width: 12.5rem;
+  width: 100%;
+}
+
+.dep-create-panel .mapping-block .ctx-map-wrap-grid .ctx-map-inp {
+  max-width: 9.5rem;
+  width: 100%;
 }
 
 @media (max-width: 960px) {
