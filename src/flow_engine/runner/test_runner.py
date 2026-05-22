@@ -39,9 +39,17 @@ logger = logging.getLogger(__name__)
 def apply_lookup_row_to_context(
     row: dict[str, Any],
     mapping: dict[str, Any] | None,
+    *,
+    run_mode: Any = None,
+    capability_policy: Any = None,
 ) -> dict[str, Any]:
     """Backward-compatible alias for Test Center and tests."""
-    return apply_context_mapping(row, mapping)
+    return apply_context_mapping(
+        row,
+        mapping,
+        run_mode=run_mode,
+        capability_policy=capability_policy,
+    )
 
 
 def _read_flow_version_body(flow_code: str, ver_no: int) -> dict[str, Any]:
@@ -246,7 +254,12 @@ async def _run_single_test_case(
     )
     runtime = FlowRuntime(flow_def, dictionary=dictionary, run_opts=run_opts)
     row_clean = assertions_mod.strip_expect_keys(test_input)
-    mapped_ctx = apply_lookup_row_to_context(row_clean, context_mapping)
+    mapped_ctx = apply_lookup_row_to_context(
+        row_clean,
+        context_mapping,
+        run_mode=RunMode.DEBUG,
+        capability_policy=[r.model_dump(mode="json") for r in (capability_policy or [])],
+    )
     runtime.ctx.global_ns.update(mapped_ctx)
 
     run_id = await asyncio.to_thread(

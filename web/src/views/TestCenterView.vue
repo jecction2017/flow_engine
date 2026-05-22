@@ -213,35 +213,7 @@
 
             <details class="advanced">
               <summary>上下文映射（方案级）</summary>
-              <div class="rr-grid" style="margin-top:8px;">
-                <label class="field">
-                  <span>mode</span>
-                  <select v-model="(contextMapping as any).mode" class="inp">
-                    <option value="spread">spread（按列展开）</option>
-                    <option value="wrap">wrap（包一层 key）</option>
-                    <option value="rules">rules（字段映射）</option>
-                  </select>
-                </label>
-                <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
-                  <span>wrap_key</span>
-                  <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
-                </label>
-                <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
-                  <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
-                  <span>wrap 为数组（生成 {key:[row]}）</span>
-                </label>
-                <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
-                  <span>rules (JSON)</span>
-                  <textarea
-                    class="ta mono"
-                    rows="4"
-                    spellcheck="false"
-                    :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
-                    @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
-                    placeholder='[{\"source\":\"id\",\"target\":\"alarmsId\"}]'
-                  />
-                </label>
-              </div>
+              <ContextMappingEditor v-model="contextMapping" surface="test" style="margin-top: 8px" />
             </details>
 
           <details class="advanced">
@@ -455,43 +427,7 @@
 
           <details class="advanced">
             <summary>上下文映射（方案级）</summary>
-            <div class="rr-grid" style="margin-top:8px;">
-              <label class="field">
-                <span>mode</span>
-                <select v-model="(contextMapping as any).mode" class="inp">
-                  <option value="spread">spread（按列展开）</option>
-                  <option value="wrap">wrap（包一层 key）</option>
-                  <option value="rules">rules（字段映射）</option>
-                </select>
-              </label>
-              <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
-                <span>wrap_key</span>
-                <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
-              </label>
-              <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
-                <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
-                <span>wrap 为数组（生成 {key:[row]}）</span>
-              </label>
-              <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
-                <span>rules (JSON)</span>
-                <textarea
-                  class="ta mono"
-                  rows="4"
-                  spellcheck="false"
-                  :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
-                  @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
-                  placeholder='[{"source":"id","target":"alarmsId"}]'
-                />
-              </label>
-              <label class="field full">
-                <span>样例 row (JSON，用于预览)</span>
-                <textarea v-model="sampleRowText" class="ta mono" rows="4" spellcheck="false" />
-              </label>
-              <label class="field full">
-                <span>预览：映射后 context</span>
-                <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
-              </label>
-            </div>
+            <ContextMappingEditor v-model="contextMapping" surface="test" style="margin-top: 8px" />
           </details>
 
           <details class="advanced">
@@ -655,47 +591,11 @@
           </details>
 
           <details class="advanced">
-            <summary>上下文映射（lookup row → 流程 initial_context/global_ns）</summary>
-            <div class="rr-grid" style="margin-top:8px;">
-              <label class="field">
-                <span>mode</span>
-                <select v-model="(contextMapping as any).mode" class="inp">
-                  <option value="spread">spread（按列展开）</option>
-                  <option value="wrap">wrap（包一层 key）</option>
-                  <option value="rules">rules（字段映射）</option>
-                </select>
-              </label>
-
-              <label v-if="(contextMapping as any).mode === 'wrap'" class="field">
-                <span>wrap_key</span>
-                <input v-model="(contextMapping as any).wrap_key" class="inp mono" placeholder="alarms / input" />
-              </label>
-              <label v-if="(contextMapping as any).mode === 'wrap'" class="check" style="align-self:end;">
-                <input v-model="(contextMapping as any).wrap_as_list" type="checkbox" />
-                <span>wrap 为数组（生成 {key:[row]}）</span>
-              </label>
-
-              <label v-if="(contextMapping as any).mode === 'rules'" class="field full">
-                <span>rules (JSON)</span>
-                <textarea
-                  class="ta mono"
-                  rows="4"
-                  spellcheck="false"
-                  :value="JSON.stringify((contextMapping as any).rules ?? [], null, 2)"
-                  @input="(e:any) => { try { (contextMapping as any).rules = JSON.parse(e.target.value || '[]'); } catch {} }"
-                  placeholder='[{"source":"id","target":"alarmsId"}]'
-                />
-              </label>
-
-              <label class="field full">
-                <span>样例 row (JSON，用于预览)</span>
-                <textarea v-model="sampleRowText" class="ta mono" rows="4" spellcheck="false" />
-              </label>
-              <label class="field full">
-                <span>预览：映射后 context</span>
-                <textarea :value="mappedPreviewText" class="ta mono" rows="6" spellcheck="false" readonly />
-              </label>
-            </div>
+            <summary>上下文映射</summary>
+            <p class="muted small" style="margin: 6px 0 0">
+              将 lookup 数据集行或消息体映射为流程 <span class="mono">initial_context</span> / <span class="mono">global_ns</span>。
+            </p>
+            <ContextMappingEditor v-model="contextMapping" surface="test" style="margin-top: 8px" />
           </details>
 
           <details class="advanced">
@@ -909,7 +809,8 @@ import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import type { CapabilityRule, FlowDocument, FlowNode } from "@/types/flow";
 import { displayName as displayNodeName, flowListItemLabel, nodeId as flowNodeLogicalId } from "@/types/flow";
-import { previewContextMapping } from "@/testCenter/mappingPreview";
+import ContextMappingEditor from "@/components/ContextMappingEditor.vue";
+import { DEFAULT_CONTEXT_MAPPING_TEST, type ContextMappingState } from "@/operations/contextMappingConfig";
 import {
   createTestPlan,
   copyTestPlan,
@@ -1033,21 +934,7 @@ const mockNodesLoading = ref(false);
 const creating = ref(false);
 const formError = ref("");
 
-const contextMapping = reactive<
-  | { mode: "spread" }
-  | { mode: "wrap"; wrap_key: string; wrap_as_list?: boolean }
-  | { mode: "rules"; rules: Array<{ source: string; target: string }> }
->({ mode: "spread" });
-const sampleRowText = ref('{"id":"case_1"}');
-const mappedPreviewText = computed(() => {
-  try {
-    const row = JSON.parse(sampleRowText.value || "{}") as Record<string, unknown>;
-    const mapped = previewContextMapping(row, contextMapping as any);
-    return JSON.stringify(mapped, null, 2);
-  } catch (e) {
-    return `预览失败：${e instanceof Error ? e.message : String(e)}`;
-  }
-});
+const contextMapping = ref<ContextMappingState>({ ...DEFAULT_CONTEXT_MAPPING_TEST });
 
 const mockNodeSelectOptions = computed(() => {
   const base = mockNodeOptions.value;
@@ -1476,10 +1363,7 @@ function loadPlanEditorsFromDetail(detail: TestPlanDetail) {
     if (mode === "fault") entry.faultParamsText = JSON.stringify(cfg.fault_params ?? {}, null, 2);
     mockEntries.push(entry);
   }
-  // contextMapping
-  const cm: any = detail.context_mapping || { mode: "spread" };
-  for (const k of Object.keys(contextMapping as any)) delete (contextMapping as any)[k];
-  Object.assign(contextMapping as any, cm);
+  contextMapping.value = (detail.context_mapping ?? { mode: "spread" }) as ContextMappingState;
   planForm.assertionsText = JSON.stringify(detail.assertions ?? [], null, 2);
   // capability_policy（计划级默认；空 = 系统 DEBUG 默认 SUPPRESS 所有副作用类）
   planCapabilityPolicy.value = ((detail as any).capability_policy ?? []) as CapabilityRule[];
@@ -1622,7 +1506,7 @@ async function newPlan() {
   planForm.concurrency = 4;
   planForm.assertionsText = "[]";
   mockEntries.splice(0, mockEntries.length);
-  (contextMapping as any).mode = "spread";
+  contextMapping.value = { ...DEFAULT_CONTEXT_MAPPING_TEST };
   planCapabilityPolicy.value = [];
 }
 
@@ -1687,7 +1571,7 @@ async function submitPlan() {
         profile_code: planForm.profile_code,
         concurrency: planForm.concurrency,
         mock_config: mockResult.data,
-        context_mapping: contextMapping as any,
+        context_mapping: contextMapping.value,
         assertions,
         capability_policy: planCapPolicy,
       });
@@ -1700,7 +1584,7 @@ async function submitPlan() {
         profile_code: planForm.profile_code,
         concurrency: planForm.concurrency,
         mock_config: mockResult.data,
-        context_mapping: contextMapping as any,
+        context_mapping: contextMapping.value,
         assertions,
         capability_policy: planCapPolicy,
       });
@@ -1792,7 +1676,7 @@ async function submitBatch() {
     profile_code: form.profile_code,
     concurrency: form.concurrency,
     mock_config: mockResult.data,
-    context_mapping: contextMapping as any,
+    context_mapping: contextMapping.value,
     // 批次级 capability_policy；空数组 = 测试中心系统默认（DEBUG → 全部 SUPPRESS）。
     capability_policy: formCapabilityPolicy.value as unknown as Array<Record<string, unknown>>,
   };

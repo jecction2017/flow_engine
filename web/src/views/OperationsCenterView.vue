@@ -40,7 +40,7 @@
     </div>
 
     <!-- ===================== 部署管理 ===================== -->
-    <section v-if="tab === 'deployments'" class="tab-body">
+    <section v-if="tab === 'deployments'" class="tab-body tab-body--fill">
       <div class="dep2-layout">
         <!-- 左侧：部署导航列表 -->
         <aside class="dep2-sidebar">
@@ -233,436 +233,17 @@
             </div>
           </section>
 
-          <!-- 新建部署（作为工作台模式之一） -->
-          <section v-else-if="creatingDeployment || depWorkspace === 'create'" class="panel">
-            <header class="panel-head">
-              <div>
-                <div class="panel-title">新建部署</div>
-                <div class="muted small">面向生产的部署配置：模式、调度、worker 定向与策略</div>
-              </div>
-              <div style="display:flex; gap:8px; align-items:center;">
-                <button type="button" class="btn ghost" @click="openDeployOverview()">返回概览</button>
-              </div>
-            </header>
-
-            <!-- 层级收敛：顶部模式 + 主体两列（左：基础/调度；右：worker 选择 + worker_policy） -->
-            <div class="create-hero">
-              <div class="section-title">部署模式</div>
-              <div class="mode-cards">
-                <button
-                  type="button"
-                  class="mode-card"
-                  :class="{ active: form.mode === 'production' }"
-                  @click="form.mode = 'production'"
-                >
-                  <div class="mc-title">生产（production）</div>
-                  <div class="mc-desc">允许真实副作用能力，面向线上流量</div>
-                </button>
-                <button
-                  type="button"
-                  class="mode-card"
-                  :class="{ active: form.mode === 'shadow' }"
-                  @click="form.mode = 'shadow'"
-                >
-                  <div class="mc-title">灰度（shadow）</div>
-                  <div class="mc-desc">建议压制写操作或重定向，适合联调/灰度演练</div>
-                </button>
-              </div>
-            </div>
-
-            <div class="create-grid">
-              <section class="form-section">
-                <div class="section-head">
-                  <div class="section-title">基础与调度</div>
-                  <div class="muted small">先决定部署对象与触发方式</div>
-                </div>
-                <div class="form-grid">
-                  <label class="field">
-                    <span>流程 <em class="req">*</em></span>
-                    <select v-model="form.flow_code" class="inp" @change="onFlowChange">
-                      <option value="">选择流程</option>
-                      <option v-for="f in flowOptions" :key="f.id" :value="f.id">
-                        {{ flowListItemLabel(f) }}
-                      </option>
-                    </select>
-                  </label>
-                  <label class="field">
-                    <span>ver_no <em class="req">*</em></span>
-                    <select v-model.number="form.ver_no" class="inp" :disabled="!form.flow_code">
-                      <option :value="0">选择版本</option>
-                      <option v-for="v in versionOptions" :key="v.version" :value="v.version">
-                        v{{ v.version }}{{ v.description ? ` · ${v.description}` : "" }}
-                      </option>
-                    </select>
-                  </label>
-                  <label class="field full">
-                    <span>调度模式 <em class="req">*</em></span>
-                    <div class="seg-tabs compact">
-                      <button type="button" class="seg" :class="{ active: form.schedule_type === 'once' }" @click="form.schedule_type = 'once'">
-                        once
-                      </button>
-                      <button type="button" class="seg" :class="{ active: form.schedule_type === 'cron' }" @click="form.schedule_type = 'cron'">
-                        cron
-                      </button>
-                      <button
-                        type="button"
-                        class="seg"
-                        :class="{ active: form.schedule_type === 'subscription' }"
-                        @click="
-                          form.schedule_type = 'subscription';
-                          if (workerPolicyForm.type === 'single_active' && workerPolicyForm.min_workers > 1) {
-                            workerPolicyForm.min_workers = 1;
-                          }
-                        "
-                      >
-                        subscription
-                      </button>
-                    </div>
-                  </label>
-                  <label v-if="form.schedule_type === 'cron'" class="field full">
-                    <span>cron_expr <em class="req">*</em></span>
-                    <input v-model="form.cron_expr" class="inp mono" placeholder="0 */5 * * *" />
-                    <span class="muted small">示例：每 5 分钟 `0 */5 * * *`</span>
-                  </label>
-                  <label class="field full">
-                    <span>env_profile_code</span>
-                    <select v-model="form.env_profile_code" class="inp">
-                      <option value="">（默认）</option>
-                      <option v-for="p in profileOptions" :key="p" :value="p">{{ p }}</option>
-                    </select>
-                  </label>
-                </div>
-              </section>
-
-              <section v-if="form.schedule_type === 'subscription'" class="form-section sub-schedule-panel">
-                <div class="section-head">
-                  <div class="section-title">消息订阅</div>
-                  <div class="muted small">
-                    常驻 Ingress：每条消息触发一次流程运行。Kafka 实例在环境字典
-                    <span class="mono">middleware.kafka.instances</span> 中配置。
-                  </div>
-                </div>
-
-                <div class="sub-cards">
-                  <div class="sub-card">
-                    <div class="sub-card-title">① 消息源</div>
-                    <div class="form-grid">
-                      <label class="field full">
-                        <span>consumer_id <em class="req">*</em></span>
-                        <input
-                          v-model="subscriptionForm.consumer_id"
-                          class="inp mono"
-                          placeholder="soc_cluster_a.alerts.ingress"
-                        />
-                        <span class="muted small">
-                          数据字典
-                          <span class="mono">middleware.kafka.instances.&lt;cluster&gt;.topics.&lt;topic&gt;.consumers.&lt;name&gt;</span>
-                        </span>
-                      </label>
-                      <label class="field full">
-                        <span>producer_id（DLQ 等，可选）</span>
-                        <input
-                          v-model="subscriptionForm.producer_id"
-                          class="inp mono"
-                          placeholder="soc_cluster_a.alerts.dlq"
-                        />
-                      </label>
-                      <label class="field">
-                        <span>起始位点</span>
-                        <select v-model="subscriptionForm.start_position" class="inp">
-                          <option value="latest">latest（仅新消息）</option>
-                          <option value="earliest">earliest（从头消费）</option>
-                        </select>
-                      </label>
-                      <label class="field">
-                        <span>分区（可选）</span>
-                        <input
-                          v-model="subscriptionForm.partitionsText"
-                          class="inp mono"
-                          placeholder="0,1,2 留空=全部分区"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div class="sub-card">
-                    <div class="sub-card-title">② 消费与背压</div>
-                    <div class="form-grid">
-                      <label class="field">
-                        <span>batch_max_records</span>
-                        <input
-                          v-model.number="subscriptionForm.batch_max_records"
-                          type="number"
-                          min="1"
-                          max="10000"
-                          class="inp mono"
-                        />
-                      </label>
-                      <label class="field">
-                        <span>poll_timeout_ms</span>
-                        <input
-                          v-model.number="subscriptionForm.poll_timeout_ms"
-                          type="number"
-                          min="100"
-                          max="60000"
-                          class="inp mono"
-                        />
-                      </label>
-                      <label class="field">
-                        <span>max_in_flight</span>
-                        <input
-                          v-model.number="subscriptionForm.max_in_flight"
-                          type="number"
-                          min="1"
-                          max="500"
-                          class="inp mono"
-                        />
-                        <span class="muted small">饱和时暂停拉取，背压 colocated 运行。</span>
-                      </label>
-                      <label class="field">
-                        <span>run_timeout_s</span>
-                        <input
-                          v-model.number="subscriptionForm.run_timeout_s"
-                          type="number"
-                          min="0"
-                          class="inp mono"
-                          placeholder="0=默认"
-                        />
-                        <span class="muted small">0 表示不设置（v1 后端待实现）。</span>
-                      </label>
-                      <label class="field full sub-toggle-row">
-                        <span class="check">
-                          <input v-model="subscriptionForm.idempotencyEnabled" type="checkbox" />
-                          <span>启用幂等去重（topic/partition/offset）</span>
-                        </span>
-                        <span class="muted small">
-                          每条消息都会写入
-                          <span class="mono">fe_subscription_dedup</span>（含失败原因）；启用幂等时同表按
-                          topic/partition/offset 去重。
-                        </span>
-                      </label>
-                      <label v-if="subscriptionForm.idempotencyEnabled" class="field">
-                        <span>幂等窗口 window_s</span>
-                        <input
-                          v-model.number="subscriptionForm.idempotency_window_s"
-                          type="number"
-                          min="1"
-                          class="inp mono"
-                        />
-                        <span class="muted small">秒；过期记录清理后可重放旧 offset。</span>
-                      </label>
-                      <label class="field full">
-                        <span>失败队列 DLQ topic（可选）</span>
-                        <input
-                          v-model="subscriptionForm.dlq_producer_id"
-                          class="inp mono"
-                          placeholder="security.alerts.dlq"
-                        />
-                        <span class="muted small">
-                          处理失败时向<strong>同一 bus 实例</strong>发布 JSON 信封并提交 offset；留空则由你在流程或其它订阅中自行处理失败消息。
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div class="sub-card sub-card-wide">
-                    <div class="sub-card-title">③ 消息 → 流程上下文</div>
-                    <p class="muted small sub-card-lead">
-                      与测试中心 <span class="mono">context_mapping</span> 相同；平台固定追加
-                      <span class="mono">event_meta</span>（topic/offset/correlation_id）。
-                    </p>
-                    <div class="sub-parse-toolbar">
-                      <label class="field" style="margin: 0">
-                        <span>转换方式</span>
-                        <select v-model="subscriptionForm.transform" class="inp">
-                          <option value="mapping">mapping</option>
-                          <option value="script">script（Starlark）</option>
-                        </select>
-                      </label>
-                    </div>
-
-                    <template v-if="subscriptionForm.transform === 'mapping'">
-                      <div class="sub-parse-grid">
-                        <div class="sub-parse-col">
-                          <label class="field">
-                            <span>mode</span>
-                            <select v-model="(subscriptionContextMapping as any).mode" class="inp">
-                              <option value="spread">spread（字段展开到 global）</option>
-                              <option value="wrap">wrap（包一层 key）</option>
-                              <option value="rules">rules（字段映射）</option>
-                            </select>
-                          </label>
-                          <label v-if="(subscriptionContextMapping as any).mode === 'wrap'" class="field">
-                            <span>wrap_key</span>
-                            <input
-                              v-model="(subscriptionContextMapping as any).wrap_key"
-                              class="inp mono"
-                              placeholder="alert"
-                            />
-                          </label>
-                          <label
-                            v-if="(subscriptionContextMapping as any).mode === 'wrap'"
-                            class="check"
-                          >
-                            <input v-model="(subscriptionContextMapping as any).wrap_as_list" type="checkbox" />
-                            <span>wrap 为数组</span>
-                          </label>
-                          <label v-if="(subscriptionContextMapping as any).mode === 'rules'" class="field">
-                            <span>rules (JSON)</span>
-                            <textarea
-                              class="ta mono"
-                              rows="6"
-                              spellcheck="false"
-                              :value="JSON.stringify((subscriptionContextMapping as any).rules ?? [], null, 2)"
-                              @input="
-                                (e: any) => {
-                                  try {
-                                    (subscriptionContextMapping as any).rules = JSON.parse(
-                                      e.target.value || '[]',
-                                    );
-                                  } catch {}
-                                }
-                              "
-                              placeholder='[{"source":"alert_id","target":"alert.id"}]'
-                            />
-                          </label>
-                        </div>
-                        <div class="sub-parse-col">
-                          <label class="field">
-                            <span>样例 payload</span>
-                            <textarea
-                              v-model="subscriptionSamplePayloadText"
-                              class="ta mono"
-                              rows="10"
-                              spellcheck="false"
-                            />
-                          </label>
-                          <label class="field">
-                            <span>预览（映射后）</span>
-                            <textarea
-                              :value="subscriptionMappedPreviewText"
-                              class="ta mono sub-preview"
-                              rows="10"
-                              spellcheck="false"
-                              readonly
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    </template>
-
-                    <template v-else>
-                      <label class="field full">
-                        <span>Starlark script <em class="req">*</em></span>
-                        <textarea
-                          v-model="subscriptionForm.scriptText"
-                          class="ta mono"
-                          rows="10"
-                          spellcheck="false"
-                          placeholder='payload\n\n{"alert": payload["alert"] if "alert" in payload else payload}'
-                        />
-                        <span class="muted small">
-                          须返回 dict；全局 <span class="mono">payload</span> 为 UTF-8 JSON 解码结果。
-                        </span>
-                      </label>
-                    </template>
-                  </div>
-                </div>
-              </section>
-
-              <section class="form-section">
-                <div class="section-head">
-                  <div class="section-title">工作节点与策略</div>
-                  <div class="muted small">worker 选择与 `worker_policy` 强相关，建议在这里一起配置</div>
-                </div>
-
-                <div class="form-grid">
-                  <label class="field full">
-                    <span>worker_policy</span>
-                    <div class="seg-tabs compact">
-                      <button type="button" class="seg" :class="{ active: workerPolicyForm.type === 'single_active' }" @click="workerPolicyForm.type='single_active'">
-                        单活（同一时刻 1 个节点）
-                      </button>
-                      <button type="button" class="seg" :class="{ active: workerPolicyForm.type === 'multi_active' }" @click="workerPolicyForm.type='multi_active'">
-                        多活（多个节点同时）
-                      </button>
-                    </div>
-                    <span class="muted small">
-                      未选择工作节点时为“不限制”；选择 1 个为“指定节点运行”；选择多个为“候选池（从所选中挑选/分配）”。
-                    </span>
-                    <p v-if="subscriptionWorkerHint" class="sub-hint">{{ subscriptionWorkerHint }}</p>
-                  </label>
-                  <label class="field">
-                    <span>min_workers</span>
-                    <input v-model.number="workerPolicyForm.min_workers" type="number" min="1" class="inp mono" />
-                  </label>
-                  <label class="field">
-                    <span>max_restarts</span>
-                    <input v-model.number="workerPolicyForm.max_restarts" type="number" min="0" class="inp mono" />
-                    <span v-if="form.schedule_type === 'subscription'" class="muted small">同步至 ingress_policy</span>
-                  </label>
-                  <label class="field">
-                    <span>restart_backoff_s</span>
-                    <input v-model.number="workerPolicyForm.restart_backoff_s" type="number" min="0" class="inp mono" />
-                    <span v-if="form.schedule_type === 'subscription'" class="muted small">Ingress 崩溃退避基数</span>
-                  </label>
-                </div>
-
-                <div class="targeting-modes">
-                  <div class="muted small">
-                    工作节点（仅 active）：共 <strong class="mono">{{ activeWorkers.length }}</strong> 个 · 已选
-                    <strong class="mono">{{ workerSelected.size }}</strong> 个
-                  </div>
-                  <span class="spacer" />
-                  <button type="button" class="btn small ghost" @click="clearWorkerSelection()">清空选择</button>
-                </div>
-
-                <div class="worker-pick">
-                  <div v-if="workers.length === 0" class="muted small">
-                    暂无可选 worker（启动 `flow-worker start` 后会自动注册）。你仍可以先创建部署，稍后会自动分配。
-                  </div>
-                  <div v-else class="worker-list">
-                    <button
-                      v-for="w in activeWorkers"
-                      :key="w.worker_id"
-                      type="button"
-                      class="worker-chip"
-                      :class="[
-                        workerStatusClass(w.status),
-                        {
-                          selected: workerSelected.has(w.worker_id),
-                        },
-                      ]"
-                      @click="toggleWorkerSelection(w.worker_id)"
-                      :title="`status: ${w.status} · host: ${w.host || '—'} · pid: ${w.pid ?? '—'}`"
-                    >
-                      <span class="mono">{{ w.worker_id }}</span>
-                      <span class="tag small" :class="workerStatusClass(w.status)">{{ w.status }}</span>
-                    </button>
-                  </div>
-                </div>
-              </section>
-            </div>
-
-        <details class="advanced">
-          <summary>部署附加策略（本部署，JSON）</summary>
-          <div class="preset-row">
-            <button type="button" class="btn small ghost" @click="applyCapabilityPreset('allow_all')">全部允许</button>
-            <button type="button" class="btn small ghost" @click="applyCapabilityPreset('suppress_writes')">压制写操作</button>
-            <button type="button" class="btn small ghost" @click="applyCapabilityPreset('empty')">清空</button>
-          </div>
-          <textarea v-model="capabilityPolicyText" rows="6" class="ta mono" spellcheck="false" placeholder="[\n  { &quot;builtin_category&quot;: &quot;io&quot;, &quot;action&quot;: &quot;suppress&quot; }\n]" />
-        </details>
-        <p v-if="formError" class="err">{{ formError }}</p>
-        <div class="form-actions">
-          <div class="muted small" style="align-self:center;">
-            “启动”表示进入待分配状态并由 worker 执行（running/pending 视调度与分配而定）
-          </div>
-          <button type="button" class="btn primary" :disabled="creating" @click="submitDeployment">
-            {{ creating ? "创建中…" : "创建并启动" }}
-          </button>
-        </div>
-          </section>
+          <DeploymentCreateForm
+            v-if="creatingDeployment || depWorkspace === 'create'"
+            ref="deployCreateFormRef"
+            :flow-options="flowOptions"
+            :profile-options="profileOptions"
+            :workers="workers"
+            :active-workers="activeWorkers"
+            :worker-status-class="workerStatusClass"
+            @cancel="openDeployOverview()"
+            @created="onDeploymentCreated"
+          />
 
           <!-- 部署详情工作台 -->
           <section v-else-if="selectedDeployment && depWorkspace === 'detail'" class="panel">
@@ -693,7 +274,13 @@
                   @click="requestStopDeployment(selectedDeployment.id)"
                 >停止</button>
                 <button
-                  v-else-if="selectedDeployment.status === 'stopping' || selectedDeployment.status === 'stopped' || selectedDeployment.status === 'failed'"
+                  v-else-if="selectedDeployment.status === 'stopped'"
+                  type="button"
+                  class="btn primary"
+                  @click="requestStartDeployment(selectedDeployment.id)"
+                >启动</button>
+                <button
+                  v-else-if="selectedDeployment.status === 'stopping' || selectedDeployment.status === 'failed'"
                   type="button"
                   class="btn"
                   @click="requestRestartDeployment(selectedDeployment.id)"
@@ -1238,18 +825,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
-  createDeployment,
   deleteDeployment,
   getDeployment,
   listDeployments,
   patchDeployment,
-  type CapabilityRule,
-  type CreateDeploymentBody,
   type Deployment,
   type DeploymentDetail,
-  type RunMode,
-  type ScheduleType,
-  type WorkerPolicy,
 } from "@/api/deployments";
 import { listWorkers, type Worker } from "@/api/workers";
 import { getDeployRun, listDeployRuns } from "@/api/deployRuns";
@@ -1261,15 +842,9 @@ import {
 } from "@/api/subscriptionObservability";
 import type { FlowRunDetail, FlowRunSummary, FlowRunsListResponse } from "@/api/flowRuns";
 import { useFlowLabels } from "@/composables/useFlowLabels";
-import { flowListItemLabel } from "@/types/flow";
-import { fetchVersionList, sortFlowVersionsDesc, type FlowVersionMeta } from "@/api/flowVersions";
 import { fetchProfiles } from "@/api/profiles";
 import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
-import { previewContextMapping } from "@/testCenter/mappingPreview";
-import {
-  buildSubscriptionScheduleConfig,
-  DEFAULT_SUBSCRIPTION_FORM,
-} from "@/operations/subscriptionScheduleConfig";
+import DeploymentCreateForm from "@/components/DeploymentCreateForm.vue";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
 
@@ -1394,8 +969,8 @@ const depCount = computed(() => {
 });
 
 const creatingDeployment = ref(false);
-const creating = ref(false);
 const formError = ref("");
+const deployCreateFormRef = ref<InstanceType<typeof DeploymentCreateForm> | null>(null);
 const { flowOptions, ensureFlowList, flowLabelById } = useFlowLabels();
 
 const filteredDeployments = computed(() => {
@@ -1406,115 +981,7 @@ const filteredDeployments = computed(() => {
     return label.includes(q) || d.flow_code.toLowerCase().includes(q);
   });
 });
-const versionOptions = ref<FlowVersionMeta[]>([]);
 const profileOptions = ref<string[]>([]);
-
-const DEFAULT_WORKER_POLICY = {
-  type: "single_active",
-  min_workers: 1,
-  max_restarts: 5,
-  restart_backoff_s: 30,
-} as const;
-
-const form = reactive<{
-  flow_code: string;
-  ver_no: number;
-  mode: RunMode;
-  schedule_type: ScheduleType;
-  cron_expr: string;
-  env_profile_code: string;
-}>({
-  flow_code: "",
-  ver_no: 0,
-  mode: "production",
-  schedule_type: "once",
-  cron_expr: "",
-  env_profile_code: "",
-});
-
-const subscriptionForm = reactive({ ...DEFAULT_SUBSCRIPTION_FORM });
-
-const subscriptionContextMapping = reactive<
-  | { mode: "spread" }
-  | { mode: "wrap"; wrap_key: string; wrap_as_list?: boolean }
-  | { mode: "rules"; rules: Array<{ source: string; target: string }> }
->({ mode: "spread" });
-
-const subscriptionSamplePayloadText = ref(
-  '{\n  "alert": {\n    "id": "ALT-1",\n    "severity": "HIGH",\n    "indicators": []\n  }\n}',
-);
-
-const subscriptionMappedPreviewText = computed(() => {
-  try {
-    const row = JSON.parse(subscriptionSamplePayloadText.value || "{}") as Record<string, unknown>;
-    return JSON.stringify(previewContextMapping(row, subscriptionContextMapping as any), null, 2);
-  } catch (e) {
-    return `预览失败：${e instanceof Error ? e.message : String(e)}`;
-  }
-});
-
-const subscriptionWorkerHint = computed(() => {
-  if (form.schedule_type !== "subscription") return "";
-  if (workerPolicyForm.type === "multi_active") {
-    return "多活：各 Worker 使用相同 group_id，由 Kafka 在消费组内分配分区；吞吐约 N × max_in_flight。";
-  }
-  return "单活：仅 leader 节点运行 Ingress 消费；standby 等待故障切换。请勿将 min_workers 设为大于 1 除非需要热备。";
-});
-
-function resetSubscriptionForm() {
-  Object.assign(subscriptionForm, DEFAULT_SUBSCRIPTION_FORM);
-  Object.assign(subscriptionContextMapping, { mode: "spread" });
-}
-const workerPolicyForm = reactive<{
-  type: "single_active" | "multi_active";
-  min_workers: number;
-  max_restarts: number;
-  restart_backoff_s: number;
-}>({
-  type: DEFAULT_WORKER_POLICY.type,
-  min_workers: DEFAULT_WORKER_POLICY.min_workers,
-  max_restarts: DEFAULT_WORKER_POLICY.max_restarts,
-  restart_backoff_s: DEFAULT_WORKER_POLICY.restart_backoff_s,
-});
-const capabilityPolicyText = ref("[]");
-
-// Worker selection UX state (create form)
-// semantics: none => unrestricted; 1 selected => pin; >1 selected => pool
-const workerSelected = reactive(new Set<string>());
-
-function clearWorkerSelection() {
-  workerSelected.clear();
-}
-
-function toggleWorkerSelection(id: string) {
-  if (workerSelected.has(id)) workerSelected.delete(id);
-  else workerSelected.add(id);
-}
-
-function applyWorkerPolicyPreset(id: "single") {
-  // keep a single internal initializer; UI does not expose presets.
-  void id;
-  workerPolicyForm.type = DEFAULT_WORKER_POLICY.type;
-  workerPolicyForm.min_workers = DEFAULT_WORKER_POLICY.min_workers;
-  workerPolicyForm.max_restarts = DEFAULT_WORKER_POLICY.max_restarts;
-  workerPolicyForm.restart_backoff_s = DEFAULT_WORKER_POLICY.restart_backoff_s;
-}
-
-function applyCapabilityPreset(id: "allow_all" | "suppress_writes" | "empty") {
-  if (id === "allow_all" || id === "empty") {
-    capabilityPolicyText.value = "[]";
-    return;
-  }
-  capabilityPolicyText.value = JSON.stringify(
-    [
-      { builtin_category: "db_write", action: "suppress" },
-      { builtin_category: "mq_publish", action: "suppress" },
-      { builtin_category: "external_api_write", action: "suppress" },
-    ],
-    null,
-    2,
-  );
-}
 
 async function loadDeployments() {
   loadingDep.value = true;
@@ -1580,6 +1047,17 @@ function requestStopDeployment(id: number) {
     text: `确认停止部署 #${id}${label ? `（${label}）` : ""} 吗？Worker 将尝试停止该部署的运行。`,
     cta: "确认停止",
     fn: async () => patchStatus(id, "stopping"),
+  });
+}
+
+function requestStartDeployment(id: number) {
+  const d = deployments.value.find((x) => x.id === id);
+  const label = d ? `${flowLabelById(d.flow_code)} v${d.ver_no}` : "";
+  openConfirm({
+    title: "确认启动部署",
+    text: `确认启动部署 #${id}${label ? `（${label}）` : ""} 吗？系统将入队并分配 worker。`,
+    cta: "确认启动",
+    fn: async () => patchStatus(id, "pending"),
   });
 }
 
@@ -1775,9 +1253,7 @@ async function openCreateForm() {
   selectedDeployment.value = null;
   depDetailTab.value = "overview";
   formError.value = "";
-  clearWorkerSelection();
-  applyWorkerPolicyPreset("single");
-  resetSubscriptionForm();
+  deployCreateFormRef.value?.reset();
   try {
     await ensureFlowList();
   } catch (e) {
@@ -1813,104 +1289,11 @@ function openDeployOverview() {
   loadRuns();
 }
 
-async function onFlowChange() {
-  versionOptions.value = [];
-  form.ver_no = 0;
-  if (!form.flow_code) return;
-  try {
-    const res = await fetchVersionList(form.flow_code);
-    versionOptions.value = sortFlowVersionsDesc(res.versions);
-    if (versionOptions.value.length > 0) {
-      form.ver_no = versionOptions.value[0]!.version;
-    }
-  } catch (e) {
-    formError.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function submitDeployment() {
+async function onDeploymentCreated(id: number) {
+  creatingDeployment.value = false;
   formError.value = "";
-  if (!form.flow_code) {
-    formError.value = "请选择流程";
-    return;
-  }
-  if (!form.ver_no) {
-    formError.value = "请选择 ver_no";
-    return;
-  }
-  if (form.schedule_type === "cron" && !form.cron_expr.trim()) {
-    formError.value = "cron 调度必须指定 cron_expr";
-    return;
-  }
-  let subscriptionScheduleConfig: Record<string, unknown> | null = null;
-  if (form.schedule_type === "subscription") {
-    const built = buildSubscriptionScheduleConfig(
-      subscriptionForm,
-      subscriptionContextMapping,
-      {
-        max_restarts: workerPolicyForm.max_restarts,
-        restart_backoff_s: workerPolicyForm.restart_backoff_s,
-      },
-    );
-    if (!built.ok) {
-      formError.value = built.error;
-      return;
-    }
-    subscriptionScheduleConfig = built.config;
-  }
-
-  const workerPolicy: WorkerPolicy = {
-    type: workerPolicyForm.type,
-    min_workers: Math.max(1, Number(workerPolicyForm.min_workers || 0)),
-    max_restarts: Math.max(0, Number(workerPolicyForm.max_restarts || 0)),
-    restart_backoff_s: Math.max(0, Number(workerPolicyForm.restart_backoff_s || 0)),
-  };
-
-  const selectedIds = [...workerSelected];
-  const workerTargeting = (() => {
-    if (selectedIds.length === 0) return { mode: "any" as const };
-    if (selectedIds.length === 1) return { mode: "pin" as const, worker_id: selectedIds[0]! };
-    return { mode: "pool" as const, worker_ids: selectedIds };
-  })();
-
-  let capabilityPolicy: CapabilityRule[];
-  try {
-    const parsed = JSON.parse(capabilityPolicyText.value || "[]");
-    if (!Array.isArray(parsed)) throw new Error("capability_policy 必须是 JSON 数组");
-    capabilityPolicy = parsed as CapabilityRule[];
-  } catch (e) {
-    formError.value = `capability_policy 解析失败: ${e instanceof Error ? e.message : String(e)}`;
-    return;
-  }
-
-  const body: CreateDeploymentBody = {
-    flow_code: form.flow_code,
-    ver_no: form.ver_no,
-    mode: form.mode,
-    schedule_type: form.schedule_type,
-    schedule_config:
-      form.schedule_type === "cron"
-        ? { cron_expr: form.cron_expr.trim() }
-        : form.schedule_type === "subscription"
-          ? subscriptionScheduleConfig!
-          : {},
-    worker_policy: workerPolicy,
-    capability_policy: capabilityPolicy,
-    env_profile_code: form.env_profile_code,
-    worker_targeting: workerTargeting,
-  };
-
-  creating.value = true;
-  try {
-    const created = await createDeployment(body);
-    creatingDeployment.value = false;
-    await loadDeployments();
-    selectDeployment(created.id);
-  } catch (e) {
-    formError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    creating.value = false;
-  }
+  await loadDeployments();
+  selectDeployment(id);
 }
 
 function deploymentCfgText(d: DeploymentDetail): string {
@@ -2274,11 +1657,9 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.preset-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
+.tab-body--fill {
+  flex: 1;
+  overflow: hidden;
 }
 
 .diag {
@@ -2879,322 +2260,10 @@ tr.clickable:hover td {
   word-break: break-all;
 }
 
-.form-panel {
-  max-width: 720px;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.form-grid .field.full {
-  grid-column: 1 / -1;
-}
-
-.create-hero {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: linear-gradient(180deg, #fbfdff, #ffffff);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.create-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 12px;
-  align-items: start;
-}
-
-.create-grid .sub-schedule-panel {
-  grid-column: 1 / -1;
-}
-
-.sub-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.sub-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fff;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.sub-card-title {
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--text);
-}
-
-.sub-card-lead {
-  margin: -4px 0 0;
-  line-height: 1.45;
-}
-
-.sub-toggle-row {
-  gap: 6px;
-}
-
-.sub-parse-toolbar {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.sub-parse-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
-.sub-parse-col {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.sub-preview {
-  background: color-mix(in srgb, var(--accent-soft) 35%, white);
-}
-
-.sub-hint {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-soft) 55%, white);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text);
-}
-
-@media (max-width: 900px) {
-  .sub-parse-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.policy-row {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.policy-presets {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.form-section {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #fbfdff;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.section-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.section-title {
-  font-weight: 800;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.mode-cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.mode-card {
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 12px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 92px;
-}
-
-.mode-card:hover {
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
-}
-
-.mode-card.active {
-  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  background: color-mix(in srgb, var(--accent-soft) 72%, white);
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent-soft) 70%, transparent),
-    0 10px 24px rgba(15, 23, 42, 0.06);
-  position: relative;
-}
-
-.mode-card.active::after {
-  content: "已选择";
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  color: #1d4ed8;
-  background: color-mix(in srgb, #3b82f6 12%, white);
-  border: 1px solid color-mix(in srgb, #3b82f6 35%, transparent);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
-.mc-title {
-  font-weight: 900;
-  font-size: 13px;
-}
-
-.mc-desc {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.cron-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  align-items: flex-end;
-}
-
-.targeting-modes {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.worker-pick {
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  background: #fff;
-  padding: 10px;
-}
-
-.worker-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.worker-chip {
-  border: 1px solid var(--border);
-  background: #fbfdff;
-  border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 11px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.worker-chip:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.worker-chip:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
-}
-
-.worker-chip.selected {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: var(--accent-soft);
-}
-
-@media (max-width: 720px) {
-  .mode-cards {
-    grid-template-columns: 1fr;
-  }
-  .create-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.req {
-  color: #e11d48;
-  font-style: normal;
-  margin-left: 2px;
-}
-
-.advanced {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  background: #fbfdff;
-}
-
-.advanced summary {
-  font-size: 12px;
-  cursor: pointer;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.ta {
-  width: 100%;
-  margin-top: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  font-size: 11px;
-  background: #fff;
-  resize: vertical;
-}
-
 .rr-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .worker-grid {
@@ -3311,7 +2380,8 @@ tr.clickable:hover td {
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
-  align-items: start;
+  flex: 1;
+  align-items: stretch;
 }
 
 .dep2-sidebar {
@@ -3491,10 +2561,21 @@ tr.clickable:hover td {
 .dep2-main {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.dep2-main > .workbench-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.dep2-main > .panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .panel-actions {

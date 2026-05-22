@@ -75,6 +75,26 @@ def test_create_and_list_deployment(client: TestClient) -> None:
     assert next(d for d in rows if d["id"] == dep["id"])["created_at"].endswith("Z")
 
 
+def test_create_deployment_without_auto_start(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+            "auto_start": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "stopped"
+
+
 def test_list_deployments_root_only_hides_legacy_children(client: TestClient) -> None:
     from flow_engine.db.models import FeFlowDeployment
     from flow_engine.db.session import db_session

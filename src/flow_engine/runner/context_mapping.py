@@ -12,6 +12,9 @@ from typing import Any
 def apply_context_mapping(
     row: dict[str, Any],
     mapping: dict[str, Any] | None,
+    *,
+    run_mode: Any = None,
+    capability_policy: Any = None,
 ) -> dict[str, Any]:
     """Map *row* to a dict merged into ``runtime.ctx.global_ns`` (not including system fields)."""
     if not mapping:
@@ -55,4 +58,19 @@ def apply_context_mapping(
                 continue
             set_dotted(out, tgt, row.get(src))
         return out
+    if mode == "script":
+        script = str(mapping.get("script") or "").strip()
+        if not script:
+            raise ValueError("context_mapping script mode requires non-empty script")
+        from flow_engine.starlark_sdk.runtime import eval_transform_script
+
+        user_ctx = eval_transform_script(
+            script,
+            {"payload": dict(row)},
+            run_mode=run_mode,
+            capability_policy=capability_policy,
+        )
+        if not isinstance(user_ctx, dict):
+            raise TypeError("context_mapping script must return a dict")
+        return user_ctx
     return dict(row)

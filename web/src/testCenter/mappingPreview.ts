@@ -26,6 +26,9 @@ export function previewContextMapping(
   row: Record<string, unknown>,
   mapping: ContextMapping,
 ): Record<string, unknown> {
+  if (mapping.mode === "script") {
+    throw new Error("script");
+  }
   if (mapping.mode === "spread") {
     return { ...row };
   }

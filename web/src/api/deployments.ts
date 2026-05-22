@@ -84,6 +84,8 @@ export type CreateDeploymentBody = {
   capability_policy?: CapabilityRule[];
   env_profile_code?: string;
   worker_targeting?: WorkerTargeting;
+  /** false = 创建为 stopped，须在详情页启动 */
+  auto_start?: boolean;
 };
 
 export type ListDeploymentsParams = {

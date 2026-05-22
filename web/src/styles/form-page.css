@@ -1,0 +1,762 @@
+/**
+ * 表单页通用样式（与 FlowMetaEditor「流程属性」对齐）
+ * 用于属性编辑、新建部署等单列配置页。
+ */
+
+/* === Workbench 配置表单（测试中心新建方案 / 运行中心新建部署 统一） === */
+
+.workbench-panel,
+.dep-create-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.workbench-panel > .dep-create-columns {
+  flex: 1;
+  min-height: 0;
+}
+
+.workbench-panel::-webkit-scrollbar,
+.dep-create-panel::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.workbench-panel::-webkit-scrollbar-thumb,
+.dep-create-panel::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.workbench-panel::-webkit-scrollbar-thumb:hover,
+.dep-create-panel::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.workbench-panel::-webkit-scrollbar-track,
+.dep-create-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.workbench-panel .panel-head,
+.dep-create-panel .panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.workbench-panel .panel-head-text,
+.dep-create-panel .panel-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.workbench-panel .panel-head-actions,
+.dep-create-panel .panel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.workbench-panel .panel-title,
+.dep-create-panel .panel-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.workbench-panel .muted,
+.dep-create-panel .muted {
+  color: var(--muted);
+}
+
+.workbench-panel .small,
+.dep-create-panel .small {
+  font-size: 11px;
+}
+
+.workbench-panel .form-actions,
+.dep-create-panel .form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* 分区：去掉内层卡片，用分隔线 + 区块标题保持结构 */
+.form-block {
+  scroll-margin-top: 8px;
+}
+
+.form-block + .form-block {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.form-block-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.form-block-hd.sub {
+  margin-top: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+/* 可折叠高级块（与测试中心 .advanced 一致） */
+.advanced,
+.form-advanced {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fbfdff;
+}
+
+.advanced summary,
+.form-advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.advanced[open] summary,
+.form-advanced[open] summary {
+  margin-bottom: 8px;
+}
+
+.summary-with-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  list-style: none;
+}
+
+/* flex summary 会隐藏原生三角，用 ::before 补齐 */
+.advanced > summary.summary-with-tip::-webkit-details-marker {
+  display: none;
+}
+
+.advanced > summary.summary-with-tip::before {
+  content: "";
+  flex-shrink: 0;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #94a3b8;
+  transition: transform 0.15s ease;
+}
+
+.advanced[open] > summary.summary-with-tip::before {
+  transform: rotate(90deg);
+}
+
+.workbench-panel .btn,
+.workbench-panel .form-btn,
+.dep-create-panel .btn,
+.dep-create-panel .form-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.workbench-panel .btn.sm,
+.workbench-panel .form-btn.sm,
+.dep-create-panel .btn.sm,
+.dep-create-panel .form-btn.sm {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.workbench-panel .btn.ghost:hover,
+.workbench-panel .form-btn.ghost:hover,
+.dep-create-panel .btn.ghost:hover,
+.dep-create-panel .form-btn.ghost:hover {
+  border-color: var(--border-strong);
+  background: #f8fafc;
+}
+
+.workbench-panel .btn.primary,
+.workbench-panel .form-btn.primary,
+.dep-create-panel .btn.primary,
+.dep-create-panel .form-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.workbench-panel .btn.primary:hover:not(:disabled),
+.workbench-panel .form-btn.primary:hover:not(:disabled),
+.dep-create-panel .btn.primary:hover:not(:disabled),
+.dep-create-panel .form-btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.workbench-panel .btn:disabled,
+.workbench-panel .form-btn:disabled,
+.dep-create-panel .btn:disabled,
+.dep-create-panel .form-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.workbench-panel .err,
+.workbench-panel .form-err,
+.dep-create-panel .err,
+.dep-create-panel .form-err {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+.form-page {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 1000px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.form-page::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.form-page::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.form-page::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.form-page::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.form-page-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 2px 2px 0;
+}
+
+.form-page-hd-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-page-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.form-page-hd-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 保留 form-card 供 FlowMetaEditor 等旧页；新建类表单请用 form-block */
+.form-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+  scroll-margin-top: 8px;
+}
+
+.form-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.form-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.form-sec-title.sub {
+  margin-top: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+
+.field,
+.form-field {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.field.full,
+.form-field.full {
+  grid-column: 1 / -1;
+}
+
+.inp,
+.form-inp {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  outline: none;
+  font-size: 12px;
+  background: #fff;
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  width: 100%;
+}
+
+.inp:focus,
+.form-inp:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.inp:disabled,
+.form-inp:disabled {
+  background: #f8fafc;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.ta,
+.form-area {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+  resize: vertical;
+  background: #fbfdff;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  width: 100%;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ta:focus,
+.form-area:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 通用按钮（非 workbench-panel 内页仍可用） */
+.form-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.form-btn.sm {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.form-btn.ghost:hover {
+  border-color: var(--border-strong);
+  background: #f8fafc;
+}
+
+.form-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.form-btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.form-btn.primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.form-btn.danger {
+  border-color: color-mix(in srgb, #ef4444 45%, transparent);
+  color: #b91c1c;
+  background: #fff;
+}
+
+.form-btn.danger:hover {
+  background: #fef2f2;
+}
+
+.form-err {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+.form-preset-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+/* 单选按钮组（运行模式、调度类型等） */
+.form-option-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.form-option {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.form-option:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 30%, #fff);
+}
+
+.form-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: color-mix(in srgb, var(--accent) 85%, #000);
+  font-weight: 600;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.form-option:focus {
+  outline: none;
+}
+
+.form-option:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 可选卡片多选（Worker 节点等） */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.pick-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+}
+
+.pick-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 30%, #fff);
+}
+
+.pick-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.pick-card:focus {
+  outline: none;
+}
+
+.pick-card:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pick-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 2px;
+}
+
+/* 新建部署：主栏 + 高级侧栏（列间一条分隔线；侧栏内用间距分区，避免叠套边框） */
+.dep-create-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 480px);
+  gap: 16px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.dep-create-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.dep-create-main::-webkit-scrollbar {
+  width: 8px;
+}
+.dep-create-main::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.dep-create-main > .form-grid,
+.dep-create-main > #dep-sec-mode,
+.dep-create-main > #dep-sec-schedule,
+.dep-create-main > #dep-sec-runtime {
+  scroll-margin-top: 8px;
+}
+
+.dep-advanced-scroll #dep-sec-cron,
+.dep-advanced-scroll #dep-sec-subscription {
+  scroll-margin-top: 8px;
+}
+
+.dep-create-side {
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.dep-advanced-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.dep-advanced-panel > .form-block-hd {
+  flex-shrink: 0;
+  padding: 0 0 10px;
+  border-bottom: none;
+}
+
+.dep-advanced-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+}
+
+/* 高级侧栏内：扁平分区，不重复 .advanced 外框 */
+.dep-create-side .advanced {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.dep-create-side .advanced summary {
+  padding: 0;
+}
+
+.dep-create-side .advanced[open] summary {
+  margin-bottom: 10px;
+}
+
+/* 订阅内二级折叠：浅底区分，不用描边 */
+.dep-create-side .advanced .advanced {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--border) 14%, transparent);
+}
+
+.dep-create-side .advanced .advanced[open] summary {
+  margin-bottom: 8px;
+}
+
+/* === 新建部署：标题层级（L1 页 → L2 列/主栏区块 → L3 高级折叠 → L4 订阅子组 → L5 二级折叠）=== */
+.dep-create-panel .panel-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.dep-create-panel .panel-head-text .muted.small {
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.dep-create-panel .dep-create-main .form-sec-title:not(.sub) {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 8px;
+}
+
+.dep-create-panel .dep-create-main .form-sec-title.sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.dep-create-panel .dep-advanced-panel > .form-block-hd {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.dep-create-panel .dep-create-side .dep-advanced-scroll > .advanced > summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.dep-create-panel .dep-create-side :deep(.sub-group-title) {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.02em;
+}
+
+.dep-create-panel .dep-create-side .advanced .advanced > summary {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.dep-advanced-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.dep-advanced-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.form-field-prominent .form-inp {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.form-field-prominent {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, #fff);
+}
+
+@media (max-width: 960px) {
+  .dep-create-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .dep-create-side {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 12px;
+    height: auto;
+    max-height: min(480px, 55vh);
+  }
+
+  .dep-advanced-panel {
+    max-height: min(480px, 55vh);
+  }
+
+  .dep-create-main {
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+@media (max-width: 720px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}

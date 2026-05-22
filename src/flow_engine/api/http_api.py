@@ -218,6 +218,10 @@ class CreateDeploymentBody(BaseModel):
         default_factory=dict,
         description="Worker 定向策略（pool/labels 等）；空对象表示不限制",
     )
+    auto_start: bool = Field(
+        default=True,
+        description="若为 false，创建后 status=stopped，须在详情页手动启动（patch pending）",
+    )
 
 
 def _normalize_worker_targeting(raw: Any) -> dict[str, Any]:
@@ -1292,7 +1296,12 @@ def create_app() -> FastAPI:
         with db_session() as s:
             # cron deployments are templates; they should be active immediately so the
             # Scheduler can fire child once deployments. Do not enqueue them as pending.
-            initial_status = "running" if body.schedule_type == "cron" else "pending"
+            if body.schedule_type == "cron":
+                initial_status = "running"
+            elif body.auto_start:
+                initial_status = "pending"
+            else:
+                initial_status = "stopped"
             targeting = _normalize_worker_targeting(body.worker_targeting or {})
             row = FeFlowDeployment(
                 flow_code=body.flow_code,

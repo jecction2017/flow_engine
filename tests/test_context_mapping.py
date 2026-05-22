@@ -3,6 +3,16 @@
 from flow_engine.runner.context_mapping import apply_context_mapping
 
 
+def test_script_mode_returns_dict() -> None:
+    row = {"id": "A1", "severity": "HIGH"}
+    out = apply_context_mapping(
+        row,
+        {"mode": "script", "script": "payload"},
+        run_mode="debug",
+    )
+    assert out == row
+
+
 def test_rules_maps_to_dotted_paths() -> None:
     row = {"id": "A1", "severity": "HIGH"}
     out = apply_context_mapping(

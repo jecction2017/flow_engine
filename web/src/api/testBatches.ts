@@ -40,7 +40,8 @@ export type ContextMapping =
         source: string;
         target: string;
       }>;
-    };
+    }
+  | { mode: "script"; script: string };
 
 export type CreateTestBatchBody = {
   flow_code: string;
