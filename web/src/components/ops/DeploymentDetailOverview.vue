@@ -1,353 +1,273 @@
 <template>
   <div class="dep-overview">
-    <!-- Layer 1: Health banner -->
-    <section
-      v-if="showHealthBanner"
-      class="health-banner"
-      :class="{
-        warn: deployment.status === 'stopping' || deployment.status === 'pending' || ingressRetrying,
-        bad: deployment.status === 'failed',
-      }"
-      aria-label="健康告警"
-    >
-      <div class="health-banner-main">
-        <div class="health-banner-title">
-          <span class="tag small" :class="statusTagClass(deployment.status)">
-            {{ statusLabel(deployment.status) }}
-          </span>
-          <span v-if="deployment.status_detail" class="health-reason">
-            {{ reasonLabel(deployment.status_detail) }}
-          </span>
-          <span v-if="statusMessage(deployment.status_detail)" class="muted small health-msg">
-            {{ statusMessage(deployment.status_detail) }}
-          </span>
+    <!-- 1. 告警：仅有实质问题时展示 -->
+    <div v-if="alerts.length" class="alerts" role="alert">
+      <div v-for="a in alerts" :key="a.id" class="alert" :class="a.level">
+        <div class="alert-text">
+          <strong>{{ a.title }}</strong>
+          <span v-if="a.detail" class="muted small"> — {{ a.detail }}</span>
         </div>
-        <div v-if="hasDiagDetails" class="health-meta muted small">
-          <span v-if="statusWhen(deployment.status_detail)">时间 {{ formatTs(statusWhen(deployment.status_detail)!) }}</span>
-          <span v-if="statusWorker(deployment.status_detail)"> · Worker {{ statusWorker(deployment.status_detail) }}</span>
-          <span v-if="statusPool(deployment.status_detail)?.length">
-            · 池 {{ statusPool(deployment.status_detail)!.join(", ") }}
-          </span>
-          <span v-if="statusActiveCount(deployment.status_detail) != null">
-            · 在线节点 {{ statusActiveCount(deployment.status_detail) }}
-          </span>
-          <span v-if="statusQueuedFailed(deployment.status_detail) != null">
-            · 排队失败 {{ statusQueuedFailed(deployment.status_detail) }}
-          </span>
-          <span v-if="ingressAttempt != null && ingressMaxAttempts != null">
-            · 重试 {{ ingressAttempt }}/{{ ingressMaxAttempts }}
-          </span>
-          <span v-if="ingressNextRetryAt">
-            · 下次重试 {{ formatTs(ingressNextRetryAt) }}
-          </span>
-        </div>
-        <div v-if="!deployment.assignments?.length && deployment.status === 'pending'" class="muted small">
-          尚未分配工作节点
-        </div>
-      </div>
-      <div class="health-banner-actions">
         <button
-          v-if="suggestedAction === 'workers'"
+          v-if="a.action === 'workers'"
           type="button"
-          class="btn small primary"
+          class="btn small ghost"
           @click="emit('navigate-workers')"
-        >查看工作节点</button>
+        >节点</button>
         <button
-          v-else-if="suggestedAction === 'messages'"
+          v-else-if="a.action === 'runs'"
           type="button"
-          class="btn small primary"
-          @click="emit('navigate-tab', 'messages')"
-        >查看消费</button>
-        <button
-          v-else
-          type="button"
-          class="btn small primary"
+          class="btn small ghost"
           @click="emit('navigate-tab', 'runs')"
-        >查看运行</button>
-        <button type="button" class="btn small ghost" @click="emit('refresh')">刷新</button>
+        >运行</button>
       </div>
-      <details v-if="deployment.status_detail" class="diag-raw">
-        <summary class="muted small">原始 JSON</summary>
-        <pre class="cfg mono">{{ JSON.stringify(deployment.status_detail, null, 2) }}</pre>
-      </details>
+    </div>
+
+    <!-- 2. 调度与部署：仅实时调度与节点分配 -->
+    <section class="schedule-panel" aria-label="调度与部署">
+      <header class="schedule-panel-head">
+        <h3 class="schedule-panel-title">调度与部署</h3>
+        <button type="button" class="btn small ghost" @click="emit('refresh')">刷新</button>
+      </header>
+      <dl class="schedule-dl">
+        <div class="schedule-row">
+          <dt>调度类型</dt>
+          <dd>{{ scheduleTypeLabel(deployment.schedule_type) }}</dd>
+        </div>
+        <template v-for="row in scheduleInfoRows" :key="row.label">
+          <div class="schedule-row">
+            <dt>{{ row.label }}</dt>
+            <dd :class="{ mono: row.mono, muted: row.muted }">{{ row.value }}</dd>
+          </div>
+        </template>
+        <div class="schedule-divider" aria-hidden="true" />
+        <div class="schedule-row">
+          <dt>配置节点</dt>
+          <dd>{{ configuredWorkersText }}</dd>
+        </div>
+        <div class="schedule-row">
+          <dt>当前分配</dt>
+          <dd>
+            <ul v-if="assignmentLines.length" class="assign-lines">
+              <li v-for="(line, i) in assignmentLines" :key="i" class="assign-line">
+                <span class="assign-role">{{ line.role }}</span>
+                <span class="mono assign-id">{{ line.workerId }}</span>
+                <span
+                  v-if="line.workerStatus"
+                  class="tag small"
+                  :class="workerStatusClass(line.workerStatus)"
+                >{{ workerStatusLabel(line.workerStatus) }}</span>
+                <span v-if="line.lease" class="muted small assign-lease">{{ line.lease }}</span>
+              </li>
+            </ul>
+            <span v-else class="muted">未分配</span>
+          </dd>
+        </div>
+      </dl>
     </section>
 
-    <!-- Layer 2: Metric cards -->
-    <div class="overview-grid">
-      <article class="ov-card">
-        <div class="ov-head">
-          <div class="ov-title">运行实例</div>
-          <span v-if="loadingRunsPreview" class="muted small">加载中…</span>
-        </div>
-        <div class="ov-metrics">
-          <div class="ov-metric">
-            <div class="ov-num mono">{{ runMetrics.total }}</div>
-            <div class="ov-label">全部</div>
-          </div>
-          <div class="ov-metric">
-            <div class="ov-num mono">{{ runMetrics.running }}</div>
-            <div class="ov-label">运行中</div>
-          </div>
-          <div class="ov-metric">
-            <div class="ov-num mono">{{ runMetrics.completed }}</div>
-            <div class="ov-label">已完成</div>
-          </div>
-          <div class="ov-metric">
-            <div class="ov-num mono" :class="{ bad: runMetrics.failed > 0 }">{{ runMetrics.failed }}</div>
-            <div class="ov-label">失败</div>
-          </div>
-        </div>
-        <div class="ov-actions">
-          <button type="button" class="btn small primary" @click="emit('navigate-tab', 'runs')">查看全部运行</button>
-        </div>
-      </article>
-
-      <article class="ov-card">
-        <div class="ov-title">调度与部署</div>
-        <dl class="ov-dl">
-          <div><dt>部署方式</dt><dd>{{ modeLabel(deployment.mode) }}</dd></div>
-          <div><dt>环境</dt><dd class="mono">{{ deployment.env_profile_code || "—" }}</dd></div>
-          <div><dt>调度方式</dt><dd>{{ scheduleLabel(deployment.schedule_type) }}</dd></div>
-          <div v-if="deployment.schedule_type === 'cron' && deployment.schedule_config?.cron_expr">
-            <dt>Cron</dt><dd class="mono">{{ deployment.schedule_config.cron_expr }}</dd>
-          </div>
-          <div v-if="isSubscription && subSummary?.consumer_id">
-            <dt>Consumer</dt><dd class="mono">{{ subSummary.consumer_id }}</dd>
-          </div>
-          <div v-if="isSubscription && subSummary?.messages.last_updated_at">
-            <dt>最近消息</dt><dd class="mono small">{{ formatTs(subSummary.messages.last_updated_at) }}</dd>
-          </div>
-          <div><dt>节点定向</dt><dd>{{ targetingLabel(deployment.worker_targeting) }}</dd></div>
-        </dl>
-        <div class="ov-actions">
-          <button type="button" class="btn small ghost" @click="emit('navigate-tab', 'config')">完整配置</button>
-          <button type="button" class="btn small ghost" @click="emit('edit')">编辑配置</button>
-        </div>
-      </article>
-
-      <article v-if="isSubscription" class="ov-card">
-        <div class="ov-head">
-          <div class="ov-title">消息账本</div>
-          <span v-if="loadingSubSummary" class="muted small">加载中…</span>
-        </div>
-        <template v-if="subSummary">
+    <!-- 3. 运行记录 + 最近运行 -->
+    <section class="ov-section" aria-label="运行记录">
+      <div class="ov-two-col">
+        <article class="ov-panel">
+          <header class="ov-panel-head">
+            <h4 class="ov-panel-title">运行记录</h4>
+            <span v-if="loadingRunsPreview" class="muted small">加载中…</span>
+          </header>
           <div class="ov-metrics">
             <div class="ov-metric">
-              <div class="ov-num mono">{{ subSummary.messages.total }}</div>
+              <div class="ov-num mono">{{ runMetrics.total }}</div>
               <div class="ov-label">全部</div>
             </div>
             <div class="ov-metric">
-              <div class="ov-num mono">{{ subSummary.messages.by_status.processing ?? 0 }}</div>
-              <div class="ov-label">处理中</div>
+              <div class="ov-num mono">{{ runMetrics.running }}</div>
+              <div class="ov-label">运行中</div>
             </div>
             <div class="ov-metric">
-              <div class="ov-num mono">{{ subSummary.messages.by_status.completed ?? 0 }}</div>
+              <div class="ov-num mono">{{ runMetrics.completed }}</div>
               <div class="ov-label">已完成</div>
             </div>
             <div class="ov-metric">
-              <div class="ov-num mono" :class="{ bad: (subSummary.messages.by_status.failed ?? 0) > 0 }">
-                {{ subSummary.messages.by_status.failed ?? 0 }}
-              </div>
+              <div class="ov-num mono" :class="{ bad: runMetrics.failed > 0 }">{{ runMetrics.failed }}</div>
               <div class="ov-label">失败</div>
             </div>
           </div>
-          <div class="ov-actions">
+          <div class="ov-panel-actions">
+            <button type="button" class="btn small primary" @click="emit('navigate-tab', 'runs')">查看全部运行</button>
+          </div>
+        </article>
+
+        <article class="ov-panel ov-panel--table">
+          <header class="ov-panel-head">
+            <h4 class="ov-panel-title">最近运行</h4>
+            <button type="button" class="btn small ghost" :disabled="loadingRunsPreview" @click="emit('refresh')">
+              刷新
+            </button>
+          </header>
+          <div class="ov-table-wrap">
+            <table class="grid-table mini">
+              <thead>
+                <tr>
+                  <th style="width:80px">运行</th>
+                  <th style="width:100px">状态</th>
+                  <th style="width:110px">耗时</th>
+                  <th>Worker</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="loadingRunsPreview">
+                  <td colspan="4" class="muted center">加载中…</td>
+                </tr>
+                <tr v-else-if="!runsPreview.length">
+                  <td colspan="4" class="muted center">暂无运行记录</td>
+                </tr>
+                <tr
+                  v-for="r in runsPreview"
+                  :key="r.id"
+                  class="clickable"
+                  @click="emit('open-run', r.id)"
+                >
+                  <td class="mono">#{{ r.id }}</td>
+                  <td>
+                    <span class="tag small" :class="runStatusTagClass(r.status)">{{ runStatusLabel(r.status) }}</span>
+                  </td>
+                  <td class="mono small">{{ runElapsed(r) }}</td>
+                  <td class="mono small">{{ r.worker_id || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 4. 消息账本 + 最近失败（仅消息触发） -->
+    <section v-if="isSubscription" class="ov-section" aria-label="消息账本">
+      <div class="ov-two-col">
+        <article class="ov-panel">
+          <header class="ov-panel-head">
+            <h4 class="ov-panel-title">消息账本</h4>
+            <span v-if="loadingSubSummary" class="muted small">加载中…</span>
+          </header>
+          <template v-if="subSummary">
+            <div class="ov-metrics">
+              <div class="ov-metric">
+                <div class="ov-num mono">{{ subSummary.messages.total }}</div>
+                <div class="ov-label">全部</div>
+              </div>
+              <div class="ov-metric">
+                <div class="ov-num mono">{{ subSummary.messages.by_status.processing ?? 0 }}</div>
+                <div class="ov-label">处理中</div>
+              </div>
+              <div class="ov-metric">
+                <div class="ov-num mono">{{ subSummary.messages.by_status.completed ?? 0 }}</div>
+                <div class="ov-label">已完成</div>
+              </div>
+              <div class="ov-metric">
+                <div class="ov-num mono" :class="{ bad: failedMessageCount > 0 }">
+                  {{ subSummary.messages.by_status.failed ?? 0 }}
+                </div>
+                <div class="ov-label">失败</div>
+              </div>
+            </div>
+            <p v-if="subSummary.messages.last_updated_at" class="muted small panel-note">
+              最近更新 {{ formatTs(subSummary.messages.last_updated_at) }}
+            </p>
+          </template>
+          <div v-else class="muted small pad">暂无消费统计</div>
+          <div class="ov-panel-actions">
             <button type="button" class="btn small primary" @click="emit('navigate-tab', 'messages')">消息账本</button>
-            <button type="button" class="btn small ghost" @click="emit('refresh')">刷新</button>
           </div>
-        </template>
-        <div v-else class="muted small pad">暂无消费统计</div>
-      </article>
+        </article>
 
-      <article v-else class="ov-card" :class="{ highlight: !assignmentCount }">
-        <div class="ov-title">执行资源</div>
-        <div class="ov-metrics ov-metrics--compact">
-          <div class="ov-metric">
-            <div class="ov-num mono" :class="{ bad: !assignmentCount }">{{ assignmentCount }}</div>
-            <div class="ov-label">已分配</div>
+        <article class="ov-panel ov-panel--table">
+          <header class="ov-panel-head">
+            <h4 class="ov-panel-title">最近失败消息</h4>
+            <button
+              v-if="failedMessageCount > 0"
+              type="button"
+              class="btn small ghost"
+              @click="emit('navigate-tab', 'messages')"
+            >消息账本</button>
+          </header>
+          <div class="ov-table-wrap">
+            <table v-if="failedMessageCount > 0 && subSummary" class="grid-table mini">
+              <thead>
+                <tr>
+                  <th>位置</th>
+                  <th style="width:90px">状态</th>
+                  <th>错误</th>
+                  <th style="width:150px">时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="m in subSummary.recent_failed_messages"
+                  :key="m.id"
+                  class="clickable"
+                  @click="emit('open-message', m)"
+                >
+                  <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
+                  <td>
+                    <span class="tag small" :class="messageStatusTagClass(m.status)">
+                      {{ messageStatusLabel(m.status) }}
+                    </span>
+                  </td>
+                  <td class="small err-cell">{{ truncateText(m.error, 120) }}</td>
+                  <td class="mono small">{{ formatTs(m.updated_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-else class="muted small pad center">暂无失败消息</p>
           </div>
-        </div>
-        <ul v-if="assignmentPreview.length" class="assn-list compact">
-          <li v-for="a in assignmentPreview" :key="a.id">
-            <span class="mono">{{ a.worker_id }}</span>
-            <span class="tag small">{{ a.role }}</span>
-            <span
-              v-if="workerStatusById(a.worker_id)"
-              class="tag small"
-              :class="workerStatusClass(workerStatusById(a.worker_id)!)"
-            >{{ workerStatusLabel(workerStatusById(a.worker_id)!) }}</span>
-            <span v-if="a.lease_expires_at" class="muted small">租约 {{ formatTs(a.lease_expires_at) }}</span>
-          </li>
-        </ul>
-        <div v-else class="muted small pad">尚未分配工作节点</div>
-        <p v-if="assignmentCount > assignmentPreview.length" class="muted small">
-          共 {{ assignmentCount }} 个，仅展示前 {{ assignmentPreview.length }} 个
-        </p>
-        <div class="ov-actions">
-          <button type="button" class="btn small primary" @click="emit('navigate-workers')">查看工作节点</button>
-          <button type="button" class="btn small ghost" @click="emit('refresh')">刷新分配</button>
-        </div>
-      </article>
-    </div>
-
-    <!-- Layer 3: Policy summary -->
-    <section class="side-section policy-section">
-      <div class="lbl">调度与策略</div>
-      <div class="kv-grid policy-kv">
-        <div class="kv">
-          <div class="k">Worker 策略</div>
-          <div class="v small">{{ workerPolicyText(deployment.worker_policy) }}</div>
-        </div>
-        <div class="kv">
-          <div class="k">
-            能力策略
-            <InfoTip text="部署附加策略与节点、环境能力策略按帮助文档顺序合并，仅本部署运行生效。" />
-          </div>
-          <div class="v small">
-            {{ capabilityRuleCount }} 条规则
-            <button type="button" class="linkish" @click="emit('navigate-tab', 'config')">查看完整配置</button>
-            <button type="button" class="linkish" @click="emit('edit')">编辑</button>
-          </div>
-        </div>
-        <div class="kv">
-          <div class="k">创建时间</div>
-          <div class="v mono small">{{ deployment.created_at ? formatTs(deployment.created_at) : "—" }}</div>
-        </div>
-        <div class="kv">
-          <div class="k">更新时间</div>
-          <div class="v mono small">{{ deployment.updated_at ? formatTs(deployment.updated_at) : "—" }}</div>
-        </div>
-      </div>
-      <ul v-if="isSubscription && assignmentPreview.length" class="assn-list compact assn-inline">
-        <li v-for="a in assignmentPreview" :key="'sub-' + a.id">
-          <span class="mono">{{ a.worker_id }}</span>
-          <span class="tag small">{{ a.role }}</span>
-          <span v-if="a.lease_expires_at" class="muted small">租约 {{ formatTs(a.lease_expires_at) }}</span>
-        </li>
-      </ul>
-    </section>
-
-    <!-- Layer 4A: Recent runs -->
-    <section class="side-section">
-      <div class="lbl-row">
-        <div class="lbl">最近运行</div>
-        <button type="button" class="btn small ghost" :disabled="loadingRunsPreview" @click="emit('refresh')">刷新</button>
-      </div>
-      <div class="ov-table-wrap">
-        <table class="grid-table mini">
-          <thead>
-            <tr>
-              <th style="width:80px">运行</th>
-              <th style="width:100px">状态</th>
-              <th style="width:110px">耗时</th>
-              <th>Worker</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="loadingRunsPreview">
-              <td colspan="4" class="muted center">加载中…</td>
-            </tr>
-            <tr v-else-if="!runsPreview.length">
-              <td colspan="4" class="muted center">
-                暂无运行记录
-                <span v-if="deployment.status === 'running'" class="block small">调度已启动，等待首次触发</span>
-              </td>
-            </tr>
-            <tr
-              v-for="r in runsPreview"
-              :key="r.id"
-              class="clickable"
-              @click="emit('open-run', r.id)"
-            >
-              <td class="mono">#{{ r.id }}</td>
-              <td>
-                <span class="tag small" :class="runStatusTagClass(r.status)">{{ runStatusLabel(r.status) }}</span>
-              </td>
-              <td class="mono small">{{ runElapsed(r) }}</td>
-              <td class="mono small">{{ r.worker_id || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="ov-actions">
-        <button type="button" class="btn small primary" @click="emit('navigate-tab', 'runs')">查看全部运行</button>
+        </article>
       </div>
     </section>
 
-    <!-- Layer 4B: Recent failed messages (subscription) -->
-    <section v-if="isSubscription" class="side-section">
-      <div class="lbl-row">
-        <div class="lbl">最近失败消息</div>
-        <button
-          v-if="failedMessageCount > 0"
-          type="button"
-          class="btn small ghost"
-          @click="emit('navigate-tab', 'messages')"
-        >消息账本</button>
+    <!-- 5. 部署配置：单块分组 -->
+    <section class="config-panel" aria-label="部署配置">
+      <header class="config-panel-head">
+        <h3 class="config-panel-title">部署配置</h3>
+        <div class="config-panel-actions">
+          <button type="button" class="btn small ghost" @click="emit('edit')">编辑</button>
+          <button type="button" class="btn small ghost" @click="emit('navigate-tab', 'config')">JSON</button>
+        </div>
+      </header>
+      <div class="config-groups">
+        <div v-for="sec in configSections" :key="sec.title" class="config-group">
+          <div class="config-group-label">{{ sec.title }}</div>
+          <dl class="config-rows">
+            <div v-for="row in sec.rows" :key="row.label" class="config-row">
+              <dt>{{ row.label }}</dt>
+              <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+            </div>
+          </dl>
+        </div>
       </div>
-      <template v-if="failedMessageCount > 0 && subSummary">
-        <table class="grid-table mini">
-          <thead>
-            <tr>
-              <th>位置</th>
-              <th style="width:90px">状态</th>
-              <th>错误</th>
-              <th style="width:150px">时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="m in subSummary.recent_failed_messages"
-              :key="m.id"
-              class="clickable"
-              @click="emit('open-message', m)"
-            >
-              <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
-              <td>
-                <span class="tag small" :class="messageStatusTagClass(m.status)">{{ messageStatusLabel(m.status) }}</span>
-              </td>
-              <td class="small err-cell">{{ truncateText(m.error, 120) }}</td>
-              <td class="mono small">{{ formatTs(m.updated_at) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </template>
-      <div v-else class="muted small pad">暂无失败消息</div>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
-import type { Assignment, DeploymentDetail } from "@/api/deployments";
+import type { DeploymentDetail } from "@/api/deployments";
 import type { FlowRunSummary } from "@/api/flowRuns";
 import type { SubscriptionMessageRow, SubscriptionSummary } from "@/api/subscriptionObservability";
 import type { Worker } from "@/api/workers";
-import InfoTip from "@/components/InfoTip.vue";
 import {
+  assignmentRoleLabel,
+  buildDeploymentConfigSections,
+  buildDeploymentOverviewAlerts,
+  computeCronNextRunIso,
+  configuredWorkerCount,
   countRunsByStatus,
-  deploymentModeLabel,
-  deploymentStatusLabel,
+  groupAssignmentsByRole,
   messageStatusLabel,
   runStatusLabel,
   scheduleTypeLabel,
-  workerStatusLabel,
-  isSubscriptionIngressRetrying,
-  shouldShowHealthBanner,
-  statusDetailActiveCount,
-  statusDetailIngressAttempt,
-  statusDetailIngressMaxAttempts,
-  statusDetailMessage,
-  statusDetailNextRetryAt,
-  statusDetailPool,
-  statusDetailQueuedFailed,
-  statusDetailReasonLabel,
-  statusDetailSuggestedAction,
-  statusDetailWhen,
-  statusDetailWorker,
+  subscriptionFieldsFromScheduleConfig,
   truncateOverviewText,
-  workerPolicySummary,
-  workerTargetingLabel,
+  workerPolicyTypeLabel,
+  workerStatusLabel,
 } from "@/utils/deploymentOverview";
 
 const props = defineProps<{
@@ -373,44 +293,104 @@ const emit = defineEmits<{
 
 const isSubscription = computed(() => props.deployment.schedule_type === "subscription");
 
-const showHealthBanner = computed(() =>
-  shouldShowHealthBanner(props.deployment, props.subSummary),
+const alerts = computed(() => buildDeploymentOverviewAlerts(props.deployment, props.subSummary));
+
+const subFields = computed(() =>
+  subscriptionFieldsFromScheduleConfig(
+    props.deployment.schedule_config as Record<string, unknown> | undefined,
+  ),
 );
 
-const ingressRetrying = computed(() =>
-  isSubscriptionIngressRetrying(props.deployment.status_detail ?? null),
+const consumerId = computed(
+  () => props.subSummary?.consumer_id || subFields.value.consumer_id,
 );
 
-const ingressAttempt = computed(() =>
-  statusDetailIngressAttempt(props.deployment.status_detail ?? null),
-);
-
-const ingressMaxAttempts = computed(() =>
-  statusDetailIngressMaxAttempts(props.deployment.status_detail ?? null),
-);
-
-const ingressNextRetryAt = computed(() =>
-  statusDetailNextRetryAt(props.deployment.status_detail ?? null),
-);
-
-const suggestedAction = computed(() =>
-  statusDetailSuggestedAction(props.deployment.status_detail ?? null),
-);
-
-const assignmentCount = computed(() => props.deployment.assignments?.length ?? 0);
-
-const assignmentPreview = computed((): Assignment[] => {
-  const list = props.deployment.assignments ?? [];
-  return list.slice(0, 5);
+const cronExpr = computed(() => {
+  if (props.deployment.schedule_type !== "cron") return null;
+  return String(props.deployment.schedule_config?.cron_expr ?? "").trim() || null;
 });
 
-const capabilityRuleCount = computed(
-  () => props.deployment.capability_policy?.length ?? 0,
-);
+const cronNextRunIso = computed(() => computeCronNextRunIso(cronExpr.value));
 
-const failedMessageCount = computed(
-  () => props.subSummary?.messages.by_status.failed ?? 0,
-);
+type ScheduleInfoRow = { label: string; value: string; mono?: boolean; muted?: boolean };
+
+const scheduleInfoRows = computed((): ScheduleInfoRow[] => {
+  const st = props.deployment.schedule_type;
+  if (st === "cron") {
+    const rows: ScheduleInfoRow[] = [];
+    if (cronExpr.value) {
+      rows.push({ label: "定时设定", value: cronExpr.value, mono: true });
+    }
+    if (cronNextRunIso.value) {
+      rows.push({ label: "下次运行", value: props.formatTs(cronNextRunIso.value), mono: true });
+    } else if (cronExpr.value) {
+      rows.push({ label: "下次运行", value: "表达式无法解析", muted: true });
+    }
+    return rows;
+  }
+  if (st === "subscription") {
+    return [
+      { label: "消费者", value: consumerId.value || "—", mono: true },
+      {
+        label: "并发上限",
+        value: subFields.value.max_in_flight != null ? String(subFields.value.max_in_flight) : "—",
+        mono: true,
+      },
+    ];
+  }
+  return [];
+});
+
+const configuredWorkersText = computed(() => {
+  const n = configuredWorkerCount(props.deployment.worker_policy);
+  const typeRaw = props.deployment.worker_policy?.type;
+  const typeLabel = typeRaw ? workerPolicyTypeLabel(String(typeRaw)) : "";
+  if (n != null && typeLabel) return `${n} 个节点 · ${typeLabel}`;
+  if (n != null) return `${n} 个节点`;
+  if (typeLabel) return typeLabel;
+  return "—";
+});
+
+type AssignmentLine = {
+  role: string;
+  workerId: string;
+  workerStatus: string | null;
+  lease: string | null;
+};
+
+const assignmentLines = computed((): AssignmentLine[] => {
+  const by = groupAssignmentsByRole(props.deployment.assignments);
+  const lines: AssignmentLine[] = [];
+  for (const role of ["leader", "standby", "replica"] as const) {
+    for (const a of by[role]) {
+      const w = props.workers.find((x) => x.worker_id === a.worker_id);
+      lines.push({
+        role: assignmentRoleLabel(role),
+        workerId: a.worker_id,
+        workerStatus: w ? String(w.status) : null,
+        lease: a.lease_expires_at ? `租约 ${props.formatTs(a.lease_expires_at)}` : null,
+      });
+    }
+  }
+  for (const a of by.other) {
+    const w = props.workers.find((x) => x.worker_id === a.worker_id);
+    lines.push({
+      role: assignmentRoleLabel(a.role),
+      workerId: a.worker_id,
+      workerStatus: w ? String(w.status) : null,
+      lease: a.lease_expires_at ? `租约 ${props.formatTs(a.lease_expires_at)}` : null,
+    });
+  }
+  return lines;
+});
+
+function workerStatusClass(status: string): string {
+  if (status === "active") return "ok";
+  if (status === "dead") return "dead";
+  return "info";
+}
+
+const failedMessageCount = computed(() => props.subSummary?.messages.by_status.failed ?? 0);
 
 const runMetrics = computed(() => {
   if (isSubscription.value && props.subSummary) {
@@ -432,71 +412,10 @@ const runMetrics = computed(() => {
   };
 });
 
-const hasDiagDetails = computed(() => {
-  const d = props.deployment.status_detail;
-  if (!d) return false;
-  return Boolean(
-    statusWhen(d)
-      || statusWorker(d)
-      || statusPool(d)?.length
-      || statusActiveCount(d) != null
-      || statusQueuedFailed(d) != null
-      || ingressAttempt.value != null
-      || ingressNextRetryAt.value,
-  );
-});
+const configSections = computed(() => buildDeploymentConfigSections(props.deployment, props.formatTs));
 
-function workerStatusById(workerId: string): string | null {
-  const w = props.workers.find((x) => x.worker_id === workerId);
-  return w ? String(w.status) : null;
-}
-
-function statusLabel(s: string) {
-  return deploymentStatusLabel(s);
-}
-function modeLabel(m: string) {
-  return deploymentModeLabel(m);
-}
-function scheduleLabel(s: string) {
-  return scheduleTypeLabel(s);
-}
-function targetingLabel(t: DeploymentDetail["worker_targeting"]) {
-  return workerTargetingLabel(t);
-}
-function reasonLabel(d: Record<string, unknown>) {
-  return statusDetailReasonLabel(d);
-}
-function statusMessage(d: Record<string, unknown> | null | undefined) {
-  return statusDetailMessage(d);
-}
-function statusWhen(d: Record<string, unknown> | null | undefined) {
-  return statusDetailWhen(d);
-}
-function statusWorker(d: Record<string, unknown> | null | undefined) {
-  return statusDetailWorker(d);
-}
-function statusPool(d: Record<string, unknown> | null | undefined) {
-  return statusDetailPool(d);
-}
-function statusActiveCount(d: Record<string, unknown> | null | undefined) {
-  return statusDetailActiveCount(d);
-}
-function statusQueuedFailed(d: Record<string, unknown> | null | undefined) {
-  return statusDetailQueuedFailed(d);
-}
-function workerPolicyText(policy: DeploymentDetail["worker_policy"]) {
-  return workerPolicySummary(policy);
-}
 function truncateText(text: string | null | undefined, maxLen: number) {
   return truncateOverviewText(text, maxLen);
-}
-
-function statusTagClass(status: string): string {
-  if (status === "running") return "running";
-  if (status === "completed" || status === "stopped") return "ok";
-  if (status === "failed") return "bad";
-  if (status === "stopping") return "warn";
-  return "info";
 }
 
 function runStatusTagClass(status: string): string {
@@ -513,133 +432,201 @@ function messageStatusTagClass(status: string): string {
   if (status === "failed") return "bad";
   return "info";
 }
-
-function workerStatusClass(status: string): string {
-  if (status === "active") return "ok";
-  if (status === "dead") return "dead";
-  return "info";
-}
 </script>
 
 <style scoped>
 .dep-overview {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 20px;
 }
 
-.health-banner {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-  background: color-mix(in srgb, var(--accent-soft) 25%, var(--surface));
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.health-banner.warn {
-  border-color: color-mix(in srgb, #d97706 40%, var(--border));
-  background: color-mix(in srgb, #fef3c7 35%, var(--surface));
-}
-
-.health-banner.bad {
-  border-color: color-mix(in srgb, #b91c1c 35%, var(--border));
-  background: color-mix(in srgb, #fee2e2 30%, var(--surface));
-}
-
-.health-banner-main {
+/* —— 告警 —— */
+.alerts {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 0;
 }
 
-.health-banner-title {
+.alert {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid var(--border);
+  background: color-mix(in srgb, var(--accent-soft) 20%, var(--surface));
 }
 
-.health-reason {
-  font-weight: 700;
-  font-size: 13px;
+.alert.warn {
+  border-left-color: #d97706;
+  background: color-mix(in srgb, #fef3c7 45%, var(--surface));
 }
 
-.health-banner-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.alert.bad {
+  border-left-color: #b91c1c;
+  background: color-mix(in srgb, #fee2e2 40%, var(--surface));
 }
 
-.health-meta {
+.alert-text {
+  min-width: 0;
+  font-size: 12px;
   line-height: 1.4;
 }
 
-.diag-raw {
-  margin-top: 4px;
+.alert-text strong {
+  font-weight: 700;
 }
 
-.diag-raw summary {
-  cursor: pointer;
-}
-
-.overview-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.ov-card.highlight {
-  border-color: color-mix(in srgb, #d97706 45%, var(--border));
-}
-
-.ov-dl {
-  margin: 0;
-  display: grid;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.ov-dl > div {
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 8px;
-  align-items: baseline;
-}
-
-.ov-dl dt {
-  margin: 0;
-  color: var(--muted);
-}
-
-.ov-dl dd {
-  margin: 0;
+/* —— 调度与部署 —— */
+.schedule-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-width: 0;
-  word-break: break-word;
 }
 
-.ov-metrics--compact {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  max-width: 200px;
-}
-
-.ov-head {
+.schedule-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.ov-title {
-  font-weight: 700;
+.schedule-panel-title {
+  margin: 0;
   font-size: 13px;
+  font-weight: 700;
+}
+
+.schedule-dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: start;
+  font-size: 12px;
+}
+
+.schedule-row dt {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.schedule-row dd {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.45;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.schedule-row dd.muted {
+  font-weight: 500;
+}
+
+.schedule-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.assign-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assign-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.assign-role {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 52px;
+}
+
+.assign-id {
+  font-weight: 700;
+}
+
+.assign-lease {
+  flex-basis: 100%;
+  padding-left: 58px;
+  font-size: 10px;
+}
+
+.tag.dead {
+  background: color-mix(in srgb, #94a3b8 18%, transparent);
+  color: #475569;
+  border-color: color-mix(in srgb, #94a3b8 40%, transparent);
+}
+
+/* —— 运行 / 消息双列 —— */
+.ov-section {
+  min-width: 0;
+}
+
+.ov-two-col {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.ov-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ov-panel--table {
+  padding-bottom: 8px;
+}
+
+.ov-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ov-panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .ov-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -665,187 +652,116 @@ function workerStatusClass(status: string): string {
   color: var(--muted);
 }
 
-.ov-actions {
+.ov-panel-actions {
+  margin-top: auto;
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.ov-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-
-.bad {
-  color: #b91c1c;
-}
-
-.lbl-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.lbl-row .lbl {
-  margin-bottom: 0;
-}
-
-.policy-kv {
-  margin-top: 4px;
-}
-
-.assn-list.compact {
-  list-style: none;
+.panel-note {
   margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.assn-list.compact li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.assn-inline {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
 }
 
 .ov-table-wrap {
   overflow: auto;
   min-width: 0;
-  border-radius: 10px;
-}
-
-.block {
-  display: block;
-  margin-top: 4px;
-}
-
-.err-cell {
-  color: color-mix(in srgb, var(--danger, #c0392b) 85%, var(--text));
-  word-break: break-word;
-}
-
-tr.clickable {
-  cursor: pointer;
-}
-
-tr.clickable:hover td {
-  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
-}
-
-.linkish {
-  border: none;
-  background: none;
-  padding: 0;
-  margin-left: 6px;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  font: inherit;
-  font-size: inherit;
+  flex: 1;
+  border-radius: 8px;
+  border: 1px solid var(--border);
 }
 
 .pad {
   padding: 8px 0;
 }
 
-.cfg {
-  margin: 8px 0 0;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--surface-2);
-  font-size: 11px;
-  overflow: auto;
-  max-height: 200px;
+/* —— 配置单块 —— */
+.config-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
 }
 
-@media (max-width: 980px) {
-  .overview-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 720px) {
-  .ov-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.side-section {
+.config-panel-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fbfdff;
+}
+
+.config-panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.config-panel-actions {
+  display: flex;
   gap: 6px;
 }
 
-.lbl {
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 600;
-  margin-bottom: 4px;
+.config-groups {
+  padding: 4px 0;
 }
 
-.kv-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+.config-group {
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 
-.kv {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fbfdff;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+.config-group:last-child {
+  border-bottom: none;
 }
 
-.kv .k {
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.kv .v {
-  font-size: 12px;
-  color: var(--text);
+.config-group-label {
+  font-size: 10px;
   font-weight: 700;
-  min-width: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
 }
 
+.config-rows {
+  margin: 0;
+  display: grid;
+  gap: 4px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.config-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.config-row dt {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.config-row dd {
+  margin: 0;
+  font-weight: 600;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* —— 表格 —— */
 .grid-table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
 }
 
 .grid-table th,
 .grid-table td {
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   font-size: 12px;
@@ -853,27 +769,35 @@ tr.clickable:hover td {
 }
 
 .grid-table th {
-  background: #fbfdff;
   color: var(--muted);
   font-weight: 600;
   font-size: 11px;
+  border-bottom-width: 1px;
 }
 
 .grid-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-.grid-table.mini th,
-.grid-table.mini td {
-  padding: 6px 10px;
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover td {
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+}
+
+.err-cell {
+  color: color-mix(in srgb, var(--danger, #c0392b) 85%, var(--text));
+  word-break: break-word;
+}
+
+.bad {
+  color: #b91c1c;
 }
 
 .muted {
   color: var(--muted);
-}
-
-.center {
-  text-align: center;
 }
 
 .small {
@@ -882,6 +806,10 @@ tr.clickable:hover td {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.center {
+  text-align: center;
 }
 
 .tag {
@@ -912,12 +840,6 @@ tr.clickable:hover td {
   border-color: color-mix(in srgb, #ef4444 35%, transparent);
 }
 
-.tag.dead {
-  background: color-mix(in srgb, #94a3b8 18%, transparent);
-  color: #475569;
-  border-color: color-mix(in srgb, #94a3b8 40%, transparent);
-}
-
 .tag.warn {
   background: color-mix(in srgb, #f59e0b 18%, transparent);
   color: #92400e;
@@ -936,8 +858,12 @@ tr.clickable:hover td {
   border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
-@media (max-width: 1080px) {
-  .kv-grid {
+@media (max-width: 900px) {
+  .ov-two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .config-rows {
     grid-template-columns: 1fr;
   }
 }

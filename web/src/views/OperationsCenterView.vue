@@ -20,7 +20,7 @@
         </button>
         <div>
           <div class="title">运行中心</div>
-          <div class="subtitle">部署管理 · 运行实例 · 工作节点状态</div>
+          <div class="subtitle">部署管理 · 运行记录 · 工作节点状态</div>
         </div>
       </div>
       <button type="button" class="btn primary" @click="openCreateForm()">+ 新建部署</button>
@@ -126,7 +126,10 @@
               @click="selectDeployment(d.id)"
             >
               <div class="dep2-line dep2-line--main">
-                <span class="dep2-flow">{{ flowLabelById(d.flow_code) }}</span>
+                <span class="dep2-flow-group">
+                  <span class="dep2-flow">{{ flowLabelById(d.flow_code) }}</span>
+                  <span class="dep2-ver mono">v{{ d.ver_no }}</span>
+                </span>
                 <span class="tag dep-status-tag" :class="statusTag(d.status)">{{ deploymentStatusLabel(d.status) }}</span>
               </div>
               <div class="dep2-line dep2-line--meta">
@@ -188,7 +191,7 @@
                       <div class="ov-title">最近运行</div>
                       <span class="muted small">近 {{ CENTER_OVERVIEW_LOOKBACK_HOURS }} 小时 · 不含失败 · 每部署最新一条</span>
                     </div>
-                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行实例</button>
+                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行记录</button>
                   </div>
                   <div
                     class="ov-table-wrap center-overview-table"
@@ -233,7 +236,7 @@
                       <div class="ov-title">最近失败运行</div>
                       <span class="muted small">近 {{ CENTER_OVERVIEW_LOOKBACK_HOURS }} 小时 · 每部署最新一条</span>
                     </div>
-                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行实例</button>
+                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行记录</button>
                   </div>
                   <div
                     class="ov-table-wrap center-overview-table"
@@ -856,7 +859,7 @@ type TabId = "overview" | "deployments" | "runs" | "workers";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "deployments", label: "部署管理" },
-  { id: "runs", label: "运行实例" },
+  { id: "runs", label: "运行记录" },
   { id: "workers", label: "工作节点" },
 ];
 
@@ -1574,7 +1577,7 @@ function deploymentEditLockHint(status: string): string {
 }
 
 function deploymentListMetaRest(d: Deployment): string {
-  const parts: string[] = [`v${d.ver_no}`, scheduleTypeLabel(String(d.schedule_type))];
+  const parts: string[] = [scheduleTypeLabel(String(d.schedule_type))];
   const env = d.env_profile_code?.trim();
   if (env) parts.push(env);
   if (d.schedule_type === "cron" && d.schedule_config?.cron_expr) {
@@ -1587,7 +1590,7 @@ function deploymentListItemTitle(d: Deployment): string {
   const mode = deploymentModeLabel(d.mode);
   const meta = deploymentListMetaRest(d);
   const when = formatRelative(d.updated_at || d.created_at);
-  return `${flowLabelById(d.flow_code)} · #${d.id} · ${mode} · ${meta} · ${when}`;
+  return `${flowLabelById(d.flow_code)} v${d.ver_no} · #${d.id} · ${mode} · ${meta} · ${when}`;
 }
 
 function copyDeploymentSummary(d: Deployment | DeploymentDetail) {
@@ -1702,7 +1705,7 @@ const runFilters = reactive<{
   worker_id: string;
 }>({
   deployment_id: null,
-  // 运行中心只展示部署运行实例，测试运行已在数据层隔离。
+  // 运行中心只展示部署运行记录，测试运行已在数据层隔离。
   source: "deployment",
   flow_code: "",
   mode: "",
@@ -2645,20 +2648,16 @@ tr.clickable:hover td {
 }
 
 .dep-mode--production {
-  border-color: color-mix(in srgb, #475569 42%, var(--border));
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, #eff6ff 88%, var(--surface)) 0%,
-    color-mix(in srgb, #e2e8f0 55%, var(--surface)) 100%
-  );
-  color: #1e3a5f;
-  font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 75%, var(--surface));
+  color: color-mix(in srgb, var(--accent) 72%, #0f172a);
+  font-weight: 600;
 }
 
 .dep-mode--shadow {
-  border-color: color-mix(in srgb, #cbd5e1 75%, var(--border));
-  background: color-mix(in srgb, #f8fafc 92%, var(--surface));
-  color: #64748b;
+  border-color: color-mix(in srgb, #f59e0b 40%, var(--border));
+  background: color-mix(in srgb, #fffbeb 88%, var(--surface));
+  color: #92400e;
   font-weight: 500;
 }
 
@@ -3049,45 +3048,71 @@ tr.clickable:hover td {
   transition:
     border-color 0.15s ease,
     background 0.15s ease,
-    border-left-width 0.12s ease;
+    border-left-width 0.12s ease,
+    box-shadow 0.15s ease;
 }
 
-/* 生产：主通道，左边框与底色略强调 */
+.dep2-item.active {
+  border-left-width: 5px;
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* 生产：左边框随状态加深 — 默认最淡 / 悬停略深 / 选中最鲜明 */
 .dep2-item--production {
-  border-left-color: #475569;
-  background: color-mix(in srgb, #eff6ff 50%, var(--surface));
+  border-left-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface));
 }
 
-.dep2-item--production:hover {
-  border-left-color: #334155;
-  border-color: color-mix(in srgb, #475569 30%, var(--border));
-  background: color-mix(in srgb, #dbeafe 35%, var(--surface));
+.dep2-item--production:hover:not(.active) {
+  border-left-color: color-mix(in srgb, var(--accent) 62%, #1e40af);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--surface));
 }
 
 .dep2-item--production.active {
-  border-left-width: 4px;
-  border-left-color: #1e40af;
-  border-color: color-mix(in srgb, #3b82f6 28%, var(--border));
-  background: color-mix(in srgb, #dbeafe 55%, var(--accent-soft));
+  border-left-width: 5px;
+  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: var(--accent-soft);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 1px 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-/* 灰度：辅助通道，弱化紫调避免压过生产 */
+/* 灰度：左边框随状态加深 — 默认最淡 / 悬停略深 / 选中最鲜明 */
 .dep2-item--shadow {
-  border-left-color: #e2e8f0;
-  background: var(--surface);
+  border-left-color: color-mix(in srgb, #fbbf24 38%, var(--border));
+  background: color-mix(in srgb, #fffbeb 40%, var(--surface));
 }
 
-.dep2-item--shadow:hover {
-  border-left-color: #cbd5e1;
-  border-color: color-mix(in srgb, #94a3b8 22%, var(--border));
-  background: color-mix(in srgb, #f8fafc 95%, var(--surface));
+.dep2-item--shadow:hover:not(.active) {
+  border-left-color: #fbbf24;
+  border-color: color-mix(in srgb, #f59e0b 24%, var(--border));
+  background: color-mix(in srgb, #fef3c7 52%, var(--surface));
 }
 
 .dep2-item--shadow.active {
-  border-left-width: 4px;
-  border-left-color: #94a3b8;
-  border-color: color-mix(in srgb, #cbd5e1 55%, var(--border));
-  background: color-mix(in srgb, #f1f5f9 70%, var(--accent-soft));
+  border-left-width: 5px;
+  border-left-color: #d97706;
+  border-color: color-mix(in srgb, #f59e0b 42%, var(--border));
+  background: #fef3c7;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, #f59e0b 24%, transparent),
+    0 1px 3px color-mix(in srgb, #d97706 12%, transparent);
+}
+
+.dep2-item.active .dep2-flow {
+  font-weight: 800;
+}
+
+.dep2-item--production.active .dep2-flow {
+  color: var(--accent);
+}
+
+.dep2-item--shadow.active .dep2-flow {
+  color: #b45309;
 }
 
 .dep2-line {
@@ -3102,15 +3127,30 @@ tr.clickable:hover td {
   gap: 6px;
 }
 
+.dep2-flow-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
 .dep2-flow {
   font-weight: 700;
   font-size: 12px;
   line-height: 1.3;
   min-width: 0;
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dep2-ver {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .dep2-line--meta {
