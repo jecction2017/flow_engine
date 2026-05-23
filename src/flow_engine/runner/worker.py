@@ -207,6 +207,16 @@ def _read_flow_body(flow_code: str, ver_no: int) -> dict[str, Any]:
         return json.loads(row.body)
 
 
+def _once_run_failure_status_detail(
+    error: BaseException, *, run_id: int | None
+) -> dict[str, Any]:
+    return {
+        "reason": "flow_prepare_failed" if run_id is None else "run_failed",
+        "message": str(error),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _set_deployment_status(
     deployment_id: int,
     status: str,
@@ -558,7 +568,12 @@ class Worker:
             if run_id is not None:
                 await asyncio.to_thread(deploy_persistence.fail_deploy_run, run_id, str(e))
             if st == "once":
-                await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
+                await asyncio.to_thread(
+                    _set_deployment_status,
+                    deployment_id,
+                    "failed",
+                    status_detail=_once_run_failure_status_detail(e, run_id=run_id),
+                )
 
     async def _await_subscription_consume_slot(
         self, deployment_id: int
@@ -597,18 +612,28 @@ class Worker:
             SubscriptionIngressError,
             run_subscription_ingress,
         )
-        from flow_engine.runner.subscription.spec import load_subscription_spec
+        from flow_engine.runner.subscription.spec import (
+            ingress_restart_delay_s,
+            load_subscription_spec,
+        )
 
         deployment_id = int(deployment["id"])
         spec = load_subscription_spec(deployment.get("schedule_config"))
         wp = deployment.get("worker_policy") or {}
-        max_restarts = int(
-            spec.ingress_policy.max_restarts or wp.get("max_restarts", 5)
-        )
-        backoff_base = int(
-            spec.ingress_policy.restart_backoff_s or wp.get("restart_backoff_s", 30)
-        )
+        max_restarts = int(spec.ingress_policy.max_restarts)
+        backoff_base = int(spec.ingress_policy.restart_backoff_s)
         restart_count = 0
+
+        async def _clear_ingress_retry_detail() -> None:
+            current = await asyncio.to_thread(_read_deployment, deployment_id)
+            detail = (current or {}).get("status_detail") or {}
+            if detail.get("reason") == "subscription_ingress_retrying":
+                await asyncio.to_thread(
+                    _set_deployment_status,
+                    deployment_id,
+                    "running",
+                    clear_status_detail=True,
+                )
 
         async def _prepare(deploy: dict[str, Any], trigger_context: dict[str, Any] | None):
             return await self._prepare_runtime(
@@ -622,12 +647,14 @@ class Worker:
             if slot is None:
                 return
             try:
+                await _clear_ingress_retry_detail()
                 await run_subscription_ingress(
                     deployment,
                     stop_evt=self._stop_evt,
                     prepare_runtime=_prepare,
                     worker_id=self.worker_id,
                 )
+                await _clear_ingress_retry_detail()
                 current = await asyncio.to_thread(_read_deployment, deployment_id)
                 if current is not None and current.get("status") in ("stopping", "running"):
                     await asyncio.to_thread(_set_deployment_status, deployment_id, "stopped")
@@ -651,27 +678,46 @@ class Worker:
                 return
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "subscription ingress failed deployment_id=%s", deployment_id
                 )
                 restart_count += 1
-                if restart_count > max_restarts:
+                err_msg = f"{type(exc).__name__}: {exc}"
+                now = datetime.now(timezone.utc)
+                if restart_count >= max_restarts:
                     await asyncio.to_thread(
                         _set_deployment_status,
                         deployment_id,
                         "failed",
                         status_detail={
                             "reason": "subscription_ingress_failed",
-                            "message": "ingress exceeded max_restarts",
-                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "message": err_msg,
+                            "attempts": restart_count,
+                            "max_attempts": max_restarts,
+                            "ts": now.isoformat(),
                         },
                     )
                     await asyncio.to_thread(
                         _release_assignment, self.worker_id, deployment_id
                     )
                     return
-                delay = backoff_base * (2 ** (restart_count - 1))
+                delay = ingress_restart_delay_s(backoff_base, restart_count)
+                next_retry_at = (now + timedelta(seconds=delay)).isoformat()
+                await asyncio.to_thread(
+                    _set_deployment_status,
+                    deployment_id,
+                    "running",
+                    status_detail={
+                        "reason": "subscription_ingress_retrying",
+                        "message": err_msg,
+                        "attempt": restart_count,
+                        "max_attempts": max_restarts,
+                        "next_retry_at": next_retry_at,
+                        "retry_delay_s": delay,
+                        "ts": now.isoformat(),
+                    },
+                )
                 logger.warning(
                     "subscription ingress restart in %.1fs (attempt %d/%d) deployment_id=%s",
                     delay,

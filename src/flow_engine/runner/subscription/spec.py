@@ -67,8 +67,15 @@ class ParseSection(BaseModel):
 
 
 class IngressPolicySection(BaseModel):
-    max_restarts: int = Field(default=5, ge=0)
-    restart_backoff_s: int = Field(default=30, ge=1)
+    max_restarts: int = Field(default=3, ge=0)
+    restart_backoff_s: int = Field(default=15, ge=1)
+
+
+def ingress_restart_delay_s(backoff_base: int, attempt: int) -> float:
+    """Seconds to wait before retry ``attempt`` (1-indexed). Exponential: base * 2^(attempt-1)."""
+    if attempt < 1:
+        return float(backoff_base)
+    return float(backoff_base * (2 ** (attempt - 1)))
 
 
 class SubscriptionSpec(BaseModel):

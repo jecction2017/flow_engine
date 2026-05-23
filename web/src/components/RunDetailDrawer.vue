@@ -64,7 +64,7 @@ onUnmounted(() => {
 .rdd-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 200;
   background: color-mix(in srgb, #0f172a 32%, transparent);
 }
 
@@ -73,7 +73,7 @@ onUnmounted(() => {
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 51;
+  z-index: 201;
   width: min(980px, calc(100vw - 16px));
   max-width: 100%;
   background: var(--surface);

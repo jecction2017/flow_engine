@@ -1,5 +1,5 @@
 /**
- * 上下文映射：测试中心（lookup 行 / 方案）与运行中心（消息订阅入参）共用语义。
+ * 上下文映射：测试中心（lookup 行 / 方案）与运行中心（消息触发入参）共用语义。
  */
 
 import type { ContextMapping } from "@/api/testBatches";

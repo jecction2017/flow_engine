@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -178,4 +179,67 @@ def list_subscription_messages(
         "offset": offset,
         "limit": limit,
         "messages": messages,
+    }
+
+
+def _serialize_subscription_message(row: FeSubscriptionDedup) -> dict[str, Any]:
+    return {
+        "id": int(row.id),
+        "deployment_id": int(row.deployment_id),
+        "position_key": row.position_key,
+        "topic": row.topic,
+        "partition": int(row.partition),
+        "offset": int(row.offset),
+        "status": row.status,
+        "deploy_run_id": int(row.deploy_run_id) if row.deploy_run_id is not None else None,
+        "error": row.error,
+        "created_at": utc_isoformat(row.created_at),
+        "updated_at": utc_isoformat(row.updated_at),
+    }
+
+
+def list_recent_failed_subscription_messages(
+    *,
+    since: datetime | None = None,
+    hours: float = 24,
+    offset: int = 0,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Latest failed subscription message per deployment within a lookback window."""
+    if since is None:
+        since = datetime.now(timezone.utc) - timedelta(hours=float(hours))
+    elif since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), 200))
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    with db_session() as s:
+        rows = list(
+            s.execute(
+                select(FeSubscriptionDedup)
+                .where(FeSubscriptionDedup.deleted_at.is_(None))
+                .where(FeSubscriptionDedup.status == "failed")
+                .where(FeSubscriptionDedup.updated_at >= since)
+                .order_by(
+                    FeSubscriptionDedup.updated_at.desc(),
+                    FeSubscriptionDedup.id.desc(),
+                )
+            ).scalars().all()
+        )
+        for row in rows:
+            dep_id = int(row.deployment_id)
+            if dep_id in seen:
+                continue
+            seen.add(dep_id)
+            deduped.append(_serialize_subscription_message(row))
+
+    return {
+        "since": utc_isoformat(since),
+        "offset": offset,
+        "limit": limit,
+        "total": len(deduped),
+        "messages": deduped[offset : offset + limit],
     }

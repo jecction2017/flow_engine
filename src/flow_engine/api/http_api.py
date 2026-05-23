@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import func, select
 
 from flow_engine.db.models import (
@@ -208,8 +208,8 @@ class CreateDeploymentBody(BaseModel):
         default_factory=lambda: {
             "type": "single_active",
             "min_workers": 1,
-            "max_restarts": 5,
-            "restart_backoff_s": 30,
+            "max_restarts": 3,
+            "restart_backoff_s": 15,
         }
     )
     capability_policy: list[CapabilityRule] = Field(default_factory=list)
@@ -272,8 +272,81 @@ def _coerce_worker_targeting_for_read(raw: Any) -> dict[str, Any]:
     return {"mode": "any"}
 
 
+class UpdateDeploymentConfigBody(BaseModel):
+    """Full deployment configuration replace (only when status is stopped/failed)."""
+
+    flow_code: str = Field(..., min_length=1, max_length=128)
+    ver_no: int = Field(..., ge=1)
+    mode: str = Field(default="production", pattern=r"^(shadow|production)$")
+    schedule_type: str = Field(..., pattern=r"^(once|cron|subscription)$")
+    schedule_config: dict[str, Any] = Field(default_factory=dict)
+    worker_policy: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "type": "single_active",
+            "min_workers": 1,
+            "max_restarts": 3,
+            "restart_backoff_s": 15,
+        }
+    )
+    capability_policy: list[CapabilityRule] = Field(default_factory=list)
+    env_profile_code: str = ""
+    worker_targeting: dict[str, Any] = Field(default_factory=dict)
+
+
+_DEPLOYMENT_CONFIG_EDITABLE_STATUSES = frozenset({"stopped", "failed"})
+
+
+def _validate_deployment_schedule(
+    schedule_type: str, schedule_config: dict[str, Any]
+) -> None:
+    if schedule_type == "cron":
+        if not (schedule_config or {}).get("cron_expr"):
+            raise HTTPException(
+                status_code=400, detail="cron schedule requires schedule_config.cron_expr"
+            )
+    if schedule_type == "subscription":
+        try:
+            from flow_engine.runner.subscription.spec import load_subscription_spec
+
+            load_subscription_spec(schedule_config)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _apply_deployment_config_row(
+    row: FeFlowDeployment,
+    *,
+    flow_code: str,
+    ver_no: int,
+    mode: str,
+    schedule_type: str,
+    schedule_config: dict[str, Any],
+    worker_policy: dict[str, Any],
+    capability_policy: list[CapabilityRule],
+    env_profile_code: str,
+    worker_targeting: dict[str, Any],
+) -> None:
+    _validate_deployment_schedule(schedule_type, schedule_config)
+    row.flow_code = flow_code
+    row.ver_no = ver_no
+    row.mode = mode
+    row.schedule_type = schedule_type
+    row.schedule_config = schedule_config or {}
+    row.worker_policy = worker_policy or {}
+    row.capability_policy = [r.model_dump() for r in capability_policy]
+    row.env_profile_code = env_profile_code or ""
+    row.worker_targeting = _normalize_worker_targeting(worker_targeting or {})
+
+
 class PatchDeploymentBody(BaseModel):
-    status: str = Field(..., pattern=r"^(stopping|pending)$")
+    status: str | None = Field(default=None, pattern=r"^(stopping|pending)$")
+    config: UpdateDeploymentConfigBody | None = None
+
+    @model_validator(mode="after")
+    def _require_status_or_config(self) -> PatchDeploymentBody:
+        if self.status is None and self.config is None:
+            raise ValueError("either status or config is required")
+        return self
 
 
 class CreateTestBatchBody(BaseModel):
@@ -1301,18 +1374,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/deployments")
     def create_deployment(body: CreateDeploymentBody) -> dict[str, Any]:
-        if body.schedule_type == "cron":
-            if not (body.schedule_config or {}).get("cron_expr"):
-                raise HTTPException(
-                    status_code=400, detail="cron schedule requires schedule_config.cron_expr"
-                )
-        if body.schedule_type == "subscription":
-            try:
-                from flow_engine.runner.subscription.spec import load_subscription_spec
-
-                load_subscription_spec(body.schedule_config)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+        _validate_deployment_schedule(body.schedule_type, body.schedule_config or {})
         with db_session() as s:
             from flow_engine.db.models import FeFlowVersion
 
@@ -1425,6 +1487,18 @@ def create_app() -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.get("/api/subscription/recent-failed-messages")
+    def list_recent_failed_subscription_messages(
+        hours: float = Query(default=24, ge=0.1, le=168),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=10, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return subscription_persistence.list_recent_failed_subscription_messages(
+            hours=hours,
+            offset=offset,
+            limit=limit,
+        )
+
     @app.patch("/api/deployments/{deployment_id}")
     def patch_deployment(deployment_id: int, body: PatchDeploymentBody) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -1432,6 +1506,58 @@ def create_app() -> FastAPI:
             row = s.get(FeFlowDeployment, deployment_id)
             if row is None or row.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="deployment not found")
+
+            if body.config is not None:
+                if str(row.status) not in _DEPLOYMENT_CONFIG_EDITABLE_STATUSES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "deployment configuration can only be updated when status is "
+                            "stopped or failed; stop the deployment first"
+                        ),
+                    )
+                from flow_engine.db.models import FeFlowVersion
+
+                ver_row = s.execute(
+                    select(FeFlowVersion)
+                    .where(FeFlowVersion.flow_code == body.config.flow_code)
+                    .where(FeFlowVersion.ver_no == body.config.ver_no)
+                    .where(FeFlowVersion.deleted_at.is_(None))
+                ).scalar_one_or_none()
+                if ver_row is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"flow version not found: flow_code={body.config.flow_code} "
+                            f"ver_no={body.config.ver_no}"
+                        ),
+                    )
+                _apply_deployment_config_row(
+                    row,
+                    flow_code=body.config.flow_code,
+                    ver_no=body.config.ver_no,
+                    mode=body.config.mode,
+                    schedule_type=body.config.schedule_type,
+                    schedule_config=body.config.schedule_config,
+                    worker_policy=body.config.worker_policy,
+                    capability_policy=body.config.capability_policy,
+                    env_profile_code=body.config.env_profile_code,
+                    worker_targeting=body.config.worker_targeting,
+                )
+                assns = list(
+                    s.execute(
+                        select(FeWorkerAssignment)
+                        .where(FeWorkerAssignment.deployment_id == deployment_id)
+                        .where(FeWorkerAssignment.deleted_at.is_(None))
+                    )
+                    .scalars()
+                    .all()
+                )
+                for a in assns:
+                    a.deleted_at = now
+                row.status_detail = None
+                return _serialize_deployment(row)
+
             if body.status == "pending":
                 assns = list(
                     s.execute(
@@ -1967,6 +2093,30 @@ def create_app() -> FastAPI:
             mode=mode,
             status=status,
             worker_id=worker_id,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/deploy-runs/recent-failures")
+    def list_recent_failed_deploy_runs(
+        hours: float = Query(default=24, ge=0.1, le=168),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=10, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return deploy_persistence.list_recent_failed_deploy_runs(
+            hours=hours,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/deploy-runs/recent-overview")
+    def list_recent_overview_deploy_runs(
+        hours: float = Query(default=24, ge=0.1, le=168),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=10, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return deploy_persistence.list_recent_overview_deploy_runs(
+            hours=hours,
             offset=offset,
             limit=limit,
         )

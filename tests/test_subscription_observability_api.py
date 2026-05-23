@@ -106,6 +106,58 @@ def test_subscription_summary_and_messages(client) -> None:
     assert "bad json" in (listed["messages"][0]["error"] or "")
 
 
+def test_recent_failed_subscription_messages_dedup_per_deployment(client) -> None:
+    dep_a = _create_subscription_deployment(client, "sub_fail_a")
+    dep_b = _create_subscription_deployment(client, "sub_fail_b")
+
+    for dep_id, offsets in ((dep_a, (1, 2)), (dep_b, (3,))):
+        for offset in offsets:
+            begin_message_processing(
+                deployment_id=dep_id,
+                topic="alerts",
+                partition=0,
+                offset=offset,
+                window_s=None,
+                idempotency=False,
+            )
+            finish_message_processing(
+                deployment_id=dep_id,
+                topic="alerts",
+                partition=0,
+                offset=offset,
+                status="failed",
+                error=f"err-{offset}",
+            )
+
+    r = client.get("/api/subscription/recent-failed-messages", params={"hours": 24})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 2
+    dep_ids = {m["deployment_id"] for m in body["messages"]}
+    assert dep_ids == {dep_a, dep_b}
+    by_dep = {m["deployment_id"]: m for m in body["messages"]}
+    assert by_dep[dep_a]["offset"] == 2
+    assert by_dep[dep_b]["offset"] == 3
+
+    r = client.get(
+        "/api/subscription/recent-failed-messages",
+        params={"hours": 24, "offset": 0, "limit": 1},
+    )
+    assert r.status_code == 200, r.text
+    page1 = r.json()
+    assert page1["total"] == 2
+    assert len(page1["messages"]) == 1
+
+    r = client.get(
+        "/api/subscription/recent-failed-messages",
+        params={"hours": 24, "offset": 1, "limit": 1},
+    )
+    assert r.status_code == 200, r.text
+    page2 = r.json()
+    assert len(page2["messages"]) == 1
+    assert page1["messages"][0]["deployment_id"] != page2["messages"][0]["deployment_id"]
+
+
 def test_subscription_observability_rejects_non_subscription(client) -> None:
     from tests.test_runner_api import _commit_flow
 

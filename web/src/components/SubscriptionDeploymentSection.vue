@@ -169,13 +169,29 @@
           </label>
         </div>
         <label class="form-field">
-          <FormFieldLabel label="Ingress 最多重启" tech="ingress_policy.max_restarts" tech-placement="tooltip" />
+          <FormFieldLabel
+            label="接入失败最多重试次数"
+            tech="ingress_policy.max_restarts"
+            tech-placement="tooltip"
+            wide-tip
+            tip="Kafka 连接或 session 打开失败时的重试次数；达到上限后部署标记为 failed。0 表示首次失败即失败。"
+          />
           <input v-model.number="form.ingress_max_restarts" type="number" min="0" class="form-inp mono sub-inp-narrow" />
         </label>
         <label class="form-field">
-          <FormFieldLabel label="重启等待基数（秒）" tech="ingress_policy.restart_backoff_s" tech-placement="tooltip" />
+          <FormFieldLabel
+            label="重试等待基数（秒）"
+            tech="ingress_policy.restart_backoff_s"
+            tech-placement="tooltip"
+            wide-tip
+            tip="第 n 次重试前等待 = 基数 × 2^(n-1) 秒（指数退避）。例如基数 15：15s、30s、60s…"
+          />
           <input v-model.number="form.ingress_restart_backoff_s" type="number" min="1" class="form-inp mono sub-inp-narrow" />
         </label>
+        <p class="sub-side-note muted small ingress-policy-hint">
+          接入失败时按指数退避重试，共最多 {{ form.ingress_max_restarts }} 次失败后标记部署失败；
+          若每次均用尽退避，最坏约等待 {{ ingressMaxWaitLabel }}。
+        </p>
       </div>
     </details>
   </div>
@@ -194,7 +210,10 @@ import {
   clearConsumerDerivedFormFields,
   getKafkaConsumerFromDict,
 } from "@/operations/kafkaConsumerDict";
-import type { SubscriptionFormState } from "@/operations/subscriptionScheduleConfig";
+import {
+  ingressMaxRetryWaitSeconds,
+  type SubscriptionFormState,
+} from "@/operations/subscriptionScheduleConfig";
 
 const props = defineProps<{
   pane: "consumer" | "side";
@@ -210,6 +229,16 @@ const dictLoadError = ref("");
 let lastDictLoadKey = "";
 
 const partitionsDisabled = computed(() => form.value.start_position_mode === "offset");
+
+const ingressMaxWaitLabel = computed(() => {
+  const sec = ingressMaxRetryWaitSeconds(
+    form.value.ingress_max_restarts,
+    form.value.ingress_restart_backoff_s,
+  );
+  if (sec < 60) return `${sec} 秒`;
+  const min = Math.round(sec / 60);
+  return min < 60 ? `约 ${min} 分钟` : `约 ${Math.round(min / 60)} 小时`;
+});
 
 watch(
   () => form.value.start_position_mode,

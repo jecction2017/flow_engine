@@ -99,7 +99,7 @@ import {
 
 const props = withDefaults(
   defineProps<{
-    /** test = 测试中心；ingress = 消息订阅部署 */
+    /** test = 测试中心；ingress = 消息触发部署 */
     surface: MappingSurface;
     showSamplePreview?: boolean;
   }>(),

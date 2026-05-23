@@ -60,6 +60,28 @@ export type ListSubscriptionMessagesParams = {
   limit?: number;
 };
 
+export type RecentFailedSubscriptionMessagesResponse = {
+  since: string;
+  offset: number;
+  limit: number;
+  total: number;
+  messages: SubscriptionMessageRow[];
+};
+
+export async function listRecentFailedSubscriptionMessages(
+  params: { hours?: number; offset?: number; limit?: number } = {},
+): Promise<RecentFailedSubscriptionMessagesResponse> {
+  const qs = new URLSearchParams();
+  if (params.hours != null) qs.set("hours", String(params.hours));
+  if (params.offset != null) qs.set("offset", String(params.offset));
+  if (params.limit != null) qs.set("limit", String(params.limit));
+  const q = qs.toString();
+  const r = await checkOk(
+    await fetch(`/api/subscription/recent-failed-messages${q ? `?${q}` : ""}`),
+  );
+  return r.json() as Promise<RecentFailedSubscriptionMessagesResponse>;
+}
+
 export async function listSubscriptionMessages(
   deploymentId: number,
   params: ListSubscriptionMessagesParams = {},

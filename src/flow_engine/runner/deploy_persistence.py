@@ -6,7 +6,7 @@ Observability blobs have been removed; details live in ``fe_run_span`` and
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -182,32 +182,129 @@ def list_deploy_runs(
         total = len(all_rows)
         page = all_rows[offset : offset + limit]
 
-        def _run_dict(r: FeDeployRun) -> dict[str, Any]:
-            return {
-                "id": int(r.id),
-                "deployment_id": int(r.deployment_id),
-                "flow_code": r.flow_code,
-                "ver_no": int(r.ver_no),
-                "mode": r.mode,
-                "schedule_type": r.schedule_type,
-                "trigger_type": r.trigger_type,
-                "status": r.status,
-                "worker_id": r.worker_id,
-                "started_at": utc_isoformat(r.started_at),
-                "finished_at": utc_isoformat(r.finished_at),
-                "span_count": int(r.span_count) if r.span_count is not None else None,
-                "sampled_span_count": (
-                    int(r.sampled_span_count) if r.sampled_span_count is not None else None
-                ),
-                "error": r.error,
-            }
-
         return {
             "total": total,
             "offset": offset,
             "limit": limit,
-            "runs": [_run_dict(r) for r in page],
+            "runs": [_serialize_deploy_run_summary(r) for r in page],
         }
+
+
+def _serialize_deploy_run_summary(row: FeDeployRun) -> dict[str, Any]:
+    return {
+        "id": int(row.id),
+        "deployment_id": int(row.deployment_id),
+        "flow_code": row.flow_code,
+        "ver_no": int(row.ver_no),
+        "mode": row.mode,
+        "schedule_type": row.schedule_type,
+        "trigger_type": row.trigger_type,
+        "status": row.status,
+        "worker_id": row.worker_id,
+        "started_at": utc_isoformat(row.started_at),
+        "finished_at": utc_isoformat(row.finished_at),
+        "span_count": int(row.span_count) if row.span_count is not None else None,
+        "sampled_span_count": (
+            int(row.sampled_span_count) if row.sampled_span_count is not None else None
+        ),
+        "error": row.error,
+    }
+
+
+# Run Center overview: non-failed latest run per deployment (failed has its own panel).
+_OVERVIEW_RUN_STATUSES = ("queued", "running", "completed", "terminated")
+
+
+def list_recent_deploy_runs_per_deployment(
+    *,
+    status: str | None = None,
+    statuses: tuple[str, ...] | None = None,
+    since: datetime | None = None,
+    hours: float = 24,
+    offset: int = 0,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Latest deploy run per deployment for given status(es) within a lookback window."""
+    if since is None:
+        since = datetime.now(timezone.utc) - timedelta(hours=float(hours))
+    elif since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+
+    if statuses is not None:
+        status_filter = tuple(statuses)
+    elif status is not None:
+        status_filter = (str(status),)
+    else:
+        raise ValueError("status or statuses is required")
+
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), 200))
+    activity_at = func.coalesce(
+        FeDeployRun.finished_at,
+        FeDeployRun.started_at,
+        FeDeployRun.created_at,
+    )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    with db_session() as s:
+        rows = list(
+            s.execute(
+                select(FeDeployRun)
+                .where(FeDeployRun.deleted_at.is_(None))
+                .where(FeDeployRun.status.in_(status_filter))
+                .where(activity_at >= since)
+                .order_by(activity_at.desc(), FeDeployRun.id.desc())
+            ).scalars().all()
+        )
+        for row in rows:
+            dep_id = int(row.deployment_id)
+            if dep_id in seen:
+                continue
+            seen.add(dep_id)
+            deduped.append(_serialize_deploy_run_summary(row))
+
+    return {
+        "since": utc_isoformat(since),
+        "offset": offset,
+        "limit": limit,
+        "total": len(deduped),
+        "runs": deduped[offset : offset + limit],
+    }
+
+
+def list_recent_failed_deploy_runs(
+    *,
+    since: datetime | None = None,
+    hours: float = 24,
+    offset: int = 0,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Latest failed deploy run per deployment within a lookback window."""
+    return list_recent_deploy_runs_per_deployment(
+        status="failed",
+        since=since,
+        hours=hours,
+        offset=offset,
+        limit=limit,
+    )
+
+
+def list_recent_overview_deploy_runs(
+    *,
+    since: datetime | None = None,
+    hours: float = 24,
+    offset: int = 0,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Latest non-failed deploy run per deployment within a lookback window."""
+    return list_recent_deploy_runs_per_deployment(
+        statuses=_OVERVIEW_RUN_STATUSES,
+        since=since,
+        hours=hours,
+        offset=offset,
+        limit=limit,
+    )
 
 
 def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:

@@ -1,11 +1,29 @@
 <template>
   <div class="ops-page">
     <header class="top">
-      <div>
-        <div class="title">运行中心</div>
-        <div class="subtitle">部署管理 · 运行实例 · 工作节点状态</div>
+      <div class="top-head">
+        <button
+          type="button"
+          class="dep-overview-back"
+          :class="{ active: tab === 'deployments' && depWorkspace === 'overview' }"
+          :title="DEP_CENTER_OVERVIEW_LABEL"
+          :aria-label="`返回${DEP_CENTER_OVERVIEW_LABEL}`"
+          :aria-current="tab === 'deployments' && depWorkspace === 'overview' ? 'page' : undefined"
+          @click="openDeployOverview()"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+            <rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.75" />
+            <rect x="13" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.75" />
+            <rect x="3" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.75" />
+            <rect x="13" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.75" />
+          </svg>
+        </button>
+        <div>
+          <div class="title">运行中心</div>
+          <div class="subtitle">部署管理 · 运行实例 · 工作节点状态</div>
+        </div>
       </div>
-      <button type="button" class="btn ghost" @click="reloadActive">刷新</button>
+      <button type="button" class="btn primary" @click="openCreateForm()">+ 新建部署</button>
     </header>
 
     <nav class="tabs" role="tablist">
@@ -49,10 +67,6 @@
               <div class="dep2-title">部署管理</div>
               <div class="muted small">共 {{ deployments.length }} 条</div>
             </div>
-            <div class="dep2-nav">
-              <button type="button" class="seg" :class="{ active: depWorkspace === 'overview' }" @click="openDeployOverview()">概览</button>
-              <button type="button" class="seg" :class="{ active: depWorkspace === 'create' }" @click="openCreateForm()">新建</button>
-            </div>
           </header>
 
           <div class="dep2-filters">
@@ -77,20 +91,20 @@
                 <span class="muted small dep2-filter-label">状态</span>
                 <div class="seg-tabs compact dep2-filter-scroll" style="border:none; padding:0;">
                   <button type="button" class="seg" :class="{ active: depFilters.status === '' }" :title="`全部 ${deployments.length}`" @click="depFilters.status=''; loadDeployments()">全部</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.status === 'running' }" :title="`running ${depCount.running}`" @click="depFilters.status='running'; loadDeployments()">running</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.status === 'pending' }" :title="`pending ${depCount.pending}`" @click="depFilters.status='pending'; loadDeployments()">pending</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.status === 'stopping' }" :title="`stopping ${depCount.stopping}`" @click="depFilters.status='stopping'; loadDeployments()">stopping</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.status === 'stopped' }" :title="`stopped ${depCount.stopped}`" @click="depFilters.status='stopped'; loadDeployments()">stopped</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.status === 'failed' }" :title="`failed ${depCount.failed}`" @click="depFilters.status='failed'; loadDeployments()">failed</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.status === 'running' }" :title="`${deploymentStatusLabel('running')} ${depCount.running}`" @click="depFilters.status='running'; loadDeployments()">{{ deploymentStatusLabel('running') }}</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.status === 'pending' }" :title="`${deploymentStatusLabel('pending')} ${depCount.pending}`" @click="depFilters.status='pending'; loadDeployments()">{{ deploymentStatusLabel('pending') }}</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.status === 'stopping' }" :title="`${deploymentStatusLabel('stopping')} ${depCount.stopping}`" @click="depFilters.status='stopping'; loadDeployments()">{{ deploymentStatusLabel('stopping') }}</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.status === 'stopped' }" :title="`${deploymentStatusLabel('stopped')} ${depCount.stopped}`" @click="depFilters.status='stopped'; loadDeployments()">{{ deploymentStatusLabel('stopped') }}</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.status === 'failed' }" :title="`${deploymentStatusLabel('failed')} ${depCount.failed}`" @click="depFilters.status='failed'; loadDeployments()">{{ deploymentStatusLabel('failed') }}</button>
                 </div>
               </div>
 
               <div class="dep2-filter-row">
-                <span class="muted small dep2-filter-label">模式</span>
+                <span class="muted small dep2-filter-label">部署方式</span>
                 <div class="seg-tabs compact dep2-filter-scroll" style="border:none; padding:0;">
                   <button type="button" class="seg" :class="{ active: depFilters.mode === '' }" @click="depFilters.mode=''; loadDeployments()">全部</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.mode === 'production' }" @click="depFilters.mode='production'; loadDeployments()">production</button>
-                  <button type="button" class="seg" :class="{ active: depFilters.mode === 'shadow' }" @click="depFilters.mode='shadow'; loadDeployments()">shadow</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.mode === 'production' }" @click="depFilters.mode='production'; loadDeployments()">{{ deploymentModeLabel('production') }}</button>
+                  <button type="button" class="seg" :class="{ active: depFilters.mode === 'shadow' }" @click="depFilters.mode='shadow'; loadDeployments()">{{ deploymentModeLabel('shadow') }}</button>
                 </div>
               </div>
             </div>
@@ -99,62 +113,31 @@
           <ul class="dep2-list" role="listbox" aria-label="deployments">
             <li v-if="loadingDep" class="muted small pad center">加载中…</li>
             <li v-else-if="filteredDeployments.length === 0" class="muted small pad center">
-              {{ deployments.length === 0 ? "暂无部署，建议先创建一个 production/shadow 部署" : "无匹配的部署" }}
+              {{ deployments.length === 0 ? "暂无部署，建议先创建一个生产或灰度部署" : "无匹配的部署" }}
             </li>
             <li
               v-for="d in filteredDeployments"
               :key="d.id"
               class="dep2-item"
-              :class="{ active: selectedDeploymentId === d.id }"
+              :class="[deploymentListItemMod(d.mode), { active: selectedDeploymentId === d.id }]"
               role="option"
               :aria-selected="selectedDeploymentId === d.id"
+              :title="deploymentListItemTitle(d)"
               @click="selectDeployment(d.id)"
             >
-              <div class="dep2-row1">
-                <span class="mono dep2-id">#{{ d.id }}</span>
-                <span class="spacer" />
-                <span class="tag" :class="statusTag(d.status)">{{ d.status }}</span>
-                <span class="tag mode">{{ d.mode }}</span>
-                <div class="dep2-menu-wrap" @click.stop>
-                  <button type="button" class="icon-btn" aria-label="更多" title="更多" @click="toggleDepMenu(d.id)">…</button>
-                  <div v-if="openDepMenuId === d.id" class="menu">
-                    <button
-                      type="button"
-                      class="menu-item"
-                      @click="
-                        closeDepMenu();
-                        copyText(
-                          JSON.stringify(
-                            {
-                              id: d.id,
-                              flow_code: d.flow_code,
-                              ver_no: d.ver_no,
-                              mode: d.mode,
-                              schedule_type: d.schedule_type,
-                              cron_expr: d.schedule_type === 'cron' ? d.schedule_config?.cron_expr : undefined,
-                              status: d.status,
-                              env_profile_code: d.env_profile_code || '',
-                              updated_at: d.updated_at,
-                              created_at: d.created_at,
-                            },
-                            null,
-                            2,
-                          ),
-                        );
-                      "
-                    >复制</button>
-                    <button type="button" class="menu-item danger" @click="closeDepMenu(); removeDeployment(d.id)">删除</button>
-                  </div>
+              <div class="dep2-line dep2-line--main">
+                <span class="dep2-flow">{{ flowLabelById(d.flow_code) }}</span>
+                <span class="tag dep-status-tag" :class="statusTag(d.status)">{{ deploymentStatusLabel(d.status) }}</span>
+              </div>
+              <div class="dep2-line dep2-line--meta">
+                <div class="dep2-meta-cluster">
+                  <span class="mono dep2-id-sm">#{{ d.id }}</span>
+                  <span class="dep-mode dep-mode--compact" :class="deploymentModeMod(d.mode)">
+                    {{ deploymentModeLabel(d.mode) }}
+                  </span>
+                  <span class="dep2-meta-rest muted small">{{ deploymentListMetaRest(d) }}</span>
                 </div>
-              </div>
-              <div class="dep2-row2">
-                <div class="dep2-flow">{{ flowLabelById(d.flow_code) }}</div>
-                <div class="muted small">v{{ d.ver_no }} · {{ d.schedule_type }}<span v-if="d.schedule_type === 'cron' && d.schedule_config?.cron_expr" class="mono"> · {{ d.schedule_config.cron_expr }}</span></div>
-              </div>
-              <div class="dep2-row3 muted small">
-                <span class="mono">{{ d.env_profile_code || "—" }}</span>
-                <span class="spacer" />
-                <span class="mono">{{ formatTs(d.updated_at || d.created_at) }}</span>
+                <span class="dep2-time muted small mono">{{ formatRelative(d.updated_at || d.created_at) }}</span>
               </div>
             </li>
           </ul>
@@ -165,76 +148,181 @@
           <section v-if="depWorkspace === 'overview'" class="panel">
             <header class="panel-head">
               <div>
-                <div class="panel-title">运行中心概览</div>
-                <div class="muted small">在左侧选择部署进行管理，或点击“新建”创建部署</div>
-              </div>
-              <div class="panel-actions">
-                <button type="button" class="btn small ghost" @click="loadDeployments">刷新部署</button>
-                <button type="button" class="btn small ghost" @click="loadWorkers">刷新节点</button>
-                <button type="button" class="btn small ghost" @click="loadRuns">刷新运行</button>
+                <div class="panel-title">总概览</div>
               </div>
             </header>
 
-            <div class="overview-grid">
-              <article class="ov-card">
-                <div class="ov-title">部署</div>
-                <div class="ov-metrics">
-                  <div class="ov-metric"><div class="ov-num mono">{{ deployments.length }}</div><div class="ov-label">全部</div></div>
-                  <div class="ov-metric"><div class="ov-num mono">{{ depCount.running }}</div><div class="ov-label">running</div></div>
-                  <div class="ov-metric"><div class="ov-num mono">{{ depCount.pending }}</div><div class="ov-label">pending</div></div>
-                  <div class="ov-metric"><div class="ov-num mono" :class="{ bad: depCount.failed > 0 }">{{ depCount.failed }}</div><div class="ov-label">failed</div></div>
-                </div>
-                <div class="ov-actions">
-                  <button type="button" class="btn primary" @click="openCreateForm">+ 新建部署</button>
-                </div>
-              </article>
+            <div class="center-overview-layout">
+              <div class="center-overview-stats">
+                <article class="ov-card">
+                  <div class="ov-head">
+                    <div class="ov-title">部署</div>
+                    <button type="button" class="btn small ghost" @click="openCreateForm">+ 新建部署</button>
+                  </div>
+                  <div class="ov-metrics">
+                    <div class="ov-metric"><div class="ov-num mono">{{ deployments.length }}</div><div class="ov-label">全部</div></div>
+                    <div class="ov-metric"><div class="ov-num mono">{{ depCount.running }}</div><div class="ov-label">{{ deploymentStatusLabel('running') }}</div></div>
+                    <div class="ov-metric"><div class="ov-num mono">{{ depCount.pending }}</div><div class="ov-label">{{ deploymentStatusLabel('pending') }}</div></div>
+                    <div class="ov-metric"><div class="ov-num mono" :class="{ bad: depCount.failed > 0 }">{{ depCount.failed }}</div><div class="ov-label">{{ deploymentStatusLabel('failed') }}</div></div>
+                  </div>
+                </article>
 
-              <article class="ov-card">
-                <div class="ov-title">工作节点</div>
-                <div class="ov-metrics">
-                  <div class="ov-metric"><div class="ov-num mono">{{ workers.length }}</div><div class="ov-label">全部</div></div>
-                  <div class="ov-metric"><div class="ov-num mono">{{ workerCount.active }}</div><div class="ov-label">active</div></div>
-                  <div class="ov-metric"><div class="ov-num mono">{{ workerCount.idle }}</div><div class="ov-label">idle</div></div>
-                  <div class="ov-metric"><div class="ov-num mono">{{ workerCount.dead }}</div><div class="ov-label">dead</div></div>
-                </div>
-                <div class="ov-actions">
-                  <button type="button" class="btn primary" @click="switchTab('workers')">查看节点</button>
-                </div>
-              </article>
+                <article class="ov-card">
+                  <div class="ov-head">
+                    <div class="ov-title">工作节点</div>
+                    <button type="button" class="btn small ghost" @click="switchTab('workers')">查看节点</button>
+                  </div>
+                  <div class="ov-metrics">
+                    <div class="ov-metric"><div class="ov-num mono">{{ workers.length }}</div><div class="ov-label">全部</div></div>
+                    <div class="ov-metric"><div class="ov-num mono">{{ workerCount.active }}</div><div class="ov-label">{{ workerStatusLabel('active') }}</div></div>
+                    <div class="ov-metric"><div class="ov-num mono">{{ workerCount.idle }}</div><div class="ov-label">{{ workerStatusLabel('idle') }}</div></div>
+                    <div class="ov-metric"><div class="ov-num mono">{{ workerCount.dead }}</div><div class="ov-label">{{ workerStatusLabel('dead') }}</div></div>
+                  </div>
+                </article>
+              </div>
 
-              <article class="ov-card">
-                <div class="ov-title">最近运行</div>
-                <div class="ov-table-wrap">
+              <div class="center-overview-runs-row">
+                <article class="ov-card">
+                  <div class="ov-head">
+                    <div class="ov-head-main">
+                      <div class="ov-title">最近运行</div>
+                      <span class="muted small">近 {{ CENTER_OVERVIEW_LOOKBACK_HOURS }} 小时 · 不含失败 · 每部署最新一条</span>
+                    </div>
+                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行实例</button>
+                  </div>
+                  <div
+                    class="ov-table-wrap center-overview-table"
+                    :class="{ 'center-overview-table--scroll': centerOverviewRuns.length > CENTER_OVERVIEW_SCROLL_ROWS }"
+                  >
+                    <table class="grid-table mini">
+                      <thead>
+                        <tr>
+                          <th style="width:80px">运行</th>
+                          <th>流程</th>
+                          <th style="width:110px">状态</th>
+                          <th style="width:120px">耗时</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-if="loadingCenterOverviewRuns"><td colspan="4" class="muted center">加载中…</td></tr>
+                        <tr v-else-if="centerOverviewRuns.length === 0"><td colspan="4" class="muted center">近 24 小时无运行记录</td></tr>
+                        <tr
+                          v-for="r in centerOverviewRuns"
+                          :key="r.id"
+                          class="clickable"
+                          @click="openRunFromCenterOverview(r.id)"
+                        >
+                          <td class="mono">#{{ r.id }}</td>
+                          <td class="ov-cell-ellipsis" :title="`${flowLabelById(r.flow_code)} v${r.ver_no}`">{{ flowLabelById(r.flow_code) }} · v{{ r.ver_no }}</td>
+                          <td><span class="tag" :class="runStatusTag(r.status)">{{ runStatusLabel(r.status) }}</span></td>
+                          <td class="mono small">{{ runElapsed(r) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="ov-pager">
+                    <span class="muted small">共 {{ centerOverviewRunsTotal }} 条 · 第 {{ centerOverviewRunsPage }} 页</span>
+                    <button type="button" class="btn small ghost" :disabled="centerOverviewRunsOffset === 0 || loadingCenterOverviewRuns" @click="centerOverviewRunsPrev">上一页</button>
+                    <button type="button" class="btn small ghost" :disabled="!centerOverviewRunsHasNext || loadingCenterOverviewRuns" @click="centerOverviewRunsNext">下一页</button>
+                  </div>
+                </article>
+
+                <article class="ov-card">
+                  <div class="ov-head">
+                    <div class="ov-head-main">
+                      <div class="ov-title">最近失败运行</div>
+                      <span class="muted small">近 {{ CENTER_OVERVIEW_LOOKBACK_HOURS }} 小时 · 每部署最新一条</span>
+                    </div>
+                    <button type="button" class="btn small ghost" @click="openRunsTab()">打开运行实例</button>
+                  </div>
+                  <div
+                    class="ov-table-wrap center-overview-table"
+                    :class="{ 'center-overview-table--scroll': centerOverviewFailedRuns.length > CENTER_OVERVIEW_SCROLL_ROWS }"
+                  >
+                    <table class="grid-table mini">
+                      <thead>
+                        <tr>
+                          <th style="width:100px">部署</th>
+                          <th style="width:80px">运行</th>
+                          <th style="width:28%">流程</th>
+                          <th>错误</th>
+                          <th style="width:140px">失败时间</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-if="loadingCenterOverviewFailedRuns"><td colspan="5" class="muted center">加载中…</td></tr>
+                        <tr v-else-if="centerOverviewFailedRuns.length === 0"><td colspan="5" class="muted center">近 24 小时无失败运行</td></tr>
+                        <tr
+                          v-for="r in centerOverviewFailedRuns"
+                          :key="r.id"
+                          class="clickable"
+                          @click="openRunFromCenterOverview(r.id)"
+                        >
+                          <td class="mono small ov-cell-ellipsis" :title="deploymentOverviewFlowLabel(r.deployment_id)">{{ deploymentOverviewFlowLabel(r.deployment_id) }}</td>
+                          <td class="mono">#{{ r.id }}</td>
+                          <td class="ov-cell-ellipsis" :title="`${flowLabelById(r.flow_code)} v${r.ver_no}`">{{ flowLabelById(r.flow_code) }} · v{{ r.ver_no }}</td>
+                          <td class="ov-cell-ellipsis bad" :title="r.error || undefined">{{ truncateText(r.error, 80) }}</td>
+                          <td class="mono small ov-cell-ellipsis">{{ formatTs(r.finished_at || r.started_at) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="ov-pager">
+                    <span class="muted small">共 {{ centerOverviewFailedRunsTotal }} 条 · 第 {{ centerOverviewFailedRunsPage }} 页</span>
+                    <button type="button" class="btn small ghost" :disabled="centerOverviewFailedRunsOffset === 0 || loadingCenterOverviewFailedRuns" @click="centerOverviewFailedRunsPrev">上一页</button>
+                    <button type="button" class="btn small ghost" :disabled="!centerOverviewFailedRunsHasNext || loadingCenterOverviewFailedRuns" @click="centerOverviewFailedRunsNext">下一页</button>
+                  </div>
+                </article>
+              </div>
+
+              <article class="ov-card ov-card--wide">
+                <div class="ov-head">
+                  <div class="ov-head-main">
+                    <div class="ov-title">最近失败消息</div>
+                    <span class="muted small">近 {{ CENTER_OVERVIEW_LOOKBACK_HOURS }} 小时 · 每部署最新一条</span>
+                  </div>
+                </div>
+                <div
+                  class="ov-table-wrap center-overview-table"
+                  :class="{ 'center-overview-table--scroll': centerOverviewFailedMessages.length > CENTER_OVERVIEW_SCROLL_ROWS }"
+                >
                   <table class="grid-table mini">
                     <thead>
                       <tr>
-                        <th style="width:80px">run</th>
-                        <th>flow</th>
-                        <th style="width:110px">状态</th>
-                        <th style="width:120px">耗时</th>
+                        <th style="width:100px">部署</th>
+                        <th style="width:160px">位置</th>
+                        <th>错误</th>
+                        <th style="width:128px">更新时间</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-if="loadingRuns"><td colspan="4" class="muted center">加载中…</td></tr>
-                      <tr v-else-if="!runsResp || runsResp.runs.length === 0"><td colspan="4" class="muted center">暂无运行记录</td></tr>
-                      <tr v-for="r in (runsResp?.runs ?? []).slice(0, 6)" :key="r.id" @click="selectRun(r.id); switchTab('runs')">
-                        <td class="mono">#{{ r.id }}</td>
-                        <td><div>{{ flowLabelById(r.flow_code) }}</div><div class="muted small">v{{ r.ver_no }}</div></td>
-                        <td><span class="tag" :class="runStatusTag(r.status)">{{ r.status }}</span></td>
-                        <td class="mono small">{{ runElapsed(r) }}</td>
+                      <tr v-if="loadingCenterOverviewFailedMessages"><td colspan="4" class="muted center">加载中…</td></tr>
+                      <tr v-else-if="centerOverviewFailedMessages.length === 0"><td colspan="4" class="muted center">近 24 小时无失败消息</td></tr>
+                      <tr
+                        v-for="m in centerOverviewFailedMessages"
+                        :key="m.id"
+                        class="clickable"
+                        @click="openFailedMessageFromCenterOverview(m)"
+                      >
+                        <td class="mono small ov-cell-ellipsis" :title="deploymentOverviewFlowLabel(m.deployment_id)">{{ deploymentOverviewFlowLabel(m.deployment_id) }}</td>
+                        <td class="mono small ov-cell-ellipsis" :title="`${m.topic} p${m.partition} o${m.offset}`">{{ m.topic }} · p{{ m.partition }} · o{{ m.offset }}</td>
+                        <td class="ov-cell-ellipsis bad" :title="m.error || undefined">{{ truncateText(m.error, 80) }}</td>
+                        <td class="mono small ov-cell-ellipsis">{{ formatTs(m.updated_at) }}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <div class="ov-actions">
-                  <button type="button" class="btn primary" @click="switchTab('runs')">打开运行实例</button>
+                <div class="ov-pager">
+                  <span class="muted small">共 {{ centerOverviewFailedMessagesTotal }} 条 · 第 {{ centerOverviewFailedMessagesPage }} 页</span>
+                  <button type="button" class="btn small ghost" :disabled="centerOverviewFailedMessagesOffset === 0 || loadingCenterOverviewFailedMessages" @click="centerOverviewFailedMessagesPrev">上一页</button>
+                  <button type="button" class="btn small ghost" :disabled="!centerOverviewFailedMessagesHasNext || loadingCenterOverviewFailedMessages" @click="centerOverviewFailedMessagesNext">下一页</button>
                 </div>
               </article>
             </div>
           </section>
 
           <DeploymentCreateForm
-            v-if="depWorkspace === 'create'"
+            v-else-if="depWorkspace === 'create'"
             ref="deployCreateFormRef"
             :flow-options="flowOptions"
             :profile-options="profileOptions"
@@ -244,49 +332,107 @@
             :external-error="formError"
             @cancel="openDeployOverview()"
             @created="onDeploymentCreated"
-            @error="(msg) => { error = msg; }"
+            @error="(msg) => { formError = msg; }"
           />
+
+          <DeploymentCreateForm
+            v-else-if="depWorkspace === 'edit' && selectedDeployment"
+            ref="deployEditFormRef"
+            :edit-deployment="selectedDeployment"
+            :flow-options="flowOptions"
+            :profile-options="profileOptions"
+            :workers="workers"
+            :active-workers="activeWorkers"
+            :worker-status-class="workerStatusClass"
+            :external-error="formError"
+            @cancel="closeEditForm()"
+            @saved="onDeploymentSaved"
+            @error="(msg) => { formError = msg; }"
+            @request-stop="requestStopDeployment(selectedDeployment.id)"
+          />
+
+          <!-- 部署详情加载中 -->
+          <section
+            v-else-if="depWorkspace === 'detail' && selectedDeploymentId != null && !selectedDeployment"
+            class="panel dep-detail-loading"
+          >
+            <p class="muted center pad">加载部署详情…</p>
+          </section>
 
           <!-- 部署详情工作台 -->
           <section v-else-if="selectedDeployment && depWorkspace === 'detail'" class="panel">
             <header class="panel-head">
-              <div>
-                <div class="panel-title">
-                  <span class="mono">#{{ selectedDeployment.id }}</span>
-                  · <span>{{ flowLabelById(selectedDeployment.flow_code) }}</span>
-                  · v{{ selectedDeployment.ver_no }}
-                  <span class="tag mode">{{ selectedDeployment.mode }}</span>
-                  <span class="tag" :class="statusTag(selectedDeployment.status)">{{ selectedDeployment.status }}</span>
-                </div>
-                <div class="muted small">
-                  schedule <span class="mono">{{ selectedDeployment.schedule_type }}</span>
-                  <span v-if="selectedDeployment.schedule_type === 'cron' && selectedDeployment.schedule_config?.cron_expr">
-                    · <span class="mono">{{ selectedDeployment.schedule_config.cron_expr }}</span>
+              <div class="panel-head-text">
+                <div class="panel-title dep-detail-title">
+                  <span class="mono dep-detail-id">#{{ selectedDeployment.id }}</span>
+                  <span class="dep-detail-flow">{{ flowLabelById(selectedDeployment.flow_code) }}</span>
+                  <span class="dep-detail-ver">v{{ selectedDeployment.ver_no }}</span>
+                  <span class="tag dep-status-tag" :class="statusTag(selectedDeployment.status)">
+                    {{ deploymentStatusLabel(selectedDeployment.status) }}
                   </span>
-                  · profile <span class="mono">{{ selectedDeployment.env_profile_code || "—" }}</span>
-                  <span v-if="selectedDeployment.updated_at"> · updated <span class="mono">{{ formatTs(selectedDeployment.updated_at) }}</span></span>
+                </div>
+                <div class="muted small dep-detail-sub">
+                  <span class="dep-mode" :class="deploymentModeMod(selectedDeployment.mode)">
+                    {{ deploymentModeLabel(selectedDeployment.mode) }}
+                  </span>
+                  <span class="dep-detail-sub-sep" aria-hidden="true">·</span>
+                  <span>{{ deploymentScheduleSubtitle(selectedDeployment, subSummary) }}</span>
+                  <span v-if="selectedDeployment.updated_at">
+                    · 更新 <span class="mono">{{ formatTs(selectedDeployment.updated_at) }}</span>
+                  </span>
                 </div>
               </div>
               <div class="panel-actions">
-                <button type="button" class="btn ghost small" @click="selectDeployment(selectedDeployment.id)">刷新</button>
+                <button
+                  type="button"
+                  class="btn ghost small"
+                  :disabled="!isDeploymentConfigEditable(selectedDeployment.status)"
+                  :title="deploymentEditLockHint(selectedDeployment.status)"
+                  @click="openEditDeployment()"
+                >编辑</button>
                 <button
                   v-if="selectedDeployment.status === 'running'"
                   type="button"
-                  class="btn warn"
+                  class="btn warn small"
                   @click="requestStopDeployment(selectedDeployment.id)"
                 >停止</button>
                 <button
                   v-else-if="selectedDeployment.status === 'stopped'"
                   type="button"
-                  class="btn primary"
+                  class="btn primary small"
                   @click="requestStartDeployment(selectedDeployment.id)"
                 >启动</button>
                 <button
                   v-else-if="selectedDeployment.status === 'stopping' || selectedDeployment.status === 'failed'"
                   type="button"
-                  class="btn"
+                  class="btn ghost small"
                   @click="requestRestartDeployment(selectedDeployment.id)"
                 >重启</button>
+                <div class="dep-action-menu-wrap" @click.stop>
+                  <button
+                    type="button"
+                    class="btn ghost small"
+                    aria-label="更多"
+                    title="更多"
+                    aria-haspopup="menu"
+                    :aria-expanded="depDetailMenuOpen"
+                    @click="toggleDepDetailMenu()"
+                  >⋯</button>
+                  <div v-if="depDetailMenuOpen" class="menu" role="menu">
+                    <button
+                      type="button"
+                      class="menu-item"
+                      role="menuitem"
+                      @click="closeDepMenu(); copyDeploymentSummary(selectedDeployment)"
+                    >复制</button>
+                    <button
+                      type="button"
+                      class="menu-item danger"
+                      role="menuitem"
+                      @click="closeDepMenu(); removeDeployment(selectedDeployment.id)"
+                    >删除</button>
+                  </div>
+                </div>
               </div>
             </header>
 
@@ -307,181 +453,23 @@
             </nav>
 
             <section v-if="depDetailTab === 'overview'" class="panel-body">
-              <div class="kv-grid">
-                <div class="kv"><div class="k">deployment_id</div><div class="v mono">#{{ selectedDeployment.id }}</div></div>
-                <div class="kv"><div class="k">流程</div><div class="v">{{ flowLabelById(selectedDeployment.flow_code) }}</div></div>
-                <div class="kv"><div class="k">ver_no</div><div class="v mono">v{{ selectedDeployment.ver_no }}</div></div>
-                <div class="kv"><div class="k">mode</div><div class="v"><span class="tag mode">{{ selectedDeployment.mode }}</span></div></div>
-                <div class="kv"><div class="k">status</div><div class="v"><span class="tag" :class="statusTag(selectedDeployment.status)">{{ selectedDeployment.status }}</span></div></div>
-                <div class="kv"><div class="k">schedule_type</div><div class="v mono">{{ selectedDeployment.schedule_type }}</div></div>
-                <div class="kv"><div class="k">env_profile</div><div class="v mono">{{ selectedDeployment.env_profile_code || "—" }}</div></div>
-                <div class="kv">
-                  <div class="k">worker_targeting</div>
-                  <div class="v mono">
-                    <template v-if="selectedDeployment.worker_targeting?.mode === 'pin'">
-                      pin: {{ selectedDeployment.worker_targeting.worker_id }}
-                    </template>
-                    <template v-else-if="selectedDeployment.worker_targeting?.mode === 'pool'">
-                      pool: {{ (selectedDeployment.worker_targeting.worker_ids || []).join(', ') || '—' }}
-                    </template>
-                    <template v-else>
-                      any
-                    </template>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                v-if="selectedDeployment.schedule_type === 'subscription'"
-                class="side-section sub-obs-section"
-                style="margin-top:12px;"
-              >
-                <div class="lbl">订阅消费可观测</div>
-                <div v-if="loadingSubSummary" class="muted small pad">加载中…</div>
-                <template v-else-if="subSummary">
-                  <div v-if="subSummary.consumer_id" class="muted small" style="margin-bottom:8px;">
-                    consumer <span class="mono">{{ subSummary.consumer_id }}</span>
-                    <span v-if="subSummary.messages.last_updated_at">
-                      · 最近消息 {{ formatTs(subSummary.messages.last_updated_at) }}
-                    </span>
-                  </div>
-                  <div class="sub-obs-grid">
-                    <article class="sub-obs-card">
-                      <div class="sub-obs-card-title">消息账本</div>
-                      <div class="ov-metrics">
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.messages.total }}</div>
-                          <div class="ov-label">全部</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.messages.by_status.processing ?? 0 }}</div>
-                          <div class="ov-label">processing</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.messages.by_status.completed ?? 0 }}</div>
-                          <div class="ov-label">completed</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono" :class="{ bad: (subSummary.messages.by_status.failed ?? 0) > 0 }">
-                            {{ subSummary.messages.by_status.failed ?? 0 }}
-                          </div>
-                          <div class="ov-label">failed</div>
-                        </div>
-                      </div>
-                    </article>
-                    <article class="sub-obs-card">
-                      <div class="sub-obs-card-title">流程运行</div>
-                      <div class="ov-metrics">
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.runs.total }}</div>
-                          <div class="ov-label">全部</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.runs.by_status.running ?? 0 }}</div>
-                          <div class="ov-label">running</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono">{{ subSummary.runs.by_status.completed ?? 0 }}</div>
-                          <div class="ov-label">completed</div>
-                        </div>
-                        <div class="ov-metric">
-                          <div class="ov-num mono" :class="{ bad: (subSummary.runs.by_status.failed ?? 0) > 0 }">
-                            {{ subSummary.runs.by_status.failed ?? 0 }}
-                          </div>
-                          <div class="ov-label">failed</div>
-                        </div>
-                      </div>
-                    </article>
-                  </div>
-                  <div v-if="subSummary.recent_failed_messages.length" class="sub-obs-failures">
-                    <div class="lbl">最近失败消息</div>
-                    <table class="grid-table mini">
-                      <thead>
-                        <tr>
-                          <th>position</th>
-                          <th style="width:90px">状态</th>
-                          <th>error</th>
-                          <th style="width:150px">时间</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr
-                          v-for="m in subSummary.recent_failed_messages"
-                          :key="m.id"
-                          class="clickable"
-                          @click="openSubscriptionMessage(m)"
-                        >
-                          <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
-                          <td><span class="tag small" :class="messageStatusTag(m.status)">{{ m.status }}</span></td>
-                          <td class="small err-cell">{{ truncateText(m.error, 120) }}</td>
-                          <td class="mono small">{{ formatTs(m.updated_at) }}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <div class="ov-actions" style="margin-top:8px;">
-                    <button type="button" class="btn small ghost" @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()">
-                      查看全部消息
-                    </button>
-                    <button type="button" class="btn small ghost" @click="loadSubscriptionSummary()">刷新</button>
-                  </div>
-                </template>
-                <div v-else class="muted small pad">暂无消费统计</div>
-              </div>
-
-              <div v-if="selectedDeployment.status_detail" class="side-section" style="margin-top:12px;">
-                <div class="lbl">异常诊断</div>
-                <div class="diag">
-                  <div class="diag-row">
-                    <div class="diag-k">原因</div>
-                    <div class="diag-v">
-                      <span class="tag small" :class="statusTag(selectedDeployment.status)">
-                        {{ statusDetailReasonLabel(selectedDeployment.status_detail) }}
-                      </span>
-                      <span v-if="statusDetailMessage(selectedDeployment.status_detail)" class="muted small" style="margin-left:8px;">
-                        {{ statusDetailMessage(selectedDeployment.status_detail) }}
-                      </span>
-                    </div>
-                  </div>
-                  <div class="diag-row" v-if="statusDetailWhen(selectedDeployment.status_detail)">
-                    <div class="diag-k">时间</div>
-                    <div class="diag-v mono">{{ formatTs(statusDetailWhen(selectedDeployment.status_detail)) }}</div>
-                  </div>
-                  <div class="diag-row" v-if="statusDetailWorker(selectedDeployment.status_detail)">
-                    <div class="diag-k">worker</div>
-                    <div class="diag-v mono">{{ statusDetailWorker(selectedDeployment.status_detail) }}</div>
-                  </div>
-                  <div class="diag-row" v-if="statusDetailPool(selectedDeployment.status_detail)?.length">
-                    <div class="diag-k">pool</div>
-                    <div class="diag-v mono">{{ statusDetailPool(selectedDeployment.status_detail)!.join(", ") }}</div>
-                  </div>
-                  <div class="diag-row" v-if="statusDetailActiveCount(selectedDeployment.status_detail) != null">
-                    <div class="diag-k">active_workers</div>
-                    <div class="diag-v mono">{{ statusDetailActiveCount(selectedDeployment.status_detail) }}</div>
-                  </div>
-                  <div class="diag-row" v-if="statusDetailQueuedFailed(selectedDeployment.status_detail) != null">
-                    <div class="diag-k">queued_failed</div>
-                    <div class="diag-v mono">{{ statusDetailQueuedFailed(selectedDeployment.status_detail) }}</div>
-                  </div>
-                </div>
-
-                <details class="diag-raw">
-                  <summary class="muted small">原始 JSON</summary>
-                  <pre class="cfg mono" style="margin-top:8px;">{{ JSON.stringify(selectedDeployment.status_detail, null, 2) }}</pre>
-                </details>
-              </div>
-
-              <div class="side-section" style="margin-top:12px;">
-                <div class="lbl">分配的 Worker</div>
-                <ul v-if="selectedDeployment.assignments?.length" class="assn-list">
-                  <li v-for="a in selectedDeployment.assignments" :key="a.id">
-                    <span class="mono">{{ a.worker_id }}</span>
-                    <span class="tag small">{{ a.role }}</span>
-                    <span v-if="a.lease_expires_at" class="muted small">lease: {{ formatTs(a.lease_expires_at) }}</span>
-                  </li>
-                </ul>
-                <div v-else class="muted small pad">尚未分配 worker</div>
-              </div>
+              <DeploymentDetailOverview
+                :deployment="selectedDeployment"
+                :sub-summary="subSummary"
+                :runs-preview="depOverviewRunsPreview"
+                :runs-preview-total="depOverviewRunsTotal"
+                :workers="workers"
+                :loading-sub-summary="loadingSubSummary"
+                :loading-runs-preview="loadingDepOverviewRuns"
+                :format-ts="formatTs"
+                :run-elapsed="runElapsed"
+                @refresh="refreshDeploymentOverview"
+                @navigate-tab="onOverviewNavigateTab"
+                @navigate-workers="switchTab('workers')"
+                @open-run="openOverviewRun"
+                @open-message="openSubscriptionMessage"
+                @edit="openEditDeployment()"
+              />
             </section>
 
             <section v-else-if="depDetailTab === 'config'" class="panel-body">
@@ -506,19 +494,19 @@
                   class="chip"
                   :class="{ active: depMessagesStatusFilter === 'processing' }"
                   @click="depMessagesStatusFilter = 'processing'; depMessagesOffset = 0; loadSubscriptionMessages()"
-                >processing</button>
+                >{{ messageStatusLabel('processing') }}</button>
                 <button
                   type="button"
                   class="chip"
                   :class="{ active: depMessagesStatusFilter === 'completed' }"
                   @click="depMessagesStatusFilter = 'completed'; depMessagesOffset = 0; loadSubscriptionMessages()"
-                >completed</button>
+                >{{ messageStatusLabel('completed') }}</button>
                 <button
                   type="button"
                   class="chip"
                   :class="{ active: depMessagesStatusFilter === 'failed' }"
                   @click="depMessagesStatusFilter = 'failed'; depMessagesOffset = 0; loadSubscriptionMessages()"
-                >failed</button>
+                >{{ messageStatusLabel('failed') }}</button>
                 <span class="spacer" />
                 <button type="button" class="btn small ghost" :disabled="loadingSubMessages" @click="loadSubscriptionMessages()">刷新</button>
                 <button type="button" class="btn small ghost" :disabled="(subMessagesResp?.offset ?? 0) === 0" @click="subMessagesPrevPage">上一页</button>
@@ -543,7 +531,7 @@
                   </tr>
                   <tr v-for="m in subMessagesResp?.messages ?? []" :key="m.id">
                     <td class="mono small">{{ m.topic }}:{{ m.partition }}:{{ m.offset }}</td>
-                    <td><span class="tag small" :class="messageStatusTag(m.status)">{{ m.status }}</span></td>
+                    <td><span class="tag small" :class="messageStatusTag(m.status)">{{ messageStatusLabel(m.status) }}</span></td>
                     <td class="mono">
                       <button
                         v-if="m.deploy_run_id"
@@ -590,25 +578,25 @@
                   class="chip"
                   :class="{ active: depRunsStatusFilter === 'running' }"
                   @click="depRunsStatusFilter='running'; depRunsOffset=0; loadEmbeddedDepRuns()"
-                >running</button>
+                >{{ runStatusLabel('running') }}</button>
                 <button
                   type="button"
                   class="chip"
                   :class="{ active: depRunsStatusFilter === 'failed' }"
                   @click="depRunsStatusFilter='failed'; depRunsOffset=0; loadEmbeddedDepRuns()"
-                >failed</button>
+                >{{ runStatusLabel('failed') }}</button>
                 <button
                   type="button"
                   class="chip"
                   :class="{ active: depRunsStatusFilter === 'completed' }"
                   @click="depRunsStatusFilter='completed'; depRunsOffset=0; loadEmbeddedDepRuns()"
-                >completed</button>
+                >{{ runStatusLabel('completed') }}</button>
                 <button
                   type="button"
                   class="chip"
                   :class="{ active: depRunsStatusFilter === 'terminated' }"
                   @click="depRunsStatusFilter='terminated'; depRunsOffset=0; loadEmbeddedDepRuns()"
-                >terminated</button>
+                >{{ runStatusLabel('terminated') }}</button>
                 <span class="spacer" />
                 <button type="button" class="btn small ghost" :disabled="loadingDepRuns" @click="loadEmbeddedDepRuns()">刷新</button>
                 <button type="button" class="btn small ghost" :disabled="(depRunsResp?.offset ?? 0) === 0" @click="depRunsPrevPage">上一页</button>
@@ -620,7 +608,7 @@
                   <tr>
                     <th style="width:90px">run</th>
                     <th style="width:110px">状态</th>
-                    <th style="width:80px">mode</th>
+                    <th style="width:80px">运行模式</th>
                     <th style="width:170px">started_at</th>
                     <th style="width:110px">耗时</th>
                     <th style="width:130px" title="累计 / 采样 Span 数">spans</th>
@@ -644,8 +632,8 @@
                       #{{ r.id }}
                       <button type="button" class="icon-btn" title="复制 run_id" @click.stop="copyText(String(r.id))">⧉</button>
                     </td>
-                    <td><span class="tag" :class="runStatusTag(r.status)">{{ r.status }}</span></td>
-                    <td><span class="tag mode">{{ r.mode }}</span></td>
+                    <td><span class="tag" :class="runStatusTag(r.status)">{{ runStatusLabel(r.status) }}</span></td>
+                    <td><span class="tag mode">{{ runModeLabel(r.mode) }}</span></td>
                     <td class="mono small">{{ formatTs(r.started_at) }}</td>
                     <td class="mono small">{{ runElapsed(r) }}</td>
                     <td class="mono small" :title="`总 ${r.span_count ?? 0} / 采样 ${r.sampled_span_count ?? 0}`">
@@ -677,11 +665,6 @@
                 "
               />
             </section>
-          </section>
-
-          <!-- 空状态 -->
-          <section v-else class="panel empty">
-            <p class="muted center pad">从左侧选择一个部署开始操作，或点击“新建”创建部署</p>
           </section>
         </main>
       </div>
@@ -825,20 +808,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import {
   deleteDeployment,
   getDeployment,
+  isDeploymentConfigEditable,
   listDeployments,
   patchDeployment,
   type Deployment,
   type DeploymentDetail,
 } from "@/api/deployments";
 import { listWorkers, type Worker } from "@/api/workers";
-import { getDeployRun, listDeployRuns } from "@/api/deployRuns";
+import {
+  getDeployRun,
+  listDeployRuns,
+  listRecentOverviewDeployRuns,
+  listRecentFailedDeployRuns,
+} from "@/api/deployRuns";
 import {
   getSubscriptionSummary,
+  listRecentFailedSubscriptionMessages,
   listSubscriptionMessages,
+  type SubscriptionMessageRow,
   type SubscriptionMessagesListResponse,
   type SubscriptionSummary,
 } from "@/api/subscriptionObservability";
@@ -847,6 +838,19 @@ import { useFlowLabels } from "@/composables/useFlowLabels";
 import { fetchProfiles } from "@/api/profiles";
 import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
 import DeploymentCreateForm from "@/components/DeploymentCreateForm.vue";
+import DeploymentDetailOverview from "@/components/ops/DeploymentDetailOverview.vue";
+import {
+  deploymentModeLabel,
+  deploymentListItemMod,
+  deploymentModeMod,
+  deploymentScheduleSubtitle,
+  deploymentStatusLabel,
+  messageStatusLabel,
+  runModeLabel,
+  runStatusLabel,
+  scheduleTypeLabel,
+  workerStatusLabel,
+} from "@/utils/deploymentOverview";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
 
@@ -908,24 +912,65 @@ const depFilters = reactive<{ flow_code: string; status: string; mode: string }>
 const selectedDeploymentId = ref<number | null>(null);
 const selectedDeployment = ref<DeploymentDetail | null>(null);
 const depDetailTab = ref<"overview" | "messages" | "runs" | "config">("overview");
-const depWorkspace = ref<"overview" | "create" | "detail">("overview");
+const DEP_CENTER_OVERVIEW_LABEL = "总概览";
+const CENTER_OVERVIEW_PAGE_SIZE = 10;
+const CENTER_OVERVIEW_SCROLL_ROWS = 5;
+const CENTER_OVERVIEW_LOOKBACK_HOURS = 24;
 
-// Deployment list item "more" menu
-const openDepMenuId = ref<number | null>(null);
+const depWorkspace = ref<"overview" | "create" | "detail" | "edit">("overview");
 
-function toggleDepMenu(id: number) {
-  openDepMenuId.value = openDepMenuId.value === id ? null : id;
+const centerOverviewRuns = ref<FlowRunSummary[]>([]);
+const centerOverviewRunsOffset = ref(0);
+const centerOverviewRunsTotal = ref(0);
+const loadingCenterOverviewRuns = ref(false);
+const centerOverviewFailedRuns = ref<FlowRunSummary[]>([]);
+const centerOverviewFailedRunsOffset = ref(0);
+const centerOverviewFailedRunsTotal = ref(0);
+const loadingCenterOverviewFailedRuns = ref(false);
+const centerOverviewFailedMessages = ref<SubscriptionMessageRow[]>([]);
+const centerOverviewFailedMessagesOffset = ref(0);
+const centerOverviewFailedMessagesTotal = ref(0);
+const loadingCenterOverviewFailedMessages = ref(false);
+
+const centerOverviewRunsPage = computed(
+  () => Math.floor(centerOverviewRunsOffset.value / CENTER_OVERVIEW_PAGE_SIZE) + 1,
+);
+const centerOverviewFailedRunsPage = computed(
+  () => Math.floor(centerOverviewFailedRunsOffset.value / CENTER_OVERVIEW_PAGE_SIZE) + 1,
+);
+const centerOverviewFailedMessagesPage = computed(
+  () => Math.floor(centerOverviewFailedMessagesOffset.value / CENTER_OVERVIEW_PAGE_SIZE) + 1,
+);
+const centerOverviewRunsHasNext = computed(
+  () => centerOverviewRunsOffset.value + centerOverviewRuns.value.length < centerOverviewRunsTotal.value,
+);
+const centerOverviewFailedRunsHasNext = computed(
+  () =>
+    centerOverviewFailedRunsOffset.value + centerOverviewFailedRuns.value.length
+    < centerOverviewFailedRunsTotal.value,
+);
+const centerOverviewFailedMessagesHasNext = computed(
+  () =>
+    centerOverviewFailedMessagesOffset.value + centerOverviewFailedMessages.value.length
+    < centerOverviewFailedMessagesTotal.value,
+);
+
+// Deployment detail header "more" menu
+const depDetailMenuOpen = ref(false);
+
+function toggleDepDetailMenu() {
+  depDetailMenuOpen.value = !depDetailMenuOpen.value;
 }
 
 function closeDepMenu() {
-  openDepMenuId.value = null;
+  depDetailMenuOpen.value = false;
 }
 
 function onDocPointerDown(e: PointerEvent) {
-  if (openDepMenuId.value == null) return;
+  if (!depDetailMenuOpen.value) return;
   const t = e.target as Node | null;
   const el = t instanceof Element ? t : null;
-  if (!el || !el.closest(".dep2-menu-wrap")) {
+  if (!el || !el.closest(".dep-action-menu-wrap")) {
     closeDepMenu();
   }
 }
@@ -942,6 +987,10 @@ const depRunsStatusFilter = ref("");
 
 const subSummary = ref<SubscriptionSummary | null>(null);
 const loadingSubSummary = ref(false);
+const depOverviewRunsPreview = ref<FlowRunSummary[]>([]);
+const depOverviewRunsTotal = ref(0);
+const loadingDepOverviewRuns = ref(false);
+const DEP_OVERVIEW_RUNS_PREVIEW_LIMIT = 6;
 const depMessagesPageSize = 25;
 const depMessagesOffset = ref(0);
 const depMessagesStatusFilter = ref("");
@@ -972,7 +1021,8 @@ const depCount = computed(() => {
 
 const formError = ref("");
 const deployCreateFormRef = ref<InstanceType<typeof DeploymentCreateForm> | null>(null);
-const { flowOptions, ensureFlowList, flowLabelById } = useFlowLabels();
+const deployEditFormRef = ref<InstanceType<typeof DeploymentCreateForm> | null>(null);
+const { flowOptions, ensureFlowList, flowLabelById, flowListItemLabel } = useFlowLabels();
 
 const filteredDeployments = computed(() => {
   const q = depFilters.flow_code.trim().toLowerCase();
@@ -1002,11 +1052,32 @@ async function loadDeployments() {
   }
 }
 
+function closeGlobalRunDrawer() {
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
+  loadingRunDetail.value = false;
+}
+
+function openRunsTab() {
+  closeGlobalRunDrawer();
+  switchTab("runs");
+}
+
+function openRunFromCenterOverview(runId: number) {
+  closeGlobalRunDrawer();
+  switchTab("runs");
+  void selectRun(runId);
+}
+
 async function selectDeployment(id: number) {
+  closeGlobalRunDrawer();
+  closeDepMenu();
+  if (tab.value !== "deployments") {
+    tab.value = "deployments";
+  }
   selectedDeploymentId.value = id;
   depDetailTab.value = "overview";
   depWorkspace.value = "detail";
-  // reset embedded runs state
   depRunsOffset.value = 0;
   depRunsResp.value = null;
   selectedDepRunId.value = null;
@@ -1014,17 +1085,79 @@ async function selectDeployment(id: number) {
   subSummary.value = null;
   subMessagesResp.value = null;
   depMessagesOffset.value = 0;
+  depOverviewRunsPreview.value = [];
+  depOverviewRunsTotal.value = 0;
+  if (selectedDeployment.value?.id !== id) {
+    selectedDeployment.value = null;
+  }
   try {
     selectedDeployment.value = await getDeployment(id);
-    if (selectedDeployment.value?.schedule_type === "subscription") {
-      await loadSubscriptionSummary();
-      if (depDetailTab.value === "messages") {
-        await loadSubscriptionMessages();
-      }
+    await loadDeploymentOverviewData(id);
+    if (depDetailTab.value === "messages") {
+      await loadSubscriptionMessages();
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    if (selectedDeploymentId.value === id) {
+      selectedDeploymentId.value = null;
+      depWorkspace.value = "overview";
+    }
   }
+}
+
+async function loadDepOverviewRunsPreview(deploymentId: number) {
+  loadingDepOverviewRuns.value = true;
+  try {
+    const res = await listDeployRuns({
+      deployment_id: deploymentId,
+      offset: 0,
+      limit: DEP_OVERVIEW_RUNS_PREVIEW_LIMIT,
+    });
+    depOverviewRunsPreview.value = res.runs;
+    depOverviewRunsTotal.value = res.total;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingDepOverviewRuns.value = false;
+  }
+}
+
+async function loadDeploymentOverviewData(deploymentId: number) {
+  const d = selectedDeployment.value;
+  const tasks: Promise<void>[] = [loadDepOverviewRunsPreview(deploymentId)];
+  if (d?.schedule_type === "subscription") {
+    tasks.push(loadSubscriptionSummary());
+  }
+  await Promise.all(tasks);
+}
+
+async function refreshDeploymentOverview() {
+  const id = selectedDeploymentId.value;
+  if (id == null) return;
+  try {
+    selectedDeployment.value = await getDeployment(id);
+    await loadDeploymentOverviewData(id);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+function onOverviewNavigateTab(tab: "runs" | "messages" | "config") {
+  depDetailTab.value = tab;
+  if (tab === "messages") {
+    depMessagesOffset.value = 0;
+    void loadSubscriptionMessages();
+  } else if (tab === "runs") {
+    depRunsOffset.value = 0;
+    void loadEmbeddedDepRuns();
+  }
+}
+
+async function openOverviewRun(runId: number) {
+  depDetailTab.value = "runs";
+  depRunsOffset.value = 0;
+  await loadEmbeddedDepRuns();
+  await selectEmbeddedDepRun(runId);
 }
 
 async function patchStatus(id: number, status: "stopping" | "pending") {
@@ -1083,8 +1216,7 @@ async function removeDeployment(id: number) {
     fn: async () => {
       await deleteDeployment(id);
       if (selectedDeploymentId.value === id) {
-        selectedDeploymentId.value = null;
-        selectedDeployment.value = null;
+        openDeployOverview();
       }
       await loadDeployments();
     },
@@ -1246,7 +1378,23 @@ function depRunsNextPage() {
   void loadEmbeddedDepRuns();
 }
 
+async function ensureProfileOptions(includeCode?: string): Promise<void> {
+  if (profileOptions.value.length === 0) {
+    try {
+      const res = await fetchProfiles();
+      profileOptions.value = res.profiles;
+    } catch {
+      // best effort
+    }
+  }
+  const code = includeCode?.trim();
+  if (code && !profileOptions.value.includes(code)) {
+    profileOptions.value = [code, ...profileOptions.value];
+  }
+}
+
 async function openCreateForm() {
+  if (tab.value !== "deployments") switchTab("deployments");
   depWorkspace.value = "create";
   selectedDeploymentId.value = null;
   selectedDeployment.value = null;
@@ -1258,14 +1406,7 @@ async function openCreateForm() {
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   }
-  if (profileOptions.value.length === 0) {
-    try {
-      const res = await fetchProfiles();
-      profileOptions.value = res.profiles;
-    } catch {
-      // best effort
-    }
-  }
+  await ensureProfileOptions();
   if (workers.value.length === 0) {
     try {
       await loadWorkers();
@@ -1275,16 +1416,147 @@ async function openCreateForm() {
   }
 }
 
+function deploymentOverviewFlowLabel(deploymentId: number | null | undefined): string {
+  if (deploymentId == null) return "—";
+  const d = deployments.value.find((x) => x.id === deploymentId);
+  if (d) return `${flowLabelById(d.flow_code)} #${d.id}`;
+  return `#${deploymentId}`;
+}
+
+function resetCenterOverviewPagination() {
+  centerOverviewRunsOffset.value = 0;
+  centerOverviewFailedRunsOffset.value = 0;
+  centerOverviewFailedMessagesOffset.value = 0;
+}
+
+async function loadCenterOverviewRecentRuns() {
+  loadingCenterOverviewRuns.value = true;
+  try {
+    await ensureFlowList();
+    const res = await listRecentOverviewDeployRuns({
+      hours: CENTER_OVERVIEW_LOOKBACK_HOURS,
+      offset: centerOverviewRunsOffset.value,
+      limit: CENTER_OVERVIEW_PAGE_SIZE,
+    });
+    centerOverviewRuns.value = res.runs;
+    centerOverviewRunsTotal.value = res.total;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingCenterOverviewRuns.value = false;
+  }
+}
+
+async function loadCenterOverviewFailedRuns() {
+  loadingCenterOverviewFailedRuns.value = true;
+  try {
+    await ensureFlowList();
+    const res = await listRecentFailedDeployRuns({
+      hours: CENTER_OVERVIEW_LOOKBACK_HOURS,
+      offset: centerOverviewFailedRunsOffset.value,
+      limit: CENTER_OVERVIEW_PAGE_SIZE,
+    });
+    centerOverviewFailedRuns.value = res.runs;
+    centerOverviewFailedRunsTotal.value = res.total;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingCenterOverviewFailedRuns.value = false;
+  }
+}
+
+async function loadCenterOverviewFailedMessages() {
+  loadingCenterOverviewFailedMessages.value = true;
+  try {
+    await ensureFlowList();
+    const res = await listRecentFailedSubscriptionMessages({
+      hours: CENTER_OVERVIEW_LOOKBACK_HOURS,
+      offset: centerOverviewFailedMessagesOffset.value,
+      limit: CENTER_OVERVIEW_PAGE_SIZE,
+    });
+    centerOverviewFailedMessages.value = res.messages;
+    centerOverviewFailedMessagesTotal.value = res.total;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingCenterOverviewFailedMessages.value = false;
+  }
+}
+
+async function loadCenterOverviewRuns() {
+  await Promise.all([
+    loadCenterOverviewRecentRuns(),
+    loadCenterOverviewFailedRuns(),
+    loadCenterOverviewFailedMessages(),
+  ]);
+}
+
+function centerOverviewRunsPrev() {
+  centerOverviewRunsOffset.value = Math.max(
+    0,
+    centerOverviewRunsOffset.value - CENTER_OVERVIEW_PAGE_SIZE,
+  );
+  void loadCenterOverviewRecentRuns();
+}
+
+function centerOverviewRunsNext() {
+  if (!centerOverviewRunsHasNext.value) return;
+  centerOverviewRunsOffset.value += CENTER_OVERVIEW_PAGE_SIZE;
+  void loadCenterOverviewRecentRuns();
+}
+
+function centerOverviewFailedRunsPrev() {
+  centerOverviewFailedRunsOffset.value = Math.max(
+    0,
+    centerOverviewFailedRunsOffset.value - CENTER_OVERVIEW_PAGE_SIZE,
+  );
+  void loadCenterOverviewFailedRuns();
+}
+
+function centerOverviewFailedRunsNext() {
+  if (!centerOverviewFailedRunsHasNext.value) return;
+  centerOverviewFailedRunsOffset.value += CENTER_OVERVIEW_PAGE_SIZE;
+  void loadCenterOverviewFailedRuns();
+}
+
+function centerOverviewFailedMessagesPrev() {
+  centerOverviewFailedMessagesOffset.value = Math.max(
+    0,
+    centerOverviewFailedMessagesOffset.value - CENTER_OVERVIEW_PAGE_SIZE,
+  );
+  void loadCenterOverviewFailedMessages();
+}
+
+function centerOverviewFailedMessagesNext() {
+  if (!centerOverviewFailedMessagesHasNext.value) return;
+  centerOverviewFailedMessagesOffset.value += CENTER_OVERVIEW_PAGE_SIZE;
+  void loadCenterOverviewFailedMessages();
+}
+
+async function openFailedMessageFromCenterOverview(m: SubscriptionMessageRow) {
+  const depId = m.deployment_id;
+  if (depId == null) return;
+  await selectDeployment(depId);
+  depDetailTab.value = "messages";
+  depMessagesStatusFilter.value = "failed";
+  depMessagesOffset.value = 0;
+  await loadSubscriptionMessages();
+}
+
 function openDeployOverview() {
+  closeGlobalRunDrawer();
+  if (tab.value !== "deployments") {
+    tab.value = "deployments";
+  }
   depWorkspace.value = "overview";
   selectedDeploymentId.value = null;
   selectedDeployment.value = null;
   depDetailTab.value = "overview";
   closeDepMenu();
-  // ensure overview data is available
-  if (deployments.value.length === 0) loadDeployments();
-  if (workers.value.length === 0) loadWorkers();
-  loadRuns();
+  if (deployments.value.length === 0) void loadDeployments();
+  if (workers.value.length === 0) void loadWorkers();
+  resetCenterOverviewPagination();
+  void loadCenterOverviewRuns();
 }
 
 async function onDeploymentCreated(id: number) {
@@ -1292,6 +1564,118 @@ async function onDeploymentCreated(id: number) {
   await loadDeployments();
   selectDeployment(id);
 }
+
+function deploymentEditLockHint(status: string): string {
+  if (isDeploymentConfigEditable(status)) return "";
+  if (status === "running") return "运行中的部署须先停止后方可编辑";
+  if (status === "stopping") return "部署正在停止中，请等待完成后再编辑";
+  if (status === "pending") return "部署正在调度/启动中，请先停止后再编辑";
+  return "请先停止部署后再编辑";
+}
+
+function deploymentListMetaRest(d: Deployment): string {
+  const parts: string[] = [`v${d.ver_no}`, scheduleTypeLabel(String(d.schedule_type))];
+  const env = d.env_profile_code?.trim();
+  if (env) parts.push(env);
+  if (d.schedule_type === "cron" && d.schedule_config?.cron_expr) {
+    parts.push(d.schedule_config.cron_expr);
+  }
+  return parts.join(" · ");
+}
+
+function deploymentListItemTitle(d: Deployment): string {
+  const mode = deploymentModeLabel(d.mode);
+  const meta = deploymentListMetaRest(d);
+  const when = formatRelative(d.updated_at || d.created_at);
+  return `${flowLabelById(d.flow_code)} · #${d.id} · ${mode} · ${meta} · ${when}`;
+}
+
+function copyDeploymentSummary(d: Deployment | DeploymentDetail) {
+  void copyText(
+    JSON.stringify(
+      {
+        id: d.id,
+        flow_code: d.flow_code,
+        ver_no: d.ver_no,
+        mode: d.mode,
+        schedule_type: d.schedule_type,
+        cron_expr: d.schedule_type === "cron" ? d.schedule_config?.cron_expr : undefined,
+        status: d.status,
+        env_profile_code: d.env_profile_code || "",
+        updated_at: d.updated_at,
+        created_at: d.created_at,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+async function openEditDeployment() {
+  if (!selectedDeployment.value) return;
+  if (!isDeploymentConfigEditable(selectedDeployment.value.status)) return;
+  formError.value = "";
+  const dep = selectedDeployment.value;
+  try {
+    await ensureFlowList();
+    await ensureProfileOptions(dep.env_profile_code);
+  } catch (e) {
+    formError.value = e instanceof Error ? e.message : String(e);
+  }
+  depWorkspace.value = "edit";
+  closeDepMenu();
+  await nextTick();
+  await deployEditFormRef.value?.loadFromDeployment(dep);
+}
+
+function closeEditForm() {
+  if (selectedDeploymentId.value != null) {
+    depWorkspace.value = "detail";
+    depDetailTab.value = "overview";
+  } else {
+    openDeployOverview();
+  }
+}
+
+async function onDeploymentSaved(id: number) {
+  formError.value = "";
+  await loadDeployments();
+  await selectDeployment(id);
+  depWorkspace.value = "detail";
+  depDetailTab.value = "overview";
+}
+
+watch(
+  () => selectedDeployment.value?.status,
+  (st) => {
+    if (depWorkspace.value !== "edit" || !selectedDeployment.value || st == null) return;
+    if (isDeploymentConfigEditable(String(st))) {
+      void deployEditFormRef.value?.loadFromDeployment(selectedDeployment.value);
+    }
+  },
+);
+
+let ingressRetryPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function clearIngressRetryPoll() {
+  if (ingressRetryPollTimer != null) {
+    clearInterval(ingressRetryPollTimer);
+    ingressRetryPollTimer = null;
+  }
+}
+
+watch(
+  () => selectedDeployment.value?.status_detail?.reason,
+  (reason) => {
+    clearIngressRetryPoll();
+    if (reason !== "subscription_ingress_retrying" || selectedDeploymentId.value == null) return;
+    ingressRetryPollTimer = setInterval(() => {
+      void refreshDeploymentOverview();
+      void loadDeployments();
+    }, 5000);
+  },
+  { immediate: true },
+);
 
 function deploymentCfgText(d: DeploymentDetail): string {
   return JSON.stringify(
@@ -1457,19 +1841,16 @@ async function loadWorkers() {
 // ---------------- Helpers ----------------
 
 function switchTab(id: TabId) {
+  if (tab.value === "runs" && id !== "runs") {
+    closeGlobalRunDrawer();
+  }
   tab.value = id;
   if (id === "deployments" && deployments.value.length === 0) loadDeployments();
-  if (id === "runs") loadRuns();
-  if (id === "workers" && workers.value.length === 0) loadWorkers();
-}
-
-function reloadActive() {
-  if (tab.value === "deployments") {
-    loadDeployments();
-    loadWorkers();
+  if (id === "runs") {
+    if (depWorkspace.value === "overview") closeGlobalRunDrawer();
     loadRuns();
-  } else if (tab.value === "runs") loadRuns();
-  else loadWorkers();
+  }
+  if (id === "workers" && workers.value.length === 0) loadWorkers();
 }
 
 function statusTag(status: string): string {
@@ -1532,47 +1913,6 @@ function formatRelative(iso: string | null): string {
   return formatTs(iso);
 }
 
-function statusDetailReasonLabel(detail: any): string {
-  const reason = String(detail?.reason || "").trim();
-  if (reason === "no_eligible_worker") return "无可用工作节点";
-  if (reason === "pin_worker_offline") return "绑定节点离线";
-  if (reason === "subscription_ingress_failed") return "订阅接入失败";
-  return reason || "异常";
-}
-
-function statusDetailMessage(detail: any): string {
-  const msg = detail?.message;
-  return typeof msg === "string" ? msg : "";
-}
-
-function statusDetailWhen(detail: any): string | null {
-  const ts = detail?.ts;
-  return typeof ts === "string" ? ts : null;
-}
-
-function statusDetailWorker(detail: any): string | null {
-  const w = detail?.worker_id;
-  return typeof w === "string" && w ? w : null;
-}
-
-function statusDetailQueuedFailed(detail: any): number | null {
-  const n = detail?.queued_failed;
-  return typeof n === "number" && Number.isFinite(n) ? n : null;
-}
-
-function statusDetailActiveCount(detail: any): number | null {
-  const n = detail?.active_worker_count;
-  return typeof n === "number" && Number.isFinite(n) ? n : null;
-}
-
-function statusDetailPool(detail: any): string[] | null {
-  const t = detail?.targeting;
-  if (t && typeof t === "object" && t.mode === "pool" && Array.isArray(t.worker_ids)) {
-    return t.worker_ids.map((x: any) => String(x)).filter((x: string) => x);
-  }
-  return null;
-}
-
 void switchTab("deployments");
 // Ensure the deployments workbench opens on overview by default.
 if (tab.value === "deployments") openDeployOverview();
@@ -1584,6 +1924,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("pointerdown", onDocPointerDown, true);
+  clearIngressRetryPoll();
 });
 </script>
 
@@ -1602,6 +1943,14 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+}
+
+.top-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
 }
 
 .title {
@@ -1624,10 +1973,31 @@ onUnmounted(() => {
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
   padding: 6px 14px;
   font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
   color: var(--muted);
   cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.tab:hover:not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+}
+
+.tab:focus {
+  outline: none;
+}
+
+.tab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .tab.active {
@@ -1791,6 +2161,67 @@ tr.clickable:hover td {
   }
 }
 
+.center-overview-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.center-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ov-card--wide {
+  width: 100%;
+}
+
+.dep-sub-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.panel-head-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.dep-overview-back {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: 1px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.dep-overview-back:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 50%, var(--surface));
+}
+
+.dep-overview-back:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.dep-overview-back.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+}
+
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1815,6 +2246,15 @@ tr.clickable:hover td {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ov-head .ov-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .ov-title {
@@ -1874,7 +2314,46 @@ tr.clickable:hover td {
   border-radius: 10px;
 }
 
+.center-overview-runs-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.center-overview-table .grid-table.mini {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.center-overview-table .ov-cell-ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 1px;
+}
+
+.center-overview-table--scroll {
+  max-height: calc(34px + 33px * 5);
+}
+
+.ov-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
 @media (max-width: 980px) {
+  .center-overview-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .center-overview-runs-row {
+    grid-template-columns: 1fr;
+  }
+
   .overview-grid {
     grid-template-columns: 1fr;
   }
@@ -1930,44 +2409,6 @@ tr.clickable:hover td {
   background: #fff;
   font-size: 12px;
   min-width: 140px;
-}
-
-.btn {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.btn.small {
-  padding: 4px 8px;
-  font-size: 11px;
-}
-
-.btn.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-
-.btn.warn {
-  background: color-mix(in srgb, #f59e0b 18%, transparent);
-  color: #92400e;
-  border-color: color-mix(in srgb, #f59e0b 35%, transparent);
-}
-
-.btn.danger {
-  background: color-mix(in srgb, #ef4444 12%, transparent);
-  color: #b91c1c;
-  border-color: color-mix(in srgb, #ef4444 30%, transparent);
-}
-
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
 }
 
 .err {
@@ -2070,16 +2511,34 @@ tr.clickable:hover td {
 
 .chip {
   border: 1px solid var(--border);
-  background: #fbfdff;
+  background: var(--surface);
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   font-size: 11px;
+  font-weight: 500;
+  font-family: inherit;
   color: var(--muted);
   cursor: pointer;
+  box-shadow: var(--shadow);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
-.chip:hover {
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+.chip:hover:not(.active) {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+  color: var(--text);
+}
+
+.chip:focus {
+  outline: none;
+}
+
+.chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .chip.active {
@@ -2167,6 +2626,87 @@ tr.clickable:hover td {
   background: color-mix(in srgb, #6366f1 12%, transparent);
   color: #4338ca;
   border-color: color-mix(in srgb, #6366f1 30%, transparent);
+}
+
+/* Deployment mode (生产/灰度) — square type label, not lifecycle status pill */
+.dep-mode {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 50%, var(--surface));
+  color: var(--muted);
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+.dep-mode--production {
+  border-color: color-mix(in srgb, #475569 42%, var(--border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #eff6ff 88%, var(--surface)) 0%,
+    color-mix(in srgb, #e2e8f0 55%, var(--surface)) 100%
+  );
+  color: #1e3a5f;
+  font-weight: 700;
+}
+
+.dep-mode--shadow {
+  border-color: color-mix(in srgb, #cbd5e1 75%, var(--border));
+  background: color-mix(in srgb, #f8fafc 92%, var(--surface));
+  color: #64748b;
+  font-weight: 500;
+}
+
+.dep-mode--compact {
+  padding: 1px 5px;
+  font-size: 9px;
+  border-radius: 3px;
+}
+
+.dep-detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+}
+
+.dep-detail-id {
+  font-weight: 800;
+}
+
+.dep-detail-flow {
+  font-weight: 700;
+  min-width: 0;
+}
+
+.dep-detail-ver {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dep-status-tag {
+  flex-shrink: 0;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.dep-detail-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  line-height: 1.45;
+}
+
+.dep-detail-sub-sep {
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
 }
 
 .tag.ok {
@@ -2389,12 +2929,6 @@ tr.clickable:hover td {
   gap: 10px;
 }
 
-.dep2-nav {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
 .dep2-title {
   font-size: 13px;
   font-weight: 800;
@@ -2503,45 +3037,117 @@ tr.clickable:hover td {
 
 .dep2-item {
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 10px;
-  padding: 8px 10px;
-  background: #fbfdff;
+  padding: 7px 9px 7px 8px;
+  background: var(--surface);
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    border-left-width 0.12s ease;
 }
 
-.dep2-item:hover {
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+/* 生产：主通道，左边框与底色略强调 */
+.dep2-item--production {
+  border-left-color: #475569;
+  background: color-mix(in srgb, #eff6ff 50%, var(--surface));
 }
 
-.dep2-item.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+.dep2-item--production:hover {
+  border-left-color: #334155;
+  border-color: color-mix(in srgb, #475569 30%, var(--border));
+  background: color-mix(in srgb, #dbeafe 35%, var(--surface));
 }
 
-.dep2-row1,
-.dep2-row3 {
+.dep2-item--production.active {
+  border-left-width: 4px;
+  border-left-color: #1e40af;
+  border-color: color-mix(in srgb, #3b82f6 28%, var(--border));
+  background: color-mix(in srgb, #dbeafe 55%, var(--accent-soft));
+}
+
+/* 灰度：辅助通道，弱化紫调避免压过生产 */
+.dep2-item--shadow {
+  border-left-color: #e2e8f0;
+  background: var(--surface);
+}
+
+.dep2-item--shadow:hover {
+  border-left-color: #cbd5e1;
+  border-color: color-mix(in srgb, #94a3b8 22%, var(--border));
+  background: color-mix(in srgb, #f8fafc 95%, var(--surface));
+}
+
+.dep2-item--shadow.active {
+  border-left-width: 4px;
+  border-left-color: #94a3b8;
+  border-color: color-mix(in srgb, #cbd5e1 55%, var(--border));
+  background: color-mix(in srgb, #f1f5f9 70%, var(--accent-soft));
+}
+
+.dep2-line {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.dep2-id {
-  font-weight: 800;
-  font-size: 12px;
+.dep2-line--main {
+  justify-content: space-between;
+  gap: 6px;
 }
 
 .dep2-flow {
   font-weight: 700;
   font-size: 12px;
+  line-height: 1.3;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dep2-row2 {
+.dep2-line--meta {
+  gap: 6px;
+  font-size: 11px;
+}
+
+.dep2-meta-cluster {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.dep2-id-sm {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.dep2-meta-rest {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dep2-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .dep2-main {
@@ -2556,6 +3162,21 @@ tr.clickable:hover td {
 .dep2-main > .dep-create-panel {
   flex: 1;
   min-height: 0;
+}
+
+.dep2-main > .dep-sub-workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.dep-detail-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .dep2-main > .panel {
@@ -2608,7 +3229,11 @@ tr.clickable:hover td {
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--text);
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .menu-item:hover {
@@ -2623,7 +3248,7 @@ tr.clickable:hover td {
   background: color-mix(in srgb, #ef4444 12%, transparent);
 }
 
-.dep2-menu-wrap {
+.dep-action-menu-wrap {
   position: relative;
 }
 
@@ -2642,6 +3267,8 @@ tr.clickable:hover td {
   border-radius: 999px;
   padding: 6px 12px;
   font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
   color: var(--muted);
   display: inline-flex;
@@ -2649,6 +3276,26 @@ tr.clickable:hover td {
   justify-content: center;
   min-width: 0;
   white-space: nowrap;
+  box-shadow: var(--shadow);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.seg:hover:not(.active) {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+  color: var(--text);
+}
+
+.seg:focus {
+  outline: none;
+}
+
+.seg:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .seg.active {
@@ -2695,7 +3342,21 @@ tr.clickable:hover td {
   margin-left: 6px;
   cursor: pointer;
   font-size: 12px;
+  font-family: inherit;
   line-height: 1;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.icon-btn:focus {
+  outline: none;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
 }
 
 .icon-btn:hover {

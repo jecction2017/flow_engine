@@ -88,6 +88,15 @@ export type CreateDeploymentBody = {
   auto_start?: boolean;
 };
 
+/** Same shape as create; applied via PATCH when deployment is stopped/failed. */
+export type UpdateDeploymentConfigBody = Omit<CreateDeploymentBody, "auto_start">;
+
+export const DEPLOYMENT_CONFIG_EDITABLE_STATUSES = ["stopped", "failed"] as const;
+
+export function isDeploymentConfigEditable(status: string): boolean {
+  return (DEPLOYMENT_CONFIG_EDITABLE_STATUSES as readonly string[]).includes(status);
+}
+
 export type ListDeploymentsParams = {
   flow_code?: string;
   status?: string;
@@ -139,6 +148,20 @@ export async function patchDeployment(
     }),
   );
   return r.json() as Promise<{ id: number; status: string }>;
+}
+
+export async function updateDeploymentConfig(
+  id: number,
+  body: UpdateDeploymentConfigBody,
+): Promise<Deployment> {
+  const r = await checkOk(
+    await fetch(`/api/deployments/${id}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ config: body }),
+    }),
+  );
+  return r.json() as Promise<Deployment>;
 }
 
 export async function deleteDeployment(id: number): Promise<void> {

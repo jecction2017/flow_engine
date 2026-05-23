@@ -2,6 +2,7 @@
 
 import {
   buildParseSectionFromIngressMapping,
+  DEFAULT_INGRESS_MAPPING,
   type ContextMappingState,
 } from "@/operations/contextMappingConfig";
 
@@ -48,9 +49,30 @@ export const DEFAULT_SUBSCRIPTION_FORM: SubscriptionFormState = {
   idempotencyEnabled: false,
   idempotency_window_s: 86400,
   dlq_producer_id: "",
-  ingress_max_restarts: 5,
-  ingress_restart_backoff_s: 30,
+  ingress_max_restarts: 3,
+  ingress_restart_backoff_s: 15,
 };
+
+/** Exponential backoff delay (seconds) before retry attempt (1-indexed). */
+export function ingressRestartDelaySeconds(backoffBase: number, attempt: number): number {
+  const base = Math.max(1, Number(backoffBase) || 15);
+  const n = Math.max(1, Number(attempt) || 1);
+  return base * 2 ** (n - 1);
+}
+
+/** Total worst-case wait (seconds) if every retry uses full backoff. */
+export function ingressMaxRetryWaitSeconds(
+  maxRestarts: number,
+  backoffBase: number,
+): number {
+  const max = Math.max(0, Math.floor(Number(maxRestarts) || 0));
+  const base = Math.max(1, Number(backoffBase) || 15);
+  let total = 0;
+  for (let attempt = 1; attempt < max; attempt += 1) {
+    total += ingressRestartDelaySeconds(base, attempt);
+  }
+  return total;
+}
 
 export function parsePartitionsText(raw: string): number[] | null {
   const t = raw.trim();
@@ -176,8 +198,99 @@ export function buildSubscriptionScheduleConfig(
       parse,
       ingress_policy: {
         max_restarts: Math.max(0, Number(form.ingress_max_restarts) || 0),
-        restart_backoff_s: Math.max(1, Number(form.ingress_restart_backoff_s) || 30),
+        restart_backoff_s: Math.max(1, Number(form.ingress_restart_backoff_s) || 15),
       },
     },
   };
+}
+
+function formatOffsetsForForm(offsets: Record<string, unknown> | Record<number, number>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(offsets)) {
+    const partition = Number(k);
+    const offset = Number(v);
+    if (Number.isInteger(partition) && partition >= 0 && Number.isInteger(offset) && offset >= 0) {
+      parts.push(`${partition}:${offset}`);
+    }
+  }
+  return parts.join(", ");
+}
+
+/** Reverse ``buildSubscriptionScheduleConfig`` for edit forms. */
+export function hydrateSubscriptionFromScheduleConfig(
+  config: Record<string, unknown>,
+): { form: SubscriptionFormState; mapping: ContextMappingState } {
+  const form: SubscriptionFormState = { ...DEFAULT_SUBSCRIPTION_FORM };
+  let mapping: ContextMappingState = { ...DEFAULT_INGRESS_MAPPING };
+
+  const sub = (config.subscription ?? {}) as Record<string, unknown>;
+  form.consumer_id = String(sub.consumer_id ?? "");
+
+  const partitions = sub.partitions;
+  if (Array.isArray(partitions)) {
+    form.partitionsText = partitions.map((p) => String(p)).join(", ");
+  }
+
+  const start = sub.start_position;
+  if (typeof start === "string") {
+    if (start === "default" || start === "earliest" || start === "latest") {
+      form.start_position_mode = start;
+    }
+  } else if (start && typeof start === "object") {
+    const sp = start as Record<string, unknown>;
+    const mode = String(sp.mode ?? "");
+    if (mode === "offset" && sp.offsets && typeof sp.offsets === "object") {
+      form.start_position_mode = "offset";
+      form.offsetsText = formatOffsetsForForm(sp.offsets as Record<string, unknown>);
+    } else if (mode === "timestamp") {
+      form.start_position_mode = "timestamp";
+      form.timestamp_ms = Number(sp.timestamp_ms) || 0;
+    }
+  }
+
+  const consumption = (config.consumption ?? {}) as Record<string, unknown>;
+  if (consumption.batch_max_records != null) {
+    form.batch_max_records = Number(consumption.batch_max_records) || form.batch_max_records;
+  }
+  if (consumption.poll_timeout_ms != null) {
+    form.poll_timeout_ms = Number(consumption.poll_timeout_ms) || form.poll_timeout_ms;
+  }
+  const idem = consumption.idempotency as Record<string, unknown> | undefined;
+  if (idem && typeof idem === "object" && Object.keys(idem).length > 0) {
+    form.idempotencyEnabled = true;
+    form.idempotency_window_s = Number(idem.window_s) || form.idempotency_window_s;
+  }
+  const dlq = consumption.dlq as Record<string, unknown> | undefined;
+  if (dlq?.producer_id) {
+    form.dlq_producer_id = String(dlq.producer_id);
+  }
+
+  const dispatch = (config.dispatch ?? {}) as Record<string, unknown>;
+  if (dispatch.max_in_flight != null) {
+    form.max_in_flight = Number(dispatch.max_in_flight) || form.max_in_flight;
+  }
+  if (dispatch.run_timeout_s != null) {
+    form.run_timeout_s = Number(dispatch.run_timeout_s) || 0;
+  }
+
+  const ingress = (config.ingress_policy ?? {}) as Record<string, unknown>;
+  if (ingress.max_restarts != null) {
+    form.ingress_max_restarts = Number(ingress.max_restarts) || 0;
+  }
+  if (ingress.restart_backoff_s != null) {
+    form.ingress_restart_backoff_s = Number(ingress.restart_backoff_s) || form.ingress_restart_backoff_s;
+  }
+
+  const parse = (config.parse ?? {}) as Record<string, unknown>;
+  const transform = String(parse.transform ?? "mapping");
+  if (transform === "script" && typeof parse.script === "string") {
+    mapping = { mode: "script", script: parse.script };
+  } else {
+    const rawMapping = parse.mapping;
+    if (rawMapping && typeof rawMapping === "object" && !Array.isArray(rawMapping)) {
+      mapping = { ...(rawMapping as ContextMappingState) };
+    }
+  }
+
+  return { form, mapping };
 }

@@ -166,7 +166,11 @@ async def create_consumer(
         **params,
         **_auth_kwargs(cluster.auth),
     )
-    await consumer.start()
+    try:
+        await consumer.start()
+    except BaseException:
+        await stop_client(consumer)
+        raise
     parts = partitions_override if partitions_override is not None else spec.partitions
     if parts:
         from aiokafka import TopicPartition

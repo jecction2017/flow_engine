@@ -106,7 +106,7 @@ cd E:\software\kafka\bin\windows
 
 导入/加载 [`flow_kafka_simple_alarms.yaml`](flow_kafka_simple_alarms.yaml)，在测试中心对该流程做一次运行（同样需先往 topic 发消息）。
 
-### C. 订阅部署（可选）
+### C. 消息触发部署（可选）
 
 ```json
 {
@@ -125,7 +125,7 @@ cd E:\software\kafka\bin\windows
     "transform": "mapping",
     "mapping": { "mode": "spread" }
   },
-  "ingress_policy": { "max_restarts": 5, "restart_backoff_s": 30 }
+  "ingress_policy": { "max_restarts": 3, "restart_backoff_s": 15 }
 }
 ```
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import pytest
 
+from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.stores.version_store import FlowVersionRegistry, VersionStore, validate_flow_id
 
 
@@ -100,13 +102,27 @@ def test_version_store_commit_from_draft() -> None:
     vs.save_draft(draft)
     v1 = vs.commit_version()  # pulls from draft
     assert v1 == 1
-    assert vs.read_version(1) == draft
+    expected = load_flow_from_dict(copy.deepcopy(draft)).model_dump(mode="json", exclude_none=True)
+    assert vs.read_version(1) == expected
 
 
 def test_version_store_commit_without_draft_fails() -> None:
     vs = VersionStore("demo")
     with pytest.raises(FileNotFoundError):
         vs.commit_version()
+
+
+def test_version_store_commit_rejects_invalid_flow() -> None:
+    vs = VersionStore("demo")
+    bad = {
+        **_sample_flow("dup"),
+        "nodes": [
+            {"id": "a", "type": "task", "display_name": "睡眠", "task": "noop"},
+            {"id": "b", "type": "task", "display_name": "睡眠", "task": "noop"},
+        ],
+    }
+    with pytest.raises(ValueError, match="Flow validation failed"):
+        vs.commit_version(bad)
 
 
 def test_version_store_read_missing_version() -> None:

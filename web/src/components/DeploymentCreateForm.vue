@@ -2,18 +2,33 @@
   <section class="dep-create-panel">
     <header class="panel-head">
       <div class="panel-head-text">
-        <span class="panel-title">新建部署</span>
-        <span class="muted small">填写配置后创建；启动请在部署详情页操作</span>
+        <div class="panel-title">{{ isEditMode ? `编辑部署 #${editDeploymentId}` : "新建部署" }}</div>
+        <div class="muted small">
+          <template v-if="isEditMode">
+            保存后仍为当前状态；修改调度或节点策略后请在详情页重新启动
+          </template>
+          <template v-else>填写配置后保存；启动请在部署详情页操作</template>
+        </div>
       </div>
       <div class="panel-head-actions">
         <button type="button" class="btn ghost" @click="emit('cancel')">取消</button>
-        <button type="button" class="btn primary" :disabled="submitting" @click="submit">
-          {{ submitting ? "创建中…" : "创建" }}
+        <button type="button" class="btn primary" :disabled="submitting || formLocked" @click="submit">
+          {{ submitting ? "保存中…" : "保存" }}
         </button>
       </div>
     </header>
 
-    <div class="dep-create-columns">
+    <div v-if="formLocked && lockReason" class="dep-lock-banner">
+      <p>{{ lockReason }}</p>
+      <button
+        v-if="editDeployment?.status === 'running'"
+        type="button"
+        class="btn small warn"
+        @click="emit('request-stop')"
+      >停止部署</button>
+    </div>
+
+    <div class="dep-create-columns" :class="{ 'dep-create-columns--locked': formLocked }">
       <div class="dep-create-main">
         <div id="dep-sec-flow" class="form-grid">
           <label class="form-field">
@@ -48,10 +63,10 @@
 
         <div id="dep-sec-mode">
           <div class="form-sec-title">
-            <span>运行模式</span>
+            <span>部署类型</span>
             <InfoTip text="production 为正式运行；shadow 为灰度/影子流量。" />
           </div>
-          <div class="form-option-group" role="radiogroup" aria-label="运行模式">
+          <div class="form-option-group" role="radiogroup" aria-label="部署类型">
             <button
               type="button"
               class="form-option"
@@ -74,7 +89,7 @@
         <div id="dep-sec-schedule">
           <div class="form-sec-title">
             <span>调度类型</span>
-            <InfoTip text="单次：手动触发一次；定时：按 Cron 周期触发；订阅：消费消息队列。" />
+            <InfoTip text="单次：手动触发一次；定时：按 Cron 周期触发；消息触发：消费消息队列。" />
           </div>
           <div class="form-option-group" role="radiogroup" aria-label="调度类型">
             <button
@@ -99,11 +114,11 @@
               :class="{ active: form.schedule_type === 'subscription' }"
               @click="setScheduleType('subscription')"
             >
-              消息订阅
+              {{ scheduleTypeLabel("subscription") }}
             </button>
           </div>
           <p v-if="form.schedule_type === 'cron'" class="schedule-advanced-hint muted small">
-            Cron 表达式请在「高级配置」中填写。创建后为 stopped，须在详情页启动后定时调度才会生效。
+            Cron 表达式请在「高级配置」中填写。保存后为 stopped，须在详情页启动后定时调度才会生效。
           </p>
           <p v-else-if="form.schedule_type === 'subscription'" class="schedule-advanced-hint muted small">
             消费者与上下文映射等请在「高级配置」中填写。
@@ -112,12 +127,12 @@
 
         <div id="dep-sec-runtime">
           <div class="form-sec-title">
-            <span>运行节点</span>
-            <InfoTip text="下方 Worker 卡片不选则自动分配在线节点。" />
+            <span>工作节点</span>
+            <InfoTip text="下方 Worker 卡片不选则自动分配在线工作节点。" />
           </div>
 
           <div class="run-node-toolbar">
-            <div class="form-option-group" role="radiogroup" aria-label="运行节点策略">
+            <div class="form-option-group" role="radiogroup" aria-label="工作节点策略">
               <button
                 type="button"
                 class="form-option"
@@ -162,7 +177,7 @@
           </div>
 
           <div v-if="workers.length === 0" class="pick-empty">
-            暂无 Worker；可先创建部署，启动 <span class="mono">flow-worker</span> 后自动注册。
+            暂无 Worker；可先保存部署，启动 <span class="mono">flow-worker</span> 后自动注册。
           </div>
           <div v-else-if="activeWorkers.length === 0" class="pick-empty">暂无在线节点，将自动分配。</div>
           <div v-else class="pick-grid">
@@ -220,7 +235,7 @@
               class="advanced"
               open
             >
-                <summary>消息订阅</summary>
+                <summary>{{ scheduleTypeLabel("subscription") }}</summary>
                 <SubscriptionDeploymentSection
                   v-model:form="subscriptionForm"
                   v-model:mapping="subscriptionMapping"
@@ -250,11 +265,16 @@ import InfoTip from "@/components/InfoTip.vue";
 import SubscriptionDeploymentSection from "@/components/SubscriptionDeploymentSection.vue";
 import {
   createDeployment,
+  isDeploymentConfigEditable,
+  updateDeploymentConfig,
   type CapabilityRule,
   type CreateDeploymentBody,
+  type DeploymentDetail,
   type RunMode,
   type ScheduleType,
+  type UpdateDeploymentConfigBody,
   type WorkerPolicy,
+  type WorkerTargeting,
 } from "@/api/deployments";
 import type { FlowListItem } from "@/api/flows";
 import { fetchVersionList } from "@/api/flowVersions";
@@ -265,9 +285,11 @@ import {
   DEFAULT_INGRESS_MAPPING,
   DEFAULT_SUBSCRIPTION_FORM,
   buildSubscriptionScheduleConfig,
+  hydrateSubscriptionFromScheduleConfig,
   type ContextMappingState,
   type SubscriptionFormState,
 } from "@/operations/subscriptionScheduleConfig";
+import { scheduleTypeLabel } from "@/utils/deploymentOverview";
 
 const props = defineProps<{
   flowOptions: FlowListItem[];
@@ -277,13 +299,34 @@ const props = defineProps<{
   workerStatusClass: (status: string) => string;
   /** Parent-level errors (e.g. flow list load failed when opening create form). */
   externalError?: string;
+  /** When set, form operates in edit mode for this deployment. */
+  editDeployment?: DeploymentDetail | null;
 }>();
 
 const emit = defineEmits<{
   cancel: [];
   created: [id: number];
+  saved: [id: number];
   error: [message: string];
+  "request-stop": [];
 }>();
+
+const isEditMode = computed(() => props.editDeployment != null);
+const editDeploymentId = computed(() => props.editDeployment?.id ?? 0);
+
+const formLocked = computed(() => {
+  if (!props.editDeployment) return false;
+  return !isDeploymentConfigEditable(String(props.editDeployment.status));
+});
+
+const lockReason = computed(() => {
+  if (!formLocked.value || !props.editDeployment) return "";
+  const st = props.editDeployment.status;
+  if (st === "running") return "运行中的部署须先停止后方可修改配置。";
+  if (st === "stopping") return "部署正在停止中，请等待停止完成后再修改。";
+  if (st === "pending") return "部署正在调度/启动中，请先停止后再修改。";
+  return `当前状态（${st}）不可修改，请先停止部署。`;
+});
 
 const submitting = ref(false);
 const formError = ref("");
@@ -419,21 +462,100 @@ function reset() {
   versionOptions.value = [];
 }
 
-defineExpose({ reset });
+function hydrateWorkerTargeting(targeting: WorkerTargeting | undefined) {
+  workerSelected.clear();
+  if (!targeting) return;
+  if (targeting.mode === "pin") {
+    workerSelected.add(targeting.worker_id);
+  } else if (targeting.mode === "pool") {
+    for (const id of targeting.worker_ids || []) {
+      if (id) workerSelected.add(id);
+    }
+  }
+}
 
-async function onFlowChange() {
+async function reloadVersionOptions(flowCode: string, preferredVerNo?: number): Promise<void> {
   versionOptions.value = [];
-  form.ver_no = 0;
-  if (!form.flow_code) return;
+  if (!flowCode) {
+    form.ver_no = 0;
+    return;
+  }
   try {
-    const res = await fetchVersionList(form.flow_code);
-    versionOptions.value = [...res.versions].sort((a, b) => b.version - a.version);
-    if (versionOptions.value.length > 0) {
-      form.ver_no = versionOptions.value[0]!.version;
+    const res = await fetchVersionList(flowCode);
+    let options = [...res.versions].sort((a, b) => b.version - a.version);
+    if (
+      preferredVerNo != null &&
+      preferredVerNo > 0 &&
+      !options.some((v) => v.version === preferredVerNo)
+    ) {
+      options = [
+        {
+          version: preferredVerNo,
+          created_at: 0,
+          description: "当前部署版本",
+          display_name: "",
+        },
+        ...options,
+      ];
+    }
+    versionOptions.value = options;
+    if (preferredVerNo != null && options.some((v) => v.version === preferredVerNo)) {
+      form.ver_no = preferredVerNo;
+    } else if (options.length > 0) {
+      form.ver_no = options[0]!.version;
+    } else {
+      form.ver_no = 0;
     }
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
+    form.ver_no = preferredVerNo && preferredVerNo > 0 ? preferredVerNo : 0;
   }
+}
+
+async function loadFromDeployment(d: DeploymentDetail) {
+  form.flow_code = d.flow_code;
+  form.mode = (d.mode === "shadow" ? "shadow" : "production") as RunMode;
+  form.schedule_type = d.schedule_type as ScheduleType;
+  form.env_profile_code = d.env_profile_code || "";
+  form.cron_expr =
+    d.schedule_type === "cron" ? String(d.schedule_config?.cron_expr ?? "") : "";
+
+  const wp = d.worker_policy || {};
+  workerPolicyForm.type =
+    wp.type === "multi_active" ? "multi_active" : "single_active";
+  workerPolicyForm.min_workers = Math.max(1, Number(wp.min_workers) || 1);
+
+  capabilityPolicyText.value = JSON.stringify(d.capability_policy ?? [], null, 2);
+  hydrateWorkerTargeting(d.worker_targeting);
+
+  if (d.schedule_type === "subscription") {
+    const hydrated = hydrateSubscriptionFromScheduleConfig(
+      (d.schedule_config || {}) as Record<string, unknown>,
+    );
+    Object.assign(subscriptionForm, hydrated.form);
+    subscriptionMapping.value = { ...hydrated.mapping };
+  } else {
+    Object.assign(subscriptionForm, DEFAULT_SUBSCRIPTION_FORM);
+    subscriptionMapping.value = { ...DEFAULT_INGRESS_MAPPING };
+  }
+
+  await reloadVersionOptions(d.flow_code, d.ver_no);
+}
+
+watch(
+  () => props.editDeployment,
+  (d) => {
+    formError.value = "";
+    if (d) void loadFromDeployment(d);
+    else reset();
+  },
+  { immediate: true },
+);
+
+defineExpose({ reset, loadFromDeployment });
+
+async function onFlowChange() {
+  await reloadVersionOptions(form.flow_code);
 }
 
 function toggleWorker(id: string) {
@@ -455,6 +577,10 @@ function applySuppressWrites() {
 
 async function submit() {
   formError.value = "";
+  if (formLocked.value) {
+    formError.value = lockReason.value || "当前不可保存";
+    return;
+  }
   const v = validateAll();
   if (v) {
     formError.value = v.error;
@@ -501,7 +627,7 @@ async function submit() {
     min_workers: Math.max(1, Number(workerPolicyForm.min_workers) || 1),
   };
 
-  const body: CreateDeploymentBody = {
+  const configBody: UpdateDeploymentConfigBody = {
     flow_code: form.flow_code,
     ver_no: form.ver_no,
     mode: form.mode,
@@ -511,13 +637,17 @@ async function submit() {
     capability_policy: capabilityPolicy,
     env_profile_code: form.env_profile_code,
     worker_targeting,
-    auto_start: false,
   };
 
   submitting.value = true;
   try {
-    const created = await createDeployment(body);
-    emit("created", created.id);
+    if (isEditMode.value && props.editDeployment) {
+      await updateDeploymentConfig(props.editDeployment.id, configBody);
+      emit("saved", props.editDeployment.id);
+    } else {
+      const created = await createDeployment({ ...configBody, auto_start: false });
+      emit("created", created.id);
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     formError.value = msg;
@@ -560,6 +690,31 @@ async function submit() {
   border-radius: 8px;
   padding: 10px 0 0;
   background: transparent;
+}
+
+.dep-lock-banner {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #d97706 45%, var(--border));
+  background: color-mix(in srgb, #fef3c7 40%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.dep-lock-banner p {
+  margin: 0;
+  flex: 1 1 200px;
+}
+
+.dep-create-columns--locked {
+  opacity: 0.72;
+  pointer-events: none;
 }
 
 .schedule-advanced-hint {

@@ -342,6 +342,89 @@ def test_patch_pending_clears_stale_assignments(client: TestClient) -> None:
     assert body["assignments"] == []
 
 
+def test_patch_deployment_config_requires_stopped(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "auto_start": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    dep_id = r.json()["id"]
+    assert r.json()["status"] == "pending"
+
+    r = client.patch(
+        f"/api/deployments/{dep_id}",
+        json={
+            "config": {
+                "flow_code": "runner_flow",
+                "ver_no": ver,
+                "mode": "shadow",
+                "schedule_type": "once",
+                "schedule_config": {},
+                "worker_policy": {"type": "single_active", "min_workers": 1},
+                "capability_policy": [],
+                "env_profile_code": "default",
+                "worker_targeting": {"mode": "any"},
+            }
+        },
+    )
+    assert r.status_code == 409
+    assert "stopped" in r.json()["detail"].lower()
+
+    r = client.patch(f"/api/deployments/{dep_id}", json={"status": "stopping"})
+    assert r.status_code == 200
+
+
+def test_patch_deployment_config_updates_fields(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "cron",
+            "schedule_config": {"cron_expr": "0 * * * *"},
+            "auto_start": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    dep_id = r.json()["id"]
+    assert r.json()["status"] == "stopped"
+
+    r = client.patch(
+        f"/api/deployments/{dep_id}",
+        json={
+            "config": {
+                "flow_code": "runner_flow",
+                "ver_no": ver,
+                "mode": "shadow",
+                "schedule_type": "cron",
+                "schedule_config": {"cron_expr": "0 */10 * * *"},
+                "worker_policy": {"type": "single_active", "min_workers": 2},
+                "capability_policy": [],
+                "env_profile_code": "default",
+                "worker_targeting": {"mode": "any"},
+            }
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["mode"] == "shadow"
+    assert body["schedule_config"]["cron_expr"] == "0 */10 * * *"
+    assert body["worker_policy"]["min_workers"] == 2
+    assert body["status"] == "stopped"
+
+    r = client.get(f"/api/deployments/{dep_id}")
+    assert r.json()["mode"] == "shadow"
+
+
 def test_patch_and_delete_deployment(client: TestClient) -> None:
     ver = _commit_flow(client)
     r = client.post(
@@ -457,3 +540,144 @@ def test_test_plan_copy_and_batches_endpoints(client: TestClient) -> None:
     assert body["plan_id"] == plan_id
     assert body["total"] == 2
     assert len(body["batches"]) == 2
+
+
+def test_recent_failed_deploy_runs_dedup_per_deployment(client: TestClient) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from flow_engine.db.models import FeDeployRun
+    from flow_engine.db.session import db_session
+
+    ver = _commit_flow(client, "fail_run_flow")
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "fail_run_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    dep_id = int(r.json()["id"])
+
+    now = datetime.now(timezone.utc)
+    with db_session() as s:
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id="w1",
+                flow_code="fail_run_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                trigger_type="manual",
+                status="failed",
+                started_at=now - timedelta(minutes=5),
+                finished_at=now - timedelta(minutes=4),
+                error="older failure",
+            )
+        )
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id="w1",
+                flow_code="fail_run_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                trigger_type="manual",
+                status="failed",
+                started_at=now - timedelta(minutes=2),
+                finished_at=now - timedelta(minutes=1),
+                error="latest failure",
+            )
+        )
+
+    r = client.get("/api/deploy-runs/recent-failures", params={"hours": 24})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1
+    assert body["runs"][0]["deployment_id"] == dep_id
+    assert body["runs"][0]["error"] == "latest failure"
+
+
+def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from flow_engine.db.models import FeDeployRun
+    from flow_engine.db.session import db_session
+
+    ver = _commit_flow(client, "ov_run_flow")
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "ov_run_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    dep_id = int(r.json()["id"])
+
+    now = datetime.now(timezone.utc)
+    with db_session() as s:
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id="w1",
+                flow_code="ov_run_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                trigger_type="manual",
+                status="completed",
+                started_at=now - timedelta(minutes=5),
+                finished_at=now - timedelta(minutes=4),
+            )
+        )
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id="w1",
+                flow_code="ov_run_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                trigger_type="manual",
+                status="terminated",
+                started_at=now - timedelta(minutes=2),
+                finished_at=now - timedelta(minutes=1),
+            )
+        )
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id="w1",
+                flow_code="ov_run_flow",
+                ver_no=ver,
+                mode="production",
+                schedule_type="once",
+                trigger_type="manual",
+                status="failed",
+                started_at=now - timedelta(seconds=30),
+                finished_at=now,
+                error="should not appear",
+            )
+        )
+
+    r = client.get("/api/deploy-runs/recent-overview", params={"hours": 24})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1
+    assert body["runs"][0]["deployment_id"] == dep_id
+    assert body["runs"][0]["status"] == "terminated"

@@ -39,3 +39,41 @@ export async function getDeployRun(runId: number): Promise<FlowRunDetail> {
   return r.json() as Promise<FlowRunDetail>;
 }
 
+export type RecentFailedDeployRunsResponse = {
+  since: string;
+  offset: number;
+  limit: number;
+  total: number;
+  runs: FlowRunsListResponse["runs"];
+};
+
+export async function listRecentFailedDeployRuns(
+  params: { hours?: number; offset?: number; limit?: number } = {},
+): Promise<RecentFailedDeployRunsResponse> {
+  const qs = new URLSearchParams();
+  if (params.hours != null) qs.set("hours", String(params.hours));
+  if (params.offset != null) qs.set("offset", String(params.offset));
+  if (params.limit != null) qs.set("limit", String(params.limit));
+  const q = qs.toString();
+  const r = await checkOk(
+    await fetch(`/api/deploy-runs/recent-failures${q ? `?${q}` : ""}`),
+  );
+  return r.json() as Promise<RecentFailedDeployRunsResponse>;
+}
+
+export type RecentOverviewDeployRunsResponse = RecentFailedDeployRunsResponse;
+
+export async function listRecentOverviewDeployRuns(
+  params: { hours?: number; offset?: number; limit?: number } = {},
+): Promise<RecentOverviewDeployRunsResponse> {
+  const qs = new URLSearchParams();
+  if (params.hours != null) qs.set("hours", String(params.hours));
+  if (params.offset != null) qs.set("offset", String(params.offset));
+  if (params.limit != null) qs.set("limit", String(params.limit));
+  const q = qs.toString();
+  const r = await checkOk(
+    await fetch(`/api/deploy-runs/recent-overview${q ? `?${q}` : ""}`),
+  );
+  return r.json() as Promise<RecentOverviewDeployRunsResponse>;
+}
+

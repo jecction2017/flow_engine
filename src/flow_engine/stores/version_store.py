@@ -10,6 +10,7 @@ Uses tables:
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -20,6 +21,7 @@ from sqlalchemy import select
 
 from flow_engine.db.models import FeFlow, FeFlowDraft, FeFlowVersion
 from flow_engine.db.session import db_session
+from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.version_meta import FlowMeta, FlowVersionMeta
 
 _SAFE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")
@@ -191,6 +193,11 @@ class VersionStore:
         """Commit draft (or supplied data) as a new immutable version. Returns new version number."""
         if data is None:
             data = self.read_draft()
+        try:
+            flow = load_flow_from_dict(copy.deepcopy(data))
+        except Exception as e:
+            raise ValueError(f"Flow validation failed: {e}") from e
+        data = flow.model_dump(mode="json", exclude_none=True)
         body_str = _body_to_str(data)
         display_name = str(data.get("display_name") or data.get("name") or self.flow_code)
         with db_session() as s:
