@@ -90,3 +90,33 @@ export function formatOccurredAt(iso: string): string {
     return iso;
   }
 }
+
+/** One-line preview under the card title (collapsed state). */
+export function failurePreviewText(opts: {
+  failureDetail?: FailureDetail | null;
+  error?: string | null;
+  maxLen?: number;
+}): string {
+  const maxLen = opts.maxLen ?? 96;
+  const d = opts.failureDetail;
+  if (hasFailureDetail(d)) {
+    const s = (d.summary ?? d.exception_message ?? "").trim();
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+  }
+  const err = (opts.error ?? "").trim();
+  if (!err) return "";
+  const summaryMatch = err.match(/【摘要】([^\n]+)/);
+  if (summaryMatch) {
+    const s = summaryMatch[1].trim();
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+  }
+  const first = err.split(/\r?\n/)[0]?.trim() ?? "";
+  return first.length > maxLen ? `${first.slice(0, maxLen)}…` : first;
+}
+
+export function failureDetailFromUnknown(
+  raw: unknown,
+): FailureDetail | null {
+  if (!raw || typeof raw !== "object") return null;
+  return hasFailureDetail(raw as FailureDetail) ? (raw as FailureDetail) : null;
+}

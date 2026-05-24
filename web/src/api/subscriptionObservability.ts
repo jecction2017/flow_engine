@@ -29,6 +29,12 @@ export type SubscriptionSummary = {
     total: number;
     by_status: { processing: number; completed: number; failed: number };
     last_updated_at: string | null;
+    /** Lookback window for failure_alert / failed_recent (hours). */
+    lookback_hours?: number;
+    /** Failed messages with updated_at within lookback_hours. */
+    failed_recent?: number;
+    /** True when overview should show the message-failure alert card. */
+    failure_alert?: boolean;
   };
   runs: {
     total: number;

@@ -135,7 +135,7 @@ import type { FlowRunDetail } from "@/api/flowRuns";
 import { useFlowLabels } from "@/composables/useFlowLabels";
 import CollapsibleFailureCard from "@/components/CollapsibleFailureCard.vue";
 import FailureReportPanel from "@/components/FailureReportPanel.vue";
-import { hasFailureDetail } from "@/utils/formatFailureReport";
+import { failurePreviewText } from "@/utils/formatFailureReport";
 import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
@@ -187,15 +187,12 @@ const flowLogs = computed(() =>
   Array.isArray(props.detail.flow_logs) ? props.detail.flow_logs : [],
 );
 
-const failurePreview = computed(() => {
-  const d = props.detail.failure_detail;
-  if (hasFailureDetail(d)) {
-    return (d.summary ?? d.exception_message ?? "").trim();
-  }
-  const err = (props.detail.error ?? "").trim();
-  if (!err) return "";
-  return err.split(/\r?\n/)[0]?.slice(0, 96) ?? "";
-});
+const failurePreview = computed(() =>
+  failurePreviewText({
+    failureDetail: props.detail.failure_detail,
+    error: props.detail.error,
+  }),
+);
 
 const hasGlobalNs = computed(() => {
   const g = props.detail.global_ns;

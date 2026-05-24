@@ -14,6 +14,9 @@ from flow_engine.time_utils import utc_isoformat
 _MESSAGE_STATUSES = ("processing", "completed", "failed")
 _RUN_STATUSES = ("queued", "running", "completed", "failed", "terminated")
 
+# Aligns with Run Center overview tables (OperationsCenterView CENTER_OVERVIEW_LOOKBACK_HOURS).
+SUBSCRIPTION_ALERT_LOOKBACK_HOURS = 24
+
 
 def _assert_subscription_deployment(deployment_id: int) -> None:
     with db_session() as s:
@@ -60,6 +63,31 @@ def _count_by_status(
     return out
 
 
+def _alert_lookback_since(
+    *,
+    hours: float = SUBSCRIPTION_ALERT_LOOKBACK_HOURS,
+) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=float(hours))
+
+
+def _message_failure_alert_active(
+    *,
+    failed_recent: int,
+    last_msg: FeSubscriptionDedup | None,
+) -> bool:
+    """Whether deployment overview should surface a message-failure alert.
+
+    Lifetime ledger ``failed`` counts are historical; alerts clear when the latest
+    ledger row (by ``updated_at``, then ``id``) is a successful completion — i.e.
+    consumption has recovered even if older rows remain ``failed``.
+    """
+    if failed_recent <= 0:
+        return False
+    if last_msg is None:
+        return True
+    return str(last_msg.status or "") != "completed"
+
+
 def get_subscription_summary(deployment_id: int) -> dict[str, Any]:
     """Aggregate message ledger + deploy-run counts for a subscription deployment."""
     _assert_subscription_deployment(deployment_id)
@@ -76,23 +104,43 @@ def get_subscription_summary(deployment_id: int) -> dict[str, Any]:
         status_col=FeDeployRun.status,
     )
 
+    since = _alert_lookback_since()
+
     with db_session() as s:
         last_msg = s.execute(
             select(FeSubscriptionDedup)
             .where(FeSubscriptionDedup.deployment_id == int(deployment_id))
             .where(FeSubscriptionDedup.deleted_at.is_(None))
-            .order_by(FeSubscriptionDedup.updated_at.desc())
+            .order_by(
+                FeSubscriptionDedup.updated_at.desc(),
+                FeSubscriptionDedup.id.desc(),
+            )
             .limit(1)
         ).scalar_one_or_none()
+        failed_recent = int(
+            s.execute(
+                select(func.count())
+                .select_from(FeSubscriptionDedup)
+                .where(FeSubscriptionDedup.deployment_id == int(deployment_id))
+                .where(FeSubscriptionDedup.deleted_at.is_(None))
+                .where(FeSubscriptionDedup.status == "failed")
+                .where(FeSubscriptionDedup.updated_at >= since)
+            ).scalar_one()
+        )
         recent_failed = list(
             s.execute(
                 select(FeSubscriptionDedup)
                 .where(FeSubscriptionDedup.deployment_id == int(deployment_id))
                 .where(FeSubscriptionDedup.deleted_at.is_(None))
                 .where(FeSubscriptionDedup.status == "failed")
+                .where(FeSubscriptionDedup.updated_at >= since)
                 .order_by(FeSubscriptionDedup.updated_at.desc())
                 .limit(8)
             ).scalars().all()
+        )
+        failure_alert = _message_failure_alert_active(
+            failed_recent=failed_recent,
+            last_msg=last_msg,
         )
         last_updated_at = utc_isoformat(last_msg.updated_at) if last_msg else None
         recent_failed_payload = [
@@ -117,6 +165,9 @@ def get_subscription_summary(deployment_id: int) -> dict[str, Any]:
             "total": sum(message_counts.values()),
             "by_status": {k: message_counts.get(k, 0) for k in _MESSAGE_STATUSES},
             "last_updated_at": last_updated_at,
+            "lookback_hours": SUBSCRIPTION_ALERT_LOOKBACK_HOURS,
+            "failed_recent": failed_recent,
+            "failure_alert": failure_alert,
         },
         "runs": {
             "total": sum(run_counts.values()),

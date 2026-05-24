@@ -131,18 +131,6 @@ def _list_failover_worker_ids() -> list[str]:
     return list(dict.fromkeys([*stale, *dead_with_assn]))
 
 
-def _deployment_has_active_assignment(s: Any, dep_id: int) -> bool:
-    return (
-        s.execute(
-            select(FeWorkerAssignment.id)
-            .where(FeWorkerAssignment.deployment_id == dep_id)
-            .where(FeWorkerAssignment.deleted_at.is_(None))
-            .limit(1)
-        ).scalar_one_or_none()
-        is not None
-    )
-
-
 def _fail_orphaned_cron_queued_runs(
     s: Any,
     dep_id: int,
@@ -485,91 +473,108 @@ def _assign_pending_sync() -> int:
     return created
 
 
-def _assign_unassigned_cron_sync() -> int:
-    """Assign workers to running cron deployments that have no active assignment."""
+def _reconcile_running_assignments_sync() -> int:
+    """Bring running deployments up to ``target_workers`` (fill slots / revive soft-deleted rows)."""
     created = 0
     workers = _list_active_workers()
     now = _now()
     lease_until = now + timedelta(seconds=LEADER_LEASE_S)
 
     with db_session() as s:
-        cron_deps = list(
+        deps = list(
             s.execute(
                 select(FeFlowDeployment)
-                .where(FeFlowDeployment.schedule_type == "cron")
                 .where(FeFlowDeployment.status == "running")
                 .where(FeFlowDeployment.deleted_at.is_(None))
             )
             .scalars()
             .all()
         )
-        for dep_row in cron_deps:
+        for dep_row in deps:
             dep_id = int(dep_row.id)
-            if _deployment_has_active_assignment(s, dep_id):
-                continue
-
             wp = dep_row.worker_policy or {}
             wp_type = policy_type_from_policy(wp)
             target_workers = target_workers_from_policy(wp)
 
-            existing_stmt = (
-                select(FeWorkerAssignment.worker_id)
-                .where(FeWorkerAssignment.deployment_id == dep_id)
-                .where(FeWorkerAssignment.deleted_at.is_(None))
+            assn_rows = list(
+                s.execute(
+                    select(FeWorkerAssignment)
+                    .where(FeWorkerAssignment.deployment_id == dep_id)
+                    .where(FeWorkerAssignment.deleted_at.is_(None))
+                ).scalars().all()
             )
-            existing = set(s.execute(existing_stmt).scalars().all())
+            existing = {a.worker_id for a in assn_rows}
+            has_leader = any(a.role == "leader" for a in assn_rows)
+            active_count = len(existing)
+            if active_count >= target_workers:
+                continue
+
             mode, eligible_set = _eligible_by_targeting(
                 active_workers=workers,
                 targeting_raw=getattr(dep_row, "worker_targeting", None) or {},
             )
+            is_cron = str(dep_row.schedule_type or "") == "cron"
+
+            if active_count == 0 and is_cron:
+                if mode == "pin" and not eligible_set:
+                    targeting = _normalize_targeting(
+                        getattr(dep_row, "worker_targeting", None) or {}
+                    )
+                    pin = targeting.get("worker_id")
+                    queued_failed = _fail_orphaned_cron_queued_runs(
+                        s,
+                        dep_id,
+                        reason=f"pin worker offline: {pin}",
+                        now=now,
+                    )
+                    dep_row.status = "failed"
+                    dep_row.status_detail = {
+                        "reason": "pin_worker_offline",
+                        "worker_id": pin,
+                        "targeting": targeting,
+                        "queued_failed": queued_failed,
+                        "ts": now.isoformat(),
+                        "message": "cron pin worker offline",
+                    }
+                    logger.warning(
+                        "cron deployment pin worker not active: dep_id=%s worker_id=%s",
+                        dep_id,
+                        pin,
+                    )
+                    continue
+
+                if not workers or not eligible_set:
+                    queued_failed = _fail_orphaned_cron_queued_runs(
+                        s,
+                        dep_id,
+                        reason="no active worker available for cron assignment",
+                        now=now,
+                    )
+                    dep_row.status = "pending"
+                    dep_row.status_detail = {
+                        "reason": "no_eligible_worker",
+                        "queued_failed": queued_failed,
+                        "ts": now.isoformat(),
+                        "message": "cron waiting for an active worker",
+                    }
+                    logger.info(
+                        "cron deployment unassigned with no workers: dep_id=%s queued_failed=%s",
+                        dep_id,
+                        queued_failed,
+                    )
+                    continue
+
             if mode == "pin" and not eligible_set:
-                targeting = _normalize_targeting(getattr(dep_row, "worker_targeting", None) or {})
-                pin = targeting.get("worker_id")
-                queued_failed = _fail_orphaned_cron_queued_runs(
-                    s,
-                    dep_id,
-                    reason=f"pin worker offline: {pin}",
-                    now=now,
-                )
-                dep_row.status = "failed"
-                dep_row.status_detail = {
-                    "reason": "pin_worker_offline",
-                    "worker_id": pin,
-                    "targeting": targeting,
-                    "queued_failed": queued_failed,
-                    "ts": now.isoformat(),
-                    "message": "cron pin worker offline",
-                }
-                logger.warning(
-                    "cron deployment pin worker not active: dep_id=%s worker_id=%s",
-                    dep_id,
-                    pin,
-                )
                 continue
 
-            if not workers or not eligible_set:
-                queued_failed = _fail_orphaned_cron_queued_runs(
-                    s,
-                    dep_id,
-                    reason="no active worker available for cron assignment",
-                    now=now,
-                )
-                dep_row.status = "pending"
-                dep_row.status_detail = {
-                    "reason": "no_eligible_worker",
-                    "queued_failed": queued_failed,
-                    "ts": now.isoformat(),
-                    "message": "cron waiting for an active worker",
-                }
-                logger.info(
-                    "cron deployment unassigned with no workers: dep_id=%s queued_failed=%s",
-                    dep_id,
-                    queued_failed,
-                )
+            if not eligible_set:
                 continue
 
             eligible = [w for w in workers if w not in existing and w in eligible_set]
-            picks = eligible[:target_workers]
+            need = target_workers - active_count
+            picks = eligible[:need]
+            if not picks:
+                continue
 
             if wp_type == "multi_active":
                 for w in picks:
@@ -582,18 +587,20 @@ def _assign_unassigned_cron_sync() -> int:
                     )
                     created += 1
             else:
-                if not picks:
-                    continue
-                leader_w = picks[0]
-                _upsert_assignment(
-                    s,
-                    dep_id=dep_id,
-                    worker_id=leader_w,
-                    role="leader",
-                    lease_expires_at=lease_until,
-                )
-                created += 1
-                for w in picks[1:]:
+                if not has_leader:
+                    leader_w = picks[0]
+                    _upsert_assignment(
+                        s,
+                        dep_id=dep_id,
+                        worker_id=leader_w,
+                        role="leader",
+                        lease_expires_at=lease_until,
+                    )
+                    created += 1
+                    standby_picks = picks[1:]
+                else:
+                    standby_picks = picks
+                for w in standby_picks:
                     _upsert_assignment(
                         s,
                         dep_id=dep_id,
@@ -602,8 +609,15 @@ def _assign_unassigned_cron_sync() -> int:
                         lease_expires_at=None,
                     )
                     created += 1
-            _recover_cron_deployment_schedule(dep_row, session=s, now=now)
+
+            if is_cron and picks:
+                _recover_cron_deployment_schedule(dep_row, session=s, now=now)
     return created
+
+
+def _assign_unassigned_cron_sync() -> int:
+    """Assign workers to running cron deployments that have no active assignment."""
+    return _reconcile_running_assignments_sync()
 
 
 def _renew_leader_leases_sync() -> int:
@@ -848,7 +862,7 @@ class Coordinator:
                     await asyncio.to_thread(_stop_stopping_deployments_sync)
                     await asyncio.to_thread(_assign_pending_sync)
                     await asyncio.to_thread(_check_dead_workers_sync)
-                    await asyncio.to_thread(_assign_unassigned_cron_sync)
+                    await asyncio.to_thread(_reconcile_running_assignments_sync)
                     await asyncio.to_thread(_renew_leader_leases_sync)
                     await asyncio.to_thread(_reap_stale_runs_sync)
                     await asyncio.to_thread(_reap_orphaned_queued_cron_runs_sync)

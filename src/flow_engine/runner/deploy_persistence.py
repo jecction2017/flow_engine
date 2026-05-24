@@ -229,6 +229,9 @@ def _serialize_deploy_run_summary(row: FeDeployRun) -> dict[str, Any]:
             int(row.sampled_span_count) if row.sampled_span_count is not None else None
         ),
         "error": row.error,
+        "failure_detail": (
+            dict(row.failure_detail) if row.failure_detail else None
+        ),
     }
 
 

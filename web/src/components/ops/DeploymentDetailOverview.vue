@@ -5,12 +5,16 @@
       <CollapsibleFailureCard
         v-for="a in alerts"
         :key="`${deployment.id}-${a.id}`"
-        :title="a.category || a.title"
+        :title="a.title"
         :preview="alertPreview(a)"
         :tone="a.level"
       >
-        <p v-if="a.detail" class="ov-fail-meta muted small">{{ a.detail }}</p>
-        <pre v-if="a.log" class="ov-fail-log mono small">{{ a.log }}</pre>
+        <p v-if="a.meta" class="failure-card-meta muted small">{{ a.meta }}</p>
+        <FailureReportPanel
+          v-if="a.failureDetail || a.failureError || a.log"
+          :failure-detail="a.failureDetail"
+          :fallback-text="a.failureError || a.log"
+        />
         <template v-if="showAlertLink(a)" #footer>
           <button type="button" class="failure-card-link" @click.stop="onAlertLink(a)">
             {{ alertLinkLabel(a) }}
@@ -287,6 +291,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import CollapsibleFailureCard from "@/components/CollapsibleFailureCard.vue";
+import FailureReportPanel from "@/components/FailureReportPanel.vue";
+import { failurePreviewText } from "@/utils/formatFailureReport";
 import type { DeploymentDetail } from "@/api/deployments";
 import type { FlowRunSummary } from "@/api/flowRuns";
 import type { SubscriptionMessageRow, SubscriptionSummary } from "@/api/subscriptionObservability";
@@ -313,6 +319,8 @@ const props = defineProps<{
   runsPreview: FlowRunSummary[];
   runsPreviewTotal: number;
   workers: Worker[];
+  /** Set after `/api/workers` has been fetched at least once (avoids false weak state). */
+  workersCatalogReady?: boolean;
   loadingSubSummary: boolean;
   loadingRunsPreview: boolean;
   formatTs: (iso: string | null) => string;
@@ -336,10 +344,11 @@ watch(
 );
 
 function alertPreview(a: OverviewAlertItem): string {
-  if (a.id === "msg-failed") return "";
-  if (a.detail) return a.detail;
-  if (a.log) return truncateOverviewText(a.log.split(/\r?\n/)[0] ?? "", 96);
-  return "";
+  if (a.preview) return a.preview;
+  return failurePreviewText({
+    failureDetail: a.failureDetail,
+    error: a.failureError ?? a.log,
+  });
 }
 
 function showAlertLink(a: OverviewAlertItem): boolean {
@@ -402,6 +411,7 @@ const scheduleOverview = computed(() =>
     formatTs: props.formatTs,
     consumerId: consumerId.value,
     maxInFlight: subFields.value.max_in_flight,
+    workersCatalogReady: props.workersCatalogReady ?? false,
   }),
 );
 
@@ -481,22 +491,9 @@ function messageStatusTagClass(status: string): string {
   width: 100%;
 }
 
-.ov-fail-meta {
+.failure-card-meta {
   margin: 0;
-  line-height: 1.4;
-}
-
-.ov-fail-log {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #7f1d1d;
-  line-height: 1.45;
-  max-height: 200px;
-  overflow: auto;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, #fecaca 22%, transparent);
+  line-height: 1.35;
 }
 
 /* —— 运行调度 —— */

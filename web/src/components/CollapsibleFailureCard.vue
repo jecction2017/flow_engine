@@ -3,7 +3,7 @@
     <summary class="failure-card-toggle">
       <div class="failure-card-summary">
         <div class="failure-card-title">{{ title }}</div>
-        <p v-if="preview" class="failure-card-preview muted small">{{ preview }}</p>
+        <p v-if="preview" class="failure-card-preview">{{ preview }}</p>
       </div>
       <span class="failure-card-chevron" aria-hidden="true" />
     </summary>
@@ -41,27 +41,18 @@ withDefaults(
   background: color-mix(in srgb, #fffbeb 65%, var(--surface));
 }
 
-.failure-card:not([open]) {
-  height: 48px;
-  overflow: hidden;
-}
-
-.failure-card[open] {
-  height: auto;
-  overflow: visible;
-}
-
 .failure-card-toggle {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   width: 100%;
-  height: 48px;
-  padding: 0 12px;
+  min-height: 40px;
+  padding: 8px 12px;
   list-style: none;
   cursor: pointer;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .failure-card-toggle::-webkit-details-marker {
@@ -69,23 +60,22 @@ withDefaults(
 }
 
 .failure-card[open] > .failure-card-toggle {
-  height: auto;
-  min-height: 48px;
-  align-items: flex-start;
-  padding: 10px 12px 6px;
+  padding-bottom: 4px;
 }
 
 .failure-card-summary {
   min-width: 0;
   flex: 1;
-  line-height: 1.35;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .failure-card-title {
   font-size: 12px;
   font-weight: 700;
   color: #b91c1c;
-  line-height: 1.3;
+  line-height: 1.25;
 }
 
 .failure-card.warn .failure-card-title {
@@ -104,7 +94,15 @@ withDefaults(
 }
 
 .failure-card-preview {
-  margin: 2px 0 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #991b1b;
+  font-weight: 400;
+}
+
+.failure-card.warn .failure-card-preview {
+  color: #92400e;
 }
 
 .failure-card-chevron {
@@ -137,8 +135,12 @@ withDefaults(
   padding: 0 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+}
+
+.failure-card-body :deep(.failure-card-meta) {
+  margin: 0;
 }
 
 .failure-card-footer {

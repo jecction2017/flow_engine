@@ -3,7 +3,12 @@
 import { parseExpression } from "cron-parser";
 import type { Assignment, Deployment, DeploymentDetail, WorkerTargeting } from "@/api/deployments";
 import type { SubscriptionSummary } from "@/api/subscriptionObservability";
-import type { FlowRunSummary } from "@/api/flowRuns";
+import type { FailureDetail, FlowRunSummary } from "@/api/flowRuns";
+import {
+  failureDetailFromUnknown,
+  failurePreviewText,
+  hasFailureDetail,
+} from "@/utils/formatFailureReport";
 
 export function deploymentStatusLabel(status: string): string {
   const map: Record<string, string> = {
@@ -105,10 +110,6 @@ export function deploymentScheduleSubtitle(
 ): string {
   const env = deploymentEnvLabel(d.env_profile_code);
   const st = scheduleTypeLabel(String(d.schedule_type));
-  if (d.schedule_type === "cron") {
-    const expr = d.schedule_config?.cron_expr;
-    return expr ? `${st} · ${expr} · 环境-${env}` : `${st} · 环境-${env}`;
-  }
   return `${st} · 环境-${env}`;
 }
 
@@ -143,6 +144,44 @@ export function statusDetailCategoryLabel(
   return statusDetailReasonLabel(detail);
 }
 
+const SCHEDULING_STATUS_REASONS = new Set([
+  "no_eligible_worker",
+  "pin_worker_offline",
+]);
+
+/** Deployment coordinator / worker assignment faults (not flow node execution). */
+export function statusDetailIsScheduling(
+  detail: Record<string, unknown> | null | undefined,
+): boolean {
+  const category = String(detail?.category ?? "").trim();
+  if (category === "scheduling") return true;
+  const reason = String(detail?.reason ?? "").trim();
+  return SCHEDULING_STATUS_REASONS.has(reason);
+}
+
+export function statusDetailIsRunFailure(
+  detail: Record<string, unknown> | null | undefined,
+): boolean {
+  const reason = String(detail?.reason ?? "").trim();
+  return reason === "run_failed" || reason === "flow_prepare_failed";
+}
+
+/** Structured ``failure_detail`` from a flow run (task / loop / flow execution). */
+export function isFlowExecutionFailureDetail(
+  detail: FailureDetail | null | undefined,
+): boolean {
+  if (!hasFailureDetail(detail)) return false;
+  if (detail.node_id) return true;
+  const cat = String(detail.category ?? "").trim();
+  if (!cat) return false;
+  return (
+    cat.startsWith("task_") ||
+    cat.startsWith("flow_") ||
+    cat.startsWith("loop_") ||
+    cat === "node_retry_exhausted"
+  );
+}
+
 export function statusDetailRunId(detail: Record<string, unknown> | null | undefined): number | null {
   const n = detail?.run_id;
   return typeof n === "number" && Number.isFinite(n) ? n : null;
@@ -157,6 +196,96 @@ function latestFailedRunError(runs: FlowRunSummary[] | undefined): string | null
     }
   }
   return null;
+}
+
+function latestFailedRun(
+  runs: FlowRunSummary[] | undefined,
+): FlowRunSummary | null {
+  if (!runs?.length) return null;
+  for (const r of runs) {
+    if (String(r.status) === "failed") return r;
+  }
+  return null;
+}
+
+type ResolvedOverviewFailure = {
+  failureDetail: FailureDetail | null;
+  failureError: string | null;
+  source: "status" | "run" | null;
+};
+
+function resolveOverviewFailure(
+  detail: Record<string, unknown> | null | undefined,
+  runsPreview?: FlowRunSummary[],
+): ResolvedOverviewFailure {
+  const fromStatus = failureDetailFromUnknown(detail?.failure_detail);
+  const failedRun = latestFailedRun(runsPreview);
+  const fromRun = failureDetailFromUnknown(failedRun?.failure_detail);
+
+  if (statusDetailIsScheduling(detail)) {
+    return {
+      failureDetail: fromStatus,
+      failureError: statusDetailMessage(detail) || null,
+      source: fromStatus ? "status" : null,
+    };
+  }
+  if (statusDetailIsRunFailure(detail) && fromStatus) {
+    return {
+      failureDetail: fromStatus,
+      failureError:
+        statusDetailMessage(detail) || (failedRun?.error ?? "").trim() || null,
+      source: "status",
+    };
+  }
+  if (fromStatus) {
+    return {
+      failureDetail: fromStatus,
+      failureError: statusDetailMessage(detail) || null,
+      source: "status",
+    };
+  }
+  if (fromRun && isFlowExecutionFailureDetail(fromRun)) {
+    return {
+      failureDetail: fromRun,
+      failureError: (failedRun?.error ?? "").trim() || null,
+      source: "run",
+    };
+  }
+  return {
+    failureDetail: null,
+    failureError: statusDetailMessage(detail) || latestFailedRunError(runsPreview),
+    source: null,
+  };
+}
+
+function overviewAlertTitle(
+  detail: Record<string, unknown> | null | undefined,
+  resolved: ResolvedOverviewFailure,
+  st: string,
+): string {
+  if (resolved.source === "run" || isFlowExecutionFailureDetail(resolved.failureDetail)) {
+    return "运行失败";
+  }
+  if (statusDetailIsRunFailure(detail)) return "运行失败";
+  if (detail && Object.keys(detail).length > 0) {
+    return statusDetailCategoryLabel(detail);
+  }
+  return deploymentStatusLabel(st);
+}
+
+function buildStatusDetailAlertMeta(
+  detail: Record<string, unknown> | null | undefined,
+): string | undefined {
+  if (!detail) return undefined;
+  const meta: string[] = [];
+  const when = statusDetailWhen(detail);
+  if (when) meta.push(`时间 ${when}`);
+  const att = statusDetailIngressAttempt(detail);
+  const maxAtt = statusDetailIngressMaxAttempts(detail);
+  if (att != null && maxAtt != null) meta.push(`重试 ${att}/${maxAtt}`);
+  const next = statusDetailNextRetryAt(detail);
+  if (next) meta.push(`下次重试 ${next}`);
+  return meta.length ? meta.join(" · ") : undefined;
 }
 
 export function latestFailedRunId(runs: FlowRunSummary[] | undefined): number | null {
@@ -258,6 +387,29 @@ export function isSubscriptionIngressRetrying(
   return String(detail?.reason || "").trim() === "subscription_ingress_retrying";
 }
 
+/** Aligns with backend SUBSCRIPTION_ALERT_LOOKBACK_HOURS / Run Center overview. */
+export const DEPLOYMENT_OVERVIEW_MESSAGE_ALERT_LOOKBACK_HOURS = 24;
+
+export function subscriptionMessageFailureAlertActive(
+  subSummary: SubscriptionSummary | null,
+): boolean {
+  if (!subSummary) return false;
+  const m = subSummary.messages;
+  if (typeof m.failure_alert === "boolean") return m.failure_alert;
+  return (m.failed_recent ?? m.by_status.failed ?? 0) > 0;
+}
+
+export function subscriptionMessageFailureAlertCount(
+  subSummary: SubscriptionSummary | null,
+): number {
+  if (!subSummary) return 0;
+  const m = subSummary.messages;
+  if (subscriptionMessageFailureAlertActive(subSummary)) {
+    return m.failed_recent ?? m.by_status.failed ?? 0;
+  }
+  return 0;
+}
+
 export function shouldShowHealthBanner(
   d: DeploymentDetail,
   subSummary: SubscriptionSummary | null,
@@ -269,7 +421,7 @@ export function shouldShowHealthBanner(
   const alertStatuses = new Set(["failed", "stopping", "pending"]);
   if (!alertStatuses.has(String(d.status))) return false;
   const noAssignment = !(d.assignments?.length);
-  const msgFailed = (subSummary?.messages.by_status.failed ?? 0) > 0;
+  const msgFailed = subscriptionMessageFailureAlertActive(subSummary);
   const runFailed = (subSummary?.runs.by_status.failed ?? 0) > 0;
   return noAssignment || msgFailed || runFailed;
 }
@@ -490,16 +642,34 @@ function roleSkeleton(policyType: string | undefined, configured: number | null)
   return Array.from({ length: n }, () => "replica" as RoleBlockKey);
 }
 
-function specifiedWorkerIds(targeting: WorkerTargeting | undefined): string[] {
-  if (!targeting) return [];
+type TargetingContext = {
+  mode: "any" | "pin" | "pool";
+  pinId: string | null;
+  poolIds: Set<string>;
+};
+
+function targetingContext(targeting: WorkerTargeting | undefined): TargetingContext {
+  if (!targeting || targeting.mode === "any") {
+    return { mode: "any", pinId: null, poolIds: new Set() };
+  }
   if (targeting.mode === "pin") {
-    const id = String(targeting.worker_id ?? "").trim();
-    return id ? [id] : [];
+    const pinId = String(targeting.worker_id ?? "").trim();
+    return { mode: "pin", pinId: pinId || null, poolIds: new Set() };
   }
   if (targeting.mode === "pool") {
-    return (targeting.worker_ids || []).map((x) => String(x).trim()).filter(Boolean);
+    const poolIds = new Set(
+      (targeting.worker_ids || []).map((x) => String(x).trim()).filter(Boolean),
+    );
+    return { mode: "pool", pinId: null, poolIds };
   }
-  return [];
+  return { mode: "any", pinId: null, poolIds: new Set() };
+}
+
+function assignmentMatchesTargeting(workerId: string, ctx: TargetingContext): boolean {
+  if (ctx.mode === "any") return true;
+  if (ctx.mode === "pin") return Boolean(ctx.pinId) && workerId === ctx.pinId;
+  if (ctx.mode === "pool") return ctx.poolIds.size === 0 || ctx.poolIds.has(workerId);
+  return true;
 }
 
 function isDeploymentLive(status: string): boolean {
@@ -507,16 +677,17 @@ function isDeploymentLive(status: string): boolean {
 }
 
 function isWorkerHealthy(status: string | null): boolean {
-  return status === "active";
+  return String(status ?? "").toLowerCase() === "active";
 }
 
 function resolveWorkerChip(
   role: RoleBlockKey,
   slotIndex: number,
   assignment: Assignment | null,
-  specifiedId: string | null,
+  targeting: TargetingContext,
   workerStatus: (workerId: string) => string | null,
   deploymentStatus: string,
+  workersCatalogReady: boolean,
   formatTs: (iso: string | null) => string,
 ): WorkerChipView {
   const roleName = assignmentRoleLabel(role);
@@ -524,7 +695,11 @@ function resolveWorkerChip(
 
   if (!assignment) {
     const titleParts = [`${roleName} · 待分配`];
-    if (specifiedId) titleParts.push(`指定 ${specifiedId}`);
+    if (targeting.mode === "pin" && targeting.pinId) {
+      titleParts.push(`绑定 ${targeting.pinId}`);
+    } else if (targeting.mode === "pool" && targeting.poolIds.size) {
+      titleParts.push(`节点池 ${[...targeting.poolIds].join(" ")}`);
+    }
     if (!isDeploymentLive(deploymentStatus)) {
       titleParts.push(deploymentStatus === "stopped" ? "部署未启动" : "部署未在运行");
     }
@@ -532,7 +707,7 @@ function resolveWorkerChip(
       key,
       role,
       roleLabel: roleName,
-      bindKind: specifiedId ? "specified" : "any",
+      bindKind: targeting.mode === "any" ? "any" : "specified",
       occupancy: "vacant",
       workerId: null,
       workerStatus: null,
@@ -540,7 +715,7 @@ function resolveWorkerChip(
     };
   }
 
-  const bindKind: RoleBindKind = specifiedId ? "specified" : "any";
+  const bindKind: RoleBindKind = targeting.mode === "any" ? "any" : "specified";
   const live = isDeploymentLive(deploymentStatus);
   const st = workerStatus(assignment.worker_id);
   let occupancy: RoleOccupancy = "assigned_ok";
@@ -549,15 +724,24 @@ function resolveWorkerChip(
     titleParts.push(`租约 ${formatTs(assignment.lease_expires_at)}`);
   }
 
-  if (specifiedId && assignment.worker_id !== specifiedId) {
+  if (!assignmentMatchesTargeting(assignment.worker_id, targeting)) {
     occupancy = "assigned_weak";
-    titleParts.push(`与指定 ${specifiedId} 不一致`);
+    if (targeting.mode === "pin" && targeting.pinId) {
+      titleParts.push(`与绑定 ${targeting.pinId} 不一致`);
+    } else {
+      titleParts.push("不在节点池内");
+    }
   } else if (!live) {
     occupancy = "assigned_weak";
     titleParts.push(deploymentStatus === "stopped" ? "部署已停止" : "部署未在运行");
   } else if (!isWorkerHealthy(st)) {
-    occupancy = "assigned_weak";
-    if (st) titleParts.push(workerStatusLabel(st));
+    if (st === null && !workersCatalogReady) {
+      titleParts.push("节点状态加载中");
+    } else {
+      occupancy = "assigned_weak";
+      if (st) titleParts.push(workerStatusLabel(st));
+      else titleParts.push("未在节点列表中");
+    }
   } else if (bindKind === "specified") {
     titleParts.push("已绑定");
   } else {
@@ -585,6 +769,8 @@ export function buildScheduleNodeOverview(
     formatTs: (iso: string | null) => string;
     consumerId: string | null;
     maxInFlight: number | null;
+    /** True after the workers catalog has been fetched at least once for this session. */
+    workersCatalogReady?: boolean;
   },
 ): ScheduleNodeOverview {
   const st = String(d.schedule_type);
@@ -635,7 +821,8 @@ export function buildScheduleNodeOverview(
   const configured = configuredWorkerCount(d.worker_policy);
   const policyType = d.worker_policy?.type ? String(d.worker_policy.type) : undefined;
   const policyTypeLabel = policyType ? workerPolicyTypeLabel(policyType) : "默认";
-  const specifiedIds = specifiedWorkerIds(d.worker_targeting);
+  const targeting = targetingContext(d.worker_targeting);
+  const workersCatalogReady = opts.workersCatalogReady ?? false;
 
   const by = groupAssignmentsByRole(d.assignments);
   const assigned = d.assignments?.length ?? 0;
@@ -647,9 +834,10 @@ export function buildScheduleNodeOverview(
       role,
       index,
       slotAssignments[index] ?? null,
-      specifiedIds[index] ?? null,
+      targeting,
       workerStatus,
       String(d.status),
+      workersCatalogReady,
       opts.formatTs,
     ),
   );
@@ -681,15 +869,37 @@ export type OverviewAlertItem = {
   id: string;
   level: "bad" | "warn";
   title: string;
-  /** 失败分类（与 title 相同，供模板语义化展示） */
+  /** 失败分类（结构化报告内展示；运行类告警标题统一为「运行失败」） */
   category?: string;
-  detail?: string;
-  /** 失败原因 / 日志正文 */
+  /** 折叠标题下的一行摘要（与运行详情一致） */
+  preview?: string;
+  /** 次要元信息（时间、重试等），展示在正文顶部 */
+  meta?: string;
+  failureDetail?: FailureDetail | null;
+  failureError?: string | null;
+  /** @deprecated 无结构化报告时的纯文本回退 */
   log?: string;
   action?: HealthSuggestedAction;
-  /** 关联失败运行，用于跳转到运行详情 */
   runId?: number;
 };
+
+function buildRunFailureAlertItem(
+  run: FlowRunSummary,
+  failureDetail: FailureDetail,
+): OverviewAlertItem {
+  const err = (run.error ?? "").trim();
+  return {
+    id: `run-failure-${run.id}`,
+    level: "bad",
+    title: "运行失败",
+    category: failureDetail.category_label || failureDetail.category,
+    preview: failurePreviewText({ failureDetail, error: err }) || undefined,
+    failureDetail,
+    failureError: err || undefined,
+    runId: run.id,
+    action: "runs",
+  };
+}
 
 /** 仅返回需要人工处理的告警（不含状态说明类废话）。 */
 export function buildDeploymentOverviewAlerts(
@@ -703,30 +913,56 @@ export function buildDeploymentOverviewAlerts(
   const st = String(d.status);
 
   if (st === "failed" || (hasDetail && st !== "running")) {
-    const meta: string[] = [];
-    if (detail) {
-      const when = statusDetailWhen(detail);
-      if (when) meta.push(`时间 ${when}`);
-      const att = statusDetailIngressAttempt(detail);
-      const maxAtt = statusDetailIngressMaxAttempts(detail);
-      if (att != null && maxAtt != null) meta.push(`重试 ${att}/${maxAtt}`);
-      const next = statusDetailNextRetryAt(detail);
-      if (next) meta.push(`下次重试 ${next}`);
+    const meta = buildStatusDetailAlertMeta(detail ?? null);
+    const failedRun = latestFailedRun(runsPreview);
+    const runFailureDetail = failureDetailFromUnknown(failedRun?.failure_detail);
+
+    if (hasDetail && statusDetailIsScheduling(detail)) {
+      const schedMsg = statusDetailMessage(detail ?? null);
+      items.push({
+        id: "status-detail",
+        level: st === "failed" ? "bad" : "warn",
+        title: statusDetailCategoryLabel(detail!),
+        preview: schedMsg || undefined,
+        meta,
+        failureError: schedMsg || undefined,
+        action: statusDetailSuggestedAction(detail ?? null),
+      });
+      if (
+        failedRun &&
+        runFailureDetail &&
+        isFlowExecutionFailureDetail(runFailureDetail)
+      ) {
+        items.push(buildRunFailureAlertItem(failedRun, runFailureDetail));
+      }
+      return items;
     }
-    const category = hasDetail
-      ? statusDetailCategoryLabel(detail!)
-      : deploymentStatusLabel(st);
-    const log = hasDetail
-      ? buildDeploymentFailureLog(detail!, runsPreview)
-      : latestFailedRunError(runsPreview) ?? undefined;
-    const runId = statusDetailRunId(detail ?? null) ?? latestFailedRunId(runsPreview) ?? undefined;
+
+    const resolved = resolveOverviewFailure(detail ?? null, runsPreview);
+    const title = overviewAlertTitle(detail ?? null, resolved, st);
+    const preview = failurePreviewText({
+      failureDetail: resolved.failureDetail,
+      error: resolved.failureError,
+    });
+    const statusMsg = statusDetailMessage(detail ?? null);
+    const log =
+      !resolved.failureDetail && resolved.failureError
+        ? statusMsg || buildDeploymentFailureLog(detail ?? null, runsPreview)
+        : undefined;
+    const runId =
+      statusDetailRunId(detail ?? null) ??
+      (resolved.source === "run" ? failedRun?.id : undefined) ??
+      undefined;
     items.push({
       id: "status-detail",
       level: st === "failed" ? "bad" : "warn",
-      title: category,
-      category,
+      title,
+      category: hasDetail ? statusDetailCategoryLabel(detail!) : undefined,
+      preview: preview || undefined,
+      meta,
+      failureDetail: resolved.failureDetail,
+      failureError: resolved.failureError,
       log: log || undefined,
-      detail: meta.length ? meta.join(" · ") : undefined,
       action: statusDetailSuggestedAction(detail ?? null),
       runId,
     });
@@ -752,13 +988,21 @@ export function buildDeploymentOverviewAlerts(
     });
   }
 
-  const msgFailed = subSummary?.messages.by_status.failed ?? 0;
-  if (d.schedule_type === "subscription" && msgFailed > 0) {
+  if (
+    d.schedule_type === "subscription" &&
+    subscriptionMessageFailureAlertActive(subSummary)
+  ) {
+    const msgFailed = subscriptionMessageFailureAlertCount(subSummary);
+    const lookback =
+      subSummary?.messages.lookback_hours ?? DEPLOYMENT_OVERVIEW_MESSAGE_ALERT_LOOKBACK_HOURS;
+    const latestErr = subSummary?.recent_failed_messages?.[0]?.error?.trim();
     items.push({
       id: "msg-failed",
       level: "warn",
-      title: `${msgFailed} 条消息处理失败`,
-      detail: "可在消费页查看失败消息明细",
+      title: `近 ${lookback} 小时内有 ${msgFailed} 条消息处理失败`,
+      preview: latestErr
+        ? truncateOverviewText(latestErr, 160)
+        : "可在消费页查看失败消息明细",
       action: "messages",
     });
   }

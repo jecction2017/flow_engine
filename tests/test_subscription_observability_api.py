@@ -104,6 +104,81 @@ def test_subscription_summary_and_messages(client) -> None:
     assert listed["total"] == 1
     assert listed["messages"][0]["status"] == "failed"
     assert "bad json" in (listed["messages"][0]["error"] or "")
+    assert body["messages"]["failed_recent"] == 1
+    # Latest ledger row is completed (offset 11) after the failure — alert cleared.
+    assert body["messages"]["failure_alert"] is False
+
+
+def test_subscription_summary_failure_alert_active_while_failing(client) -> None:
+    dep_id = _create_subscription_deployment(client, "sub_alert_active")
+
+    begin_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=30,
+        window_s=None,
+        idempotency=False,
+    )
+    finish_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=30,
+        status="failed",
+        error="still broken",
+    )
+
+    r = client.get(f"/api/deployments/{dep_id}/subscription/summary")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["messages"]["failure_alert"] is True
+    assert body["messages"]["failed_recent"] == 1
+
+
+def test_subscription_summary_failure_alert_clears_after_recovery(client) -> None:
+    dep_id = _create_subscription_deployment(client, "sub_recover_flow")
+
+    begin_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=20,
+        window_s=None,
+        idempotency=False,
+    )
+    finish_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=20,
+        status="failed",
+        error="transient",
+    )
+    begin_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=21,
+        window_s=None,
+        idempotency=False,
+    )
+    finish_message_processing(
+        deployment_id=dep_id,
+        topic="alerts",
+        partition=0,
+        offset=21,
+        status="completed",
+        deploy_run_id=None,
+    )
+
+    r = client.get(f"/api/deployments/{dep_id}/subscription/summary")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["messages"]["by_status"]["failed"] == 1
+    assert body["messages"]["failed_recent"] == 1
+    assert body["messages"]["failure_alert"] is False
+    assert len(body["recent_failed_messages"]) == 1
 
 
 def test_recent_failed_subscription_messages_dedup_per_deployment(client) -> None:

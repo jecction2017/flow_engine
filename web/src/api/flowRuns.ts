@@ -72,6 +72,7 @@ export type FlowRunSummary = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  failure_detail?: FailureDetail | null;
   /** 部署运行：累计触发的 Span 总数（采样前）。仅 deploy_runs 提供。 */
   span_count?: number | null;
   /** 部署运行：实际写库的 Span 数量（即被采样的样本）。仅 deploy_runs 提供。 */

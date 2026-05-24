@@ -75,7 +75,7 @@ const causeChain = computed(() =>
 .failure-report {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .fr-table {

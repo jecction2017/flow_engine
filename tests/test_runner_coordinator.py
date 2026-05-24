@@ -253,6 +253,159 @@ def test_assign_pending_pool_filters_eligible_workers() -> None:
         assert assn[0].worker_id == "w2"
 
 
+def test_reconcile_restores_standby_after_worker_returns() -> None:
+    """Under-assigned running deployments must regain workers when they come back."""
+    _add_worker("w1", alive=True)
+    _add_worker("w2", alive=True)
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code="standby_return",
+            ver_no=1,
+            mode="production",
+            schedule_type="subscription",
+            schedule_config={},
+            worker_policy={"type": "single_active", "target_workers": 2},
+            capability_policy=[],
+            worker_targeting={},
+            status="running",
+            env_profile_code="default",
+        )
+        s.add(row)
+        s.flush()
+        dep_id = int(row.id)
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w1",
+                role="leader",
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            )
+        )
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w2",
+                role="standby",
+                lease_expires_at=None,
+            )
+        )
+
+    with db_session() as s:
+        w2 = s.execute(select(FeWorker).where(FeWorker.worker_id == "w2")).scalar_one()
+        w2.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    coord_mod._check_dead_workers_sync()
+
+    with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 1
+        assert assn[0].worker_id == "w1"
+
+    with db_session() as s:
+        w2 = s.execute(select(FeWorker).where(FeWorker.worker_id == "w2")).scalar_one()
+        w2.status = "active"
+        w2.last_heartbeat = datetime.now(timezone.utc)
+
+    created = coord_mod._reconcile_running_assignments_sync()
+    assert created >= 1
+
+    with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 2
+        by_worker = {a.worker_id: a.role for a in assn}
+        assert by_worker["w1"] == "leader"
+        assert by_worker["w2"] == "standby"
+
+
+def test_reconcile_restores_multi_active_replica_after_worker_returns() -> None:
+    _add_worker("w1", alive=True)
+    _add_worker("w2", alive=True)
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code="replica_return",
+            ver_no=1,
+            mode="production",
+            schedule_type="once",
+            schedule_config={},
+            worker_policy={"type": "multi_active", "target_workers": 2},
+            capability_policy=[],
+            worker_targeting={},
+            status="running",
+            env_profile_code="default",
+        )
+        s.add(row)
+        s.flush()
+        dep_id = int(row.id)
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w1",
+                role="replica",
+                lease_expires_at=None,
+            )
+        )
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="w2",
+                role="replica",
+                lease_expires_at=None,
+            )
+        )
+
+    with db_session() as s:
+        w2 = s.execute(select(FeWorker).where(FeWorker.worker_id == "w2")).scalar_one()
+        w2.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    coord_mod._check_dead_workers_sync()
+
+    with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 1
+        assert assn[0].worker_id == "w1"
+
+    with db_session() as s:
+        w2 = s.execute(select(FeWorker).where(FeWorker.worker_id == "w2")).scalar_one()
+        w2.status = "active"
+        w2.last_heartbeat = datetime.now(timezone.utc)
+
+    created = coord_mod._reconcile_running_assignments_sync()
+    assert created >= 1
+
+    with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 2
+        assert {a.worker_id for a in assn} == {"w1", "w2"}
+
+
 def test_dead_worker_leader_promotes_standby() -> None:
     _add_worker("dead_w", alive=False)
     _add_worker("alive_w", alive=True)
@@ -710,7 +863,7 @@ def test_assign_pending_cron_creates_leader() -> None:
         assert dep.status == "running"
 
 
-def test_assign_unassigned_cron_creates_leader() -> None:
+def test_reconcile_running_assignments_fills_empty_cron_leader() -> None:
     _add_worker("w1", alive=True)
     with db_session() as s:
         tmpl = FeFlowDeployment(
@@ -729,7 +882,7 @@ def test_assign_unassigned_cron_creates_leader() -> None:
         s.flush()
         did = int(tmpl.id)
 
-    created = coord_mod._assign_unassigned_cron_sync()
+    created = coord_mod._reconcile_running_assignments_sync()
     assert created >= 1
 
     with db_session() as s:

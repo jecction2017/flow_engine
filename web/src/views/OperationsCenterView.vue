@@ -461,6 +461,7 @@
                 :runs-preview="depOverviewRunsPreview"
                 :runs-preview-total="depOverviewRunsTotal"
                 :workers="workers"
+                :workers-catalog-ready="workersCatalogLoaded"
                 :loading-sub-summary="loadingSubSummary"
                 :loading-runs-preview="loadingDepOverviewRuns"
                 :format-ts="formatTs"
@@ -1179,7 +1180,10 @@ async function loadDepOverviewRunsPreview(deploymentId: number) {
 
 async function loadDeploymentOverviewData(deploymentId: number) {
   const d = selectedDeployment.value;
-  const tasks: Promise<void>[] = [loadDepOverviewRunsPreview(deploymentId)];
+  const tasks: Promise<void>[] = [
+    loadDepOverviewRunsPreview(deploymentId),
+    loadWorkers(),
+  ];
   if (d?.schedule_type === "subscription") {
     tasks.push(loadSubscriptionSummary());
   }
@@ -1632,9 +1636,6 @@ function deploymentListMetaRest(d: Deployment): string {
   const parts: string[] = [scheduleTypeLabel(String(d.schedule_type))];
   const env = d.env_profile_code?.trim();
   if (env) parts.push(env);
-  if (d.schedule_type === "cron" && d.schedule_config?.cron_expr) {
-    parts.push(d.schedule_config.cron_expr);
-  }
   return parts.join(" · ");
 }
 
@@ -1848,6 +1849,7 @@ watch(
 // ---------------- Workers ----------------
 
 const workers = ref<Worker[]>([]);
+const workersCatalogLoaded = ref(false);
 const loadingWorkers = ref(false);
 
 const activeWorkers = computed(() => {
@@ -1876,6 +1878,7 @@ async function loadWorkers() {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
     loadingWorkers.value = false;
+    workersCatalogLoaded.value = true;
   }
 }
 
