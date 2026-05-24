@@ -22,47 +22,78 @@
       </div>
     </div>
 
-    <!-- 2. 调度与部署：仅实时调度与节点分配 -->
-    <section class="schedule-panel" aria-label="调度与部署">
-      <header class="schedule-panel-head">
-        <h3 class="schedule-panel-title">调度与部署</h3>
+    <!-- 2. 运行调度：触发规则 + 节点策略/角色就位 -->
+    <section class="sched-ov" aria-label="运行调度">
+      <header class="sched-ov-head">
+        <h3 class="sched-ov-title">运行调度</h3>
         <button type="button" class="btn small ghost" @click="emit('refresh')">刷新</button>
       </header>
-      <dl class="schedule-dl">
-        <div class="schedule-row">
-          <dt>调度类型</dt>
-          <dd>{{ scheduleTypeLabel(deployment.schedule_type) }}</dd>
-        </div>
-        <template v-for="row in scheduleInfoRows" :key="row.label">
-          <div class="schedule-row">
-            <dt>{{ row.label }}</dt>
-            <dd :class="{ mono: row.mono, muted: row.muted }">{{ row.value }}</dd>
+
+      <div class="sched-ov-body">
+        <article class="sched-ov-col sched-ov-col--trigger">
+          <div class="sched-type-row">
+            <span class="sched-ov-col-label">调度类型</span>
+            <span class="sched-type-badge">{{ scheduleOverview.scheduleTypeLabel }}</span>
           </div>
-        </template>
-        <div class="schedule-divider" aria-hidden="true" />
-        <div class="schedule-row">
-          <dt>配置节点</dt>
-          <dd>{{ configuredWorkersText }}</dd>
-        </div>
-        <div class="schedule-row">
-          <dt>当前分配</dt>
-          <dd>
-            <ul v-if="assignmentLines.length" class="assign-lines">
-              <li v-for="(line, i) in assignmentLines" :key="i" class="assign-line">
-                <span class="assign-role">{{ line.role }}</span>
-                <span class="mono assign-id">{{ line.workerId }}</span>
+          <div class="sched-trigger-grid">
+            <div
+              v-for="chip in scheduleOverview.triggerChips"
+              :key="chip.label"
+              class="sched-kv"
+              :class="{ 'sched-kv--highlight': chip.highlight, 'sched-kv--muted': chip.muted }"
+            >
+              <span class="sched-kv-label">{{ chip.label }}</span>
+              <span class="sched-kv-value" :class="{ mono: chip.mono }">{{ chip.value }}</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="sched-ov-col sched-ov-col--nodes">
+          <div class="sched-meta-row">
+            <span class="sched-meta-chip">
+              <span class="sched-meta-chip-label">节点策略</span>
+              <span class="sched-meta-chip-value">{{ scheduleOverview.policyTypeLabel }}</span>
+            </span>
+            <span class="sched-meta-chip">
+              <span class="sched-meta-chip-label">已分配</span>
+              <span
+                class="sched-meta-chip-value mono"
+                :class="`sched-meta-chip-value--${scheduleOverview.allocationTone}`"
+              >{{ scheduleOverview.allocationRatio }}</span>
+            </span>
+          </div>
+
+          <div class="worker-chip-row">
+            <div
+              v-for="chip in scheduleOverview.workerChips"
+              :key="chip.key"
+              class="worker-chip"
+              :class="workerChipClasses(chip)"
+              :title="chip.title ?? undefined"
+            >
+              <span class="worker-chip-role">{{ chip.roleLabel }}</span>
+              <span class="worker-chip-id mono">{{ chip.workerId || "—" }}</span>
+              <span class="worker-chip-flags" aria-hidden="true">
+                <span v-if="chip.bindKind === 'specified'" class="wf wf-pin">定</span>
                 <span
-                  v-if="line.workerStatus"
-                  class="tag small"
-                  :class="workerStatusClass(line.workerStatus)"
-                >{{ workerStatusLabel(line.workerStatus) }}</span>
-                <span v-if="line.lease" class="muted small assign-lease">{{ line.lease }}</span>
-              </li>
-            </ul>
-            <span v-else class="muted">未分配</span>
-          </dd>
-        </div>
-      </dl>
+                  v-if="chip.occupancy === 'assigned_ok' || chip.occupancy === 'assigned_weak'"
+                  class="wf wf-assign"
+                >配</span>
+                <span v-if="chip.microLabel" class="wf wf-state">{{ chip.microLabel }}</span>
+              </span>
+              <span
+                v-if="chip.workerStatus && chip.occupancy !== 'vacant'"
+                class="worker-chip-dot"
+                :class="workerStatusClass(chip.workerStatus)"
+              />
+            </div>
+          </div>
+
+          <div v-if="scheduleOverview.allocationTone === 'warn'" class="sched-ov-foot">
+            <button type="button" class="btn small ghost" @click="emit('navigate-workers')">查看节点</button>
+          </div>
+        </article>
+      </div>
     </section>
 
     <!-- 3. 运行记录 + 最近运行 -->
@@ -254,20 +285,17 @@ import type { FlowRunSummary } from "@/api/flowRuns";
 import type { SubscriptionMessageRow, SubscriptionSummary } from "@/api/subscriptionObservability";
 import type { Worker } from "@/api/workers";
 import {
-  assignmentRoleLabel,
   buildDeploymentConfigSections,
   buildDeploymentOverviewAlerts,
+  buildScheduleNodeOverview,
   computeCronNextRunIso,
-  configuredWorkerCount,
   countRunsByStatus,
-  groupAssignmentsByRole,
   messageStatusLabel,
   runStatusLabel,
-  scheduleTypeLabel,
   subscriptionFieldsFromScheduleConfig,
   truncateOverviewText,
-  workerPolicyTypeLabel,
   workerStatusLabel,
+  type WorkerChipView,
 } from "@/utils/deploymentOverview";
 
 const props = defineProps<{
@@ -312,82 +340,35 @@ const cronExpr = computed(() => {
 
 const cronNextRunIso = computed(() => computeCronNextRunIso(cronExpr.value));
 
-type ScheduleInfoRow = { label: string; value: string; mono?: boolean; muted?: boolean };
+function workerStatusForId(workerId: string): string | null {
+  const w = props.workers.find((x) => x.worker_id === workerId);
+  return w ? String(w.status) : null;
+}
 
-const scheduleInfoRows = computed((): ScheduleInfoRow[] => {
-  const st = props.deployment.schedule_type;
-  if (st === "cron") {
-    const rows: ScheduleInfoRow[] = [];
-    if (cronExpr.value) {
-      rows.push({ label: "定时设定", value: cronExpr.value, mono: true });
-    }
-    if (cronNextRunIso.value) {
-      rows.push({ label: "下次运行", value: props.formatTs(cronNextRunIso.value), mono: true });
-    } else if (cronExpr.value) {
-      rows.push({ label: "下次运行", value: "表达式无法解析", muted: true });
-    }
-    return rows;
-  }
-  if (st === "subscription") {
-    return [
-      { label: "消费者", value: consumerId.value || "—", mono: true },
-      {
-        label: "并发上限",
-        value: subFields.value.max_in_flight != null ? String(subFields.value.max_in_flight) : "—",
-        mono: true,
-      },
-    ];
-  }
-  return [];
-});
-
-const configuredWorkersText = computed(() => {
-  const n = configuredWorkerCount(props.deployment.worker_policy);
-  const typeRaw = props.deployment.worker_policy?.type;
-  const typeLabel = typeRaw ? workerPolicyTypeLabel(String(typeRaw)) : "";
-  if (n != null && typeLabel) return `${n} 个节点 · ${typeLabel}`;
-  if (n != null) return `${n} 个节点`;
-  if (typeLabel) return typeLabel;
-  return "—";
-});
-
-type AssignmentLine = {
-  role: string;
-  workerId: string;
-  workerStatus: string | null;
-  lease: string | null;
-};
-
-const assignmentLines = computed((): AssignmentLine[] => {
-  const by = groupAssignmentsByRole(props.deployment.assignments);
-  const lines: AssignmentLine[] = [];
-  for (const role of ["leader", "standby", "replica"] as const) {
-    for (const a of by[role]) {
-      const w = props.workers.find((x) => x.worker_id === a.worker_id);
-      lines.push({
-        role: assignmentRoleLabel(role),
-        workerId: a.worker_id,
-        workerStatus: w ? String(w.status) : null,
-        lease: a.lease_expires_at ? `租约 ${props.formatTs(a.lease_expires_at)}` : null,
-      });
-    }
-  }
-  for (const a of by.other) {
-    const w = props.workers.find((x) => x.worker_id === a.worker_id);
-    lines.push({
-      role: assignmentRoleLabel(a.role),
-      workerId: a.worker_id,
-      workerStatus: w ? String(w.status) : null,
-      lease: a.lease_expires_at ? `租约 ${props.formatTs(a.lease_expires_at)}` : null,
-    });
-  }
-  return lines;
-});
+const scheduleOverview = computed(() =>
+  buildScheduleNodeOverview(props.deployment, workerStatusForId, {
+    cronNextIso: cronNextRunIso.value,
+    formatTs: props.formatTs,
+    consumerId: consumerId.value,
+    maxInFlight: subFields.value.max_in_flight,
+  }),
+);
 
 function workerStatusClass(status: string): string {
   if (status === "active") return "ok";
   if (status === "dead") return "dead";
   return "info";
+}
+
+function workerChipClasses(chip: WorkerChipView): Record<string, boolean> {
+  return {
+    "worker-chip--specified": chip.bindKind === "specified",
+    "worker-chip--any": chip.bindKind === "any",
+    "worker-chip--assigned-ok": chip.occupancy === "assigned_ok",
+    "worker-chip--assigned-weak": chip.occupancy === "assigned_weak",
+    "worker-chip--specified-idle": chip.occupancy === "specified_idle",
+    "worker-chip--vacant": chip.occupancy === "vacant",
+  };
 }
 
 const failedMessageCount = computed(() => props.subSummary?.messages.by_status.failed ?? 0);
@@ -479,11 +460,57 @@ function messageStatusTagClass(status: string): string {
   font-weight: 700;
 }
 
-/* —— 调度与部署 —— */
-.schedule-panel {
+/* —— 运行调度 —— */
+.sched-ov {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.sched-ov-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fbfdff;
+}
+
+.sched-ov-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sched-type-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sched-type-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.sched-ov-body {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(0, 1.6fr);
+  gap: 0;
+  align-items: stretch;
+}
+
+.sched-ov-col {
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -491,97 +518,262 @@ function messageStatusTagClass(status: string): string {
   min-width: 0;
 }
 
-.schedule-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.sched-ov-col--trigger {
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, #fbfdff 80%, var(--surface));
 }
 
-.schedule-panel-title {
-  margin: 0;
-  font-size: 13px;
+.sched-ov-col-label {
+  font-size: 10px;
   font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.schedule-dl {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
+.sched-trigger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px;
 }
 
-.schedule-row {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 10px 16px;
-  align-items: start;
-  font-size: 12px;
-}
-
-.schedule-row dt {
-  margin: 0;
-  color: var(--muted);
-  font-weight: 600;
-  line-height: 1.45;
-}
-
-.schedule-row dd {
-  margin: 0;
-  font-weight: 600;
-  line-height: 1.45;
+.sched-kv {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
+}
+
+.sched-kv--highlight {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface));
+}
+
+.sched-kv--muted .sched-kv-value {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.sched-kv-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sched-kv-value {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
   word-break: break-word;
 }
 
-.schedule-row dd.muted {
-  font-weight: 500;
-}
-
-.schedule-divider {
-  height: 1px;
-  background: var(--border);
-  margin: 2px 0;
-}
-
-.assign-lines {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.assign-line {
+.sched-meta-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
-.assign-role {
+.sched-meta-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px dashed color-mix(in srgb, var(--border) 90%, transparent);
+  background: color-mix(in srgb, var(--border) 22%, transparent);
+  max-width: 100%;
+}
+
+.sched-meta-chip-label {
+  color: var(--muted);
+  font-weight: 600;
   flex-shrink: 0;
+}
+
+.sched-meta-chip-value {
+  font-weight: 700;
+}
+
+.sched-meta-chip-value--ok {
+  color: #047857;
+}
+
+.sched-meta-chip-value--warn {
+  color: #b45309;
+}
+
+.sched-meta-chip-value--muted {
+  color: var(--muted);
+}
+
+.worker-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+  align-content: flex-start;
+}
+
+.worker-chip {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 6px;
+  align-items: center;
+  min-width: 118px;
+  max-width: 200px;
+  padding: 6px 8px 5px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fbfdff;
+  cursor: default;
+}
+
+.worker-chip--any {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--border) 10%, var(--surface));
+}
+
+.worker-chip--specified {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.worker-chip--specified-idle {
+  border-style: dashed;
+  border-color: color-mix(in srgb, #d97706 42%, var(--border));
+  background: color-mix(in srgb, #fef3c7 32%, var(--surface));
+}
+
+.worker-chip--specified-idle .worker-chip-id {
+  color: #92400e;
+}
+
+.worker-chip--assigned-weak {
+  border-color: color-mix(in srgb, #f59e0b 38%, var(--border));
+  background: color-mix(in srgb, #fffbeb 50%, var(--surface));
+}
+
+.worker-chip--assigned-ok.worker-chip--specified {
+  background: color-mix(in srgb, var(--accent-soft) 18%, #fbfdff);
+}
+
+.worker-chip--vacant .worker-chip-id {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.worker-chip-role {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.15;
+  min-width: 28px;
+  max-width: 36px;
+  padding: 2px 3px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.worker-chip--specified .worker-chip-role {
+  background: color-mix(in srgb, var(--accent-soft) 80%, transparent);
+  color: var(--accent);
+}
+
+.worker-chip-id {
   font-size: 11px;
   font-weight: 700;
-  color: var(--muted);
-  min-width: 52px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.assign-id {
+.worker-chip-flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.wf {
+  font-size: 9px;
   font-weight: 700;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
-.assign-lease {
-  flex-basis: 100%;
-  padding-left: 58px;
-  font-size: 10px;
+.wf-pin {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+}
+
+.wf-assign {
+  color: #047857;
+  background: color-mix(in srgb, #10b981 14%, transparent);
+}
+
+.wf-state {
+  color: #92400e;
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+}
+
+.worker-chip--vacant .wf {
+  display: none;
+}
+
+.worker-chip-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.worker-chip-dot.ok {
+  background: #10b981;
+}
+
+.worker-chip-dot.dead {
+  background: #94a3b8;
+}
+
+.worker-chip-dot.info {
+  background: #3b82f6;
+}
+
+.sched-ov-foot {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .tag.dead {
   background: color-mix(in srgb, #94a3b8 18%, transparent);
   color: #475569;
   border-color: color-mix(in srgb, #94a3b8 40%, transparent);
+}
+
+.tag.vacant {
+  background: color-mix(in srgb, #94a3b8 12%, transparent);
+  color: #64748b;
+  border-color: color-mix(in srgb, #94a3b8 35%, transparent);
 }
 
 /* —— 运行 / 消息双列 —— */
@@ -859,6 +1051,15 @@ tr.clickable:hover td {
 }
 
 @media (max-width: 900px) {
+  .sched-ov-body {
+    grid-template-columns: 1fr;
+  }
+
+  .sched-ov-col--trigger {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
   .ov-two-col {
     grid-template-columns: 1fr;
   }

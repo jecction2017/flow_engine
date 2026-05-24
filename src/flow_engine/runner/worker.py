@@ -38,6 +38,7 @@ from flow_engine.engine.observability import RunRef
 from flow_engine.engine.orchestrator import FlowRuntime
 from flow_engine.runner import deploy_persistence, span_persistence
 from flow_engine.runner.exceptions import RunnerConfigError
+from flow_engine.runner.worker_policy import policy_type_from_policy
 from flow_engine.runner.models import CapabilityRule, RunMode, RunOptions
 from flow_engine.runner.obs_backend import AsyncBufferedDBBackend, parse_obs_config
 from flow_engine.stores import data_dict
@@ -235,19 +236,30 @@ def _set_deployment_status(
             row.status_detail = status_detail
 
 
+def _role_may_execute(
+    deployment: dict[str, Any],
+    assignment: dict[str, Any],
+) -> bool:
+    """Whether this assignment's role may execute (subscription / once / cron)."""
+    wp = deployment.get("worker_policy") or {}
+    wp_type = policy_type_from_policy(wp)
+    role = str(assignment.get("role") or "")
+    if wp_type == "multi_active":
+        return role == "replica"
+    return role == "leader"
+
+
 def _can_consume_subscription(
     deployment: dict[str, Any],
     assignment: dict[str, Any],
 ) -> bool:
     """Whether this worker assignment may run subscription ingress."""
-    wp = deployment.get("worker_policy") or {}
-    wp_type = str(wp.get("type") or "single_active")
-    if wp_type == "multi_active":
-        return str(assignment.get("role") or "") in ("replica", "leader")
-
-    role = str(assignment.get("role") or "")
-    if role != "leader":
+    if not _role_may_execute(deployment, assignment):
         return False
+    wp = deployment.get("worker_policy") or {}
+    if policy_type_from_policy(wp) == "multi_active":
+        return True
+
     lease = assignment.get("lease_expires_at")
     if lease is None:
         return True
@@ -477,6 +489,26 @@ class Worker:
 
         self._assignments[deployment_id] = asyncio.create_task(runner())
 
+    async def _await_execute_slot(
+        self, deployment_id: int
+    ) -> dict[str, Any] | None:
+        """Block until this worker may execute once/cron, or return None if assignment ended."""
+        while not self._stop_evt.is_set():
+            deployment = await asyncio.to_thread(_read_deployment, deployment_id)
+            if deployment is None:
+                return None
+            rows = await asyncio.to_thread(_list_assignments, self.worker_id)
+            info = next(
+                (r for r in rows if int(r["deployment_id"]) == deployment_id),
+                None,
+            )
+            if info is None:
+                return None
+            if _role_may_execute(deployment, info):
+                return info
+            await asyncio.sleep(ASSIGNMENT_POLL_INTERVAL_S)
+        return None
+
     async def _run_assignment(self, deployment_id: int, assignment_info: dict[str, Any]) -> None:
         deployment = await asyncio.to_thread(_read_deployment, deployment_id)
         if deployment is None:
@@ -487,6 +519,9 @@ class Worker:
             if st == "subscription":
                 await self._run_subscription(deployment)
             elif st in ("once", "cron"):
+                slot = await self._await_execute_slot(deployment_id)
+                if slot is None:
+                    return
                 await self._run_once_flow(deployment)
             else:
                 logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)

@@ -8,7 +8,7 @@ from flow_engine.runner.worker import _can_consume_subscription
 
 
 def _dep(wp_type: str = "single_active") -> dict:
-    return {"worker_policy": {"type": wp_type, "min_workers": 1}}
+    return {"worker_policy": {"type": wp_type, "target_workers": 1}}
 
 
 def test_single_active_standby_cannot_consume() -> None:

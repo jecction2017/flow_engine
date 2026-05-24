@@ -576,10 +576,12 @@ class FeFlowDeployment(_AuditCols, Base):
         subscription: SubscriptionSpec JSON（见 docs/subscription-scheduling-design.md）
 
     worker_policy:
-        type:                "multi_active" | "single_active"
-        min_workers:         至少分配的 worker 数（multi_active 控制副本数；single_active 控制候选）
-        max_restarts:        subscription Ingress 崩溃最大重启次数，默认 5
-        restart_backoff_s:   重启退避基础秒数；实际 = base * 2^(attempt-1)
+        type:            "multi_active" | "single_active"
+        target_workers:  目标分配 worker 数（上限；实际 = min(eligible, target_workers)）
+        max_restarts:    subscription Ingress 崩溃最大重启次数，默认 5
+        restart_backoff_s: 重启退避基础秒数；实际 = base * 2^(attempt-1)
+
+        legacy: 旧 JSON 可能含 min_workers；读路径 normalize 为 target_workers，新写入不再产生。
 
     capability_policy: list[CapabilityRule]，可空 list；JSON 持久化。
     """

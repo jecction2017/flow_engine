@@ -57,7 +57,7 @@ def test_create_and_list_deployment(client: TestClient) -> None:
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -85,7 +85,7 @@ def test_create_deployment_without_auto_start(client: TestClient) -> None:
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
             "auto_start": False,
@@ -108,7 +108,7 @@ def test_list_deployments_root_only_hides_legacy_children(client: TestClient) ->
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -123,7 +123,7 @@ def test_list_deployments_root_only_hides_legacy_children(client: TestClient) ->
                 mode="production",
                 schedule_type="once",
                 schedule_config={},
-                worker_policy={"type": "single_active", "min_workers": 1},
+                worker_policy={"type": "single_active", "target_workers": 1},
                 capability_policy=[],
                 worker_targeting={},
                 status="failed",
@@ -220,7 +220,7 @@ def test_create_subscription_deployment(client: TestClient) -> None:
                     "mapping": {"mode": "spread"},
                 },
             },
-            "worker_policy": {"type": "multi_active", "min_workers": 1},
+            "worker_policy": {"type": "multi_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -257,7 +257,7 @@ def test_create_cron_with_auto_start_false_is_stopped(client: TestClient) -> Non
             "mode": "production",
             "schedule_type": "cron",
             "schedule_config": {"cron_expr": "0 8 * * *"},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
             "auto_start": False,
@@ -277,7 +277,7 @@ def test_create_cron_default_auto_start_is_running(client: TestClient) -> None:
             "mode": "production",
             "schedule_type": "cron",
             "schedule_config": {"cron_expr": "0 8 * * *"},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -295,7 +295,7 @@ def test_create_deployment_invalid_flow_version(client: TestClient) -> None:
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -367,7 +367,7 @@ def test_patch_deployment_config_requires_stopped(client: TestClient) -> None:
                 "mode": "shadow",
                 "schedule_type": "once",
                 "schedule_config": {},
-                "worker_policy": {"type": "single_active", "min_workers": 1},
+                "worker_policy": {"type": "single_active", "target_workers": 1},
                 "capability_policy": [],
                 "env_profile_code": "default",
                 "worker_targeting": {"mode": "any"},
@@ -407,7 +407,7 @@ def test_patch_deployment_config_updates_fields(client: TestClient) -> None:
                 "mode": "shadow",
                 "schedule_type": "cron",
                 "schedule_config": {"cron_expr": "0 */10 * * *"},
-                "worker_policy": {"type": "single_active", "min_workers": 2},
+                "worker_policy": {"type": "single_active", "target_workers": 2},
                 "capability_policy": [],
                 "env_profile_code": "default",
                 "worker_targeting": {"mode": "any"},
@@ -418,7 +418,7 @@ def test_patch_deployment_config_updates_fields(client: TestClient) -> None:
     body = r.json()
     assert body["mode"] == "shadow"
     assert body["schedule_config"]["cron_expr"] == "0 */10 * * *"
-    assert body["worker_policy"]["min_workers"] == 2
+    assert body["worker_policy"]["target_workers"] == 2
     assert body["status"] == "stopped"
 
     r = client.get(f"/api/deployments/{dep_id}")
@@ -557,7 +557,7 @@ def test_recent_failed_deploy_runs_dedup_per_deployment(client: TestClient) -> N
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -621,7 +621,7 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
             "mode": "production",
             "schedule_type": "once",
             "schedule_config": {},
-            "worker_policy": {"type": "single_active", "min_workers": 1},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
             "capability_policy": [],
             "env_profile_code": "default",
         },
@@ -681,3 +681,65 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
     assert body["total"] == 1
     assert body["runs"][0]["deployment_id"] == dep_id
     assert body["runs"][0]["status"] == "terminated"
+
+
+def test_api_rejects_legacy_min_workers(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "schedule_type": "once",
+            "worker_policy": {"type": "single_active", "min_workers": 1},
+        },
+    )
+    assert r.status_code == 422
+    assert "target_workers" in r.text
+
+
+def test_api_get_normalizes_legacy_min_workers(client: TestClient) -> None:
+    from flow_engine.db.models import FeFlowDeployment
+    from flow_engine.db.session import db_session
+
+    ver = _commit_flow(client)
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code="runner_flow",
+            ver_no=ver,
+            mode="production",
+            schedule_type="once",
+            schedule_config={},
+            worker_policy={"type": "single_active", "min_workers": 1},
+            capability_policy=[],
+            status="stopped",
+            env_profile_code="",
+            worker_targeting={"mode": "any"},
+        )
+        s.add(row)
+        s.flush()
+        dep_id = int(row.id)
+
+    r = client.get(f"/api/deployments/{dep_id}")
+    assert r.status_code == 200
+    wp = r.json()["worker_policy"]
+    assert wp["target_workers"] == 1
+    assert "min_workers" not in wp
+
+
+def test_api_pool_target_workers_must_match(client: TestClient) -> None:
+    ver = _commit_flow(client)
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "runner_flow",
+            "ver_no": ver,
+            "schedule_type": "cron",
+            "schedule_config": {"cron_expr": "0 * * * *"},
+            "worker_policy": {"type": "multi_active", "target_workers": 3},
+            "worker_targeting": {"mode": "pool", "worker_ids": ["w1", "w2"]},
+        },
+    )
+    assert r.status_code == 400
+    assert "target_workers" in r.text
+

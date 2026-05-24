@@ -150,14 +150,44 @@
                 多活（多个节点同时）
               </button>
             </div>
-            <label class="run-node-min">
-              <FormFieldLabel
-                :label="workerPolicyForm.type === 'multi_active' ? '最少节点' : '候选节点'"
-                tech="min_workers"
-                tech-placement="tooltip"
-              />
-              <input v-model.number="workerPolicyForm.min_workers" type="number" min="1" class="form-inp mono" />
-            </label>
+            <div class="run-node-count-row">
+              <p v-if="form.schedule_type === 'once'" class="run-node-once-hint muted small">
+                一次性部署固定使用 1 个节点
+              </p>
+              <template v-else-if="workerPolicyForm.type === 'single_active'">
+                <div class="run-node-single-active">
+                  <span class="run-node-primary-text">主节点数 <span class="mono">1</span>，</span>
+                  <label v-if="showNodeCountInput" class="run-node-min">
+                    <FormFieldLabel label="备用节点数" />
+                    <input
+                      v-model.number="standbyInputValue"
+                      type="number"
+                      min="0"
+                      class="form-inp mono"
+                      :disabled="nodeInputDisabled"
+                      :readonly="nodeInputDisabled"
+                    />
+                    <InfoTip :text="standbyInputTipResolved" />
+                  </label>
+                </div>
+              </template>
+              <label v-else-if="showNodeCountInput" class="run-node-min">
+                <FormFieldLabel
+                  label="并发节点数"
+                  tech="target_workers"
+                  tech-placement="tooltip"
+                  tip="不指定 Worker 时手动设置；指定后节点数随已选数量锁定"
+                />
+                <input
+                  v-model.number="nodeCountInputValue"
+                  type="number"
+                  min="1"
+                  class="form-inp mono"
+                  :disabled="nodeInputDisabled"
+                  :readonly="nodeInputDisabled"
+                />
+              </label>
+            </div>
           </div>
 
           <div class="form-sec-title sub">
@@ -349,11 +379,88 @@ const subscriptionMapping = ref<ContextMappingState>({
 
 const workerPolicyForm = reactive({
   type: "single_active" as "single_active" | "multi_active",
-  min_workers: 1,
+  standbyCount: 0,
+  replicaCount: 1,
 });
 
 const workerSelected = reactive(new Set<string>());
 const capabilityPolicyText = ref("[]");
+
+const nodeInputDisabled = computed(
+  () => workerSelected.size > 0 || form.schedule_type === "once",
+);
+
+const showNodeCountInput = computed(() => form.schedule_type !== "once");
+
+const nodeCountInputTip = computed(() => {
+  if (workerSelected.size > 0) {
+    return "已指定 Worker，节点数随已选数量锁定";
+  }
+  return "主节点执行；备用节点仅在主节点离线时接管，不并发执行";
+});
+
+const standbyInputTipResolved = computed(() => {
+  const tip = nodeCountInputTip.value;
+  return tip ? `${tip}\n字段：target_workers` : "字段：target_workers";
+});
+
+const standbyInputValue = computed({
+  get(): number {
+    const k = workerSelected.size;
+    if (k > 0) return Math.max(0, k - 1);
+    return Math.max(0, workerPolicyForm.standbyCount);
+  },
+  set(raw: number) {
+    if (nodeInputDisabled.value) return;
+    workerPolicyForm.standbyCount = Math.max(0, Math.floor(Number(raw) || 0));
+  },
+});
+
+const nodeCountInputValue = computed({
+  get(): number {
+    const k = workerSelected.size;
+    if (k > 0) return k;
+    if (workerPolicyForm.type === "multi_active") {
+      return Math.max(1, workerPolicyForm.replicaCount);
+    }
+    return Math.max(0, workerPolicyForm.standbyCount);
+  },
+  set(raw: number) {
+    if (nodeInputDisabled.value) return;
+    if (workerPolicyForm.type === "multi_active") {
+      workerPolicyForm.replicaCount = Math.max(1, Math.floor(Number(raw) || 1));
+      return;
+    }
+    workerPolicyForm.standbyCount = Math.max(0, Math.floor(Number(raw) || 0));
+  },
+});
+
+function resolveTargetWorkers(): number {
+  const k = workerSelected.size;
+  if (form.schedule_type === "once") return 1;
+  if (k > 0) return k;
+  if (workerPolicyForm.type === "multi_active") {
+    return Math.max(1, workerPolicyForm.replicaCount);
+  }
+  return 1 + Math.max(0, workerPolicyForm.standbyCount);
+}
+
+function syncNodeCountFromSelection() {
+  const k = workerSelected.size;
+  if (k <= 0) return;
+  if (workerPolicyForm.type === "multi_active") {
+    workerPolicyForm.replicaCount = k;
+  } else if (form.schedule_type !== "once") {
+    workerPolicyForm.standbyCount = Math.max(0, k - 1);
+  }
+}
+
+watch(
+  () => [...workerSelected],
+  () => {
+    syncNodeCountFromSelection();
+  },
+);
 
 watch(
   () => props.activeWorkers.map((w) => w.worker_id),
@@ -419,30 +526,17 @@ function scrollToSection(sectionId: string) {
   el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function onScheduleTypeChange() {
-  if (
-    form.schedule_type === "subscription" &&
-    workerPolicyForm.type === "single_active" &&
-    workerPolicyForm.min_workers > 1
-  ) {
-    workerPolicyForm.min_workers = 1;
-  }
-}
-
 function setScheduleType(type: ScheduleType) {
   form.schedule_type = type;
-  onScheduleTypeChange();
+  if (type === "once" && workerSelected.size > 1) {
+    const first = [...workerSelected][0];
+    workerSelected.clear();
+    if (first) workerSelected.add(first);
+  }
 }
 
 function setWorkerPolicyType(type: "single_active" | "multi_active") {
   workerPolicyForm.type = type;
-  if (
-    form.schedule_type === "subscription" &&
-    type === "single_active" &&
-    workerPolicyForm.min_workers > 1
-  ) {
-    workerPolicyForm.min_workers = 1;
-  }
 }
 
 function reset() {
@@ -455,7 +549,8 @@ function reset() {
   Object.assign(subscriptionForm, DEFAULT_SUBSCRIPTION_FORM);
   subscriptionMapping.value = { ...DEFAULT_INGRESS_MAPPING };
   workerPolicyForm.type = "single_active";
-  workerPolicyForm.min_workers = 1;
+  workerPolicyForm.standbyCount = 0;
+  workerPolicyForm.replicaCount = 1;
   workerSelected.clear();
   capabilityPolicyText.value = "[]";
   formError.value = "";
@@ -523,7 +618,17 @@ async function loadFromDeployment(d: DeploymentDetail) {
   const wp = d.worker_policy || {};
   workerPolicyForm.type =
     wp.type === "multi_active" ? "multi_active" : "single_active";
-  workerPolicyForm.min_workers = Math.max(1, Number(wp.min_workers) || 1);
+  const tw = Math.max(
+    1,
+    Number(wp.target_workers ?? (wp as { min_workers?: number }).min_workers) || 1,
+  );
+  if (workerPolicyForm.type === "multi_active") {
+    workerPolicyForm.replicaCount = tw;
+    workerPolicyForm.standbyCount = 0;
+  } else {
+    workerPolicyForm.standbyCount = Math.max(0, tw - 1);
+    workerPolicyForm.replicaCount = 1;
+  }
 
   capabilityPolicyText.value = JSON.stringify(d.capability_policy ?? [], null, 2);
   hydrateWorkerTargeting(d.worker_targeting);
@@ -559,8 +664,18 @@ async function onFlowChange() {
 }
 
 function toggleWorker(id: string) {
+  if (form.schedule_type === "once") {
+    if (workerSelected.has(id)) workerSelected.delete(id);
+    else {
+      workerSelected.clear();
+      workerSelected.add(id);
+    }
+    syncNodeCountFromSelection();
+    return;
+  }
   if (workerSelected.has(id)) workerSelected.delete(id);
   else workerSelected.add(id);
+  syncNodeCountFromSelection();
 }
 
 function applySuppressWrites() {
@@ -624,7 +739,7 @@ async function submit() {
 
   const worker_policy: WorkerPolicy = {
     type: workerPolicyForm.type,
-    min_workers: Math.max(1, Number(workerPolicyForm.min_workers) || 1),
+    target_workers: resolveTargetWorkers(),
   };
 
   const configBody: UpdateDeploymentConfigBody = {
@@ -734,22 +849,23 @@ async function submit() {
   color: var(--muted);
 }
 
-.run-node-toolbar {
+.run-node-once-hint {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.run-node-single-active {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 14px;
+  gap: 0 4px;
 }
 
-.run-node-toolbar .form-option-group {
-  flex: 1 1 280px;
-}
-
-.run-node-toolbar .form-option {
-  white-space: normal;
-  text-align: left;
-  line-height: 1.35;
-  padding: 8px 12px;
+.run-node-primary-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #475569;
+  line-height: 1.4;
 }
 
 .run-node-min {
@@ -766,15 +882,35 @@ async function submit() {
   padding: 6px 8px;
 }
 
+.run-node-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.run-node-count-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.run-node-toolbar .form-option-group {
+  width: 100%;
+}
+
+.run-node-toolbar .form-option {
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+  padding: 8px 12px;
+}
+
 @media (max-width: 720px) {
   .worker-meta {
     margin-left: 0;
     width: 100%;
-  }
-
-  .run-node-toolbar {
-    flex-direction: column;
-    align-items: stretch;
   }
 
   .run-node-min {

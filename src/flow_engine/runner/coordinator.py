@@ -23,7 +23,10 @@ from flow_engine.db.models import (
     FeWorkerAssignment,
 )
 from flow_engine.db.session import db_session
-from flow_engine.runner.scheduler import Scheduler
+from flow_engine.runner.worker_policy import (
+    policy_type_from_policy,
+    target_workers_from_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -296,8 +299,8 @@ def _assign_pending_sync() -> int:
     with db_session() as s:
         for dep in pending:
             wp = dep["worker_policy"] or {}
-            wp_type = wp.get("type", "single_active")
-            min_workers = max(1, int(wp.get("min_workers", 1)))
+            wp_type = policy_type_from_policy(wp)
+            target_workers = target_workers_from_policy(wp)
             if dep.get("schedule_type") == "cron":
                 # cron template should be active without requiring assignments
                 dep_row = s.get(FeFlowDeployment, dep["id"])
@@ -336,7 +339,7 @@ def _assign_pending_sync() -> int:
 
             eligible = [w for w in workers if w not in existing and w in eligible_set]
 
-            picks = eligible[:min_workers]
+            picks = eligible[:target_workers]
 
             if not picks and existing:
                 # Stale assignments (e.g. subscription failed without release) block restart.
@@ -351,7 +354,7 @@ def _assign_pending_sync() -> int:
                         a.deleted_at = now
                 existing = set()
                 eligible = [w for w in workers if w in eligible_set]
-                picks = eligible[:min_workers]
+                picks = eligible[:target_workers]
 
             if wp_type == "multi_active":
                 for w in picks:
@@ -451,8 +454,8 @@ def _assign_cron_queued_sync() -> int:
                 continue
 
             wp = dep_row.worker_policy or {}
-            wp_type = wp.get("type", "single_active")
-            min_workers = max(1, int(wp.get("min_workers", 1)))
+            wp_type = policy_type_from_policy(wp)
+            target_workers = target_workers_from_policy(wp)
 
             existing_stmt = (
                 select(FeWorkerAssignment.worker_id)
@@ -503,7 +506,7 @@ def _assign_cron_queued_sync() -> int:
 
             eligible = [w for w in workers if w not in existing and w in eligible_set]
 
-            picks = eligible[:min_workers]
+            picks = eligible[:target_workers]
 
             if wp_type == "multi_active":
                 for w in picks:

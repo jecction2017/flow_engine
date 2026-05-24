@@ -232,20 +232,22 @@ export function workerPolicyTypeLabel(type: string): string {
   return type;
 }
 
-export function workerPolicySummary(policy: Deployment["worker_policy"]): string {
+export function workerPolicySummary(policy: Deployment["worker_policy"], scheduleType?: string): string {
   const parts: string[] = [];
   if (policy?.type) parts.push(workerPolicyTypeLabel(String(policy.type)));
-  if (policy?.min_workers != null) parts.push(`最少 ${policy.min_workers} 节点`);
+  const countLabel = workerPolicyCountLabel(policy, scheduleType);
+  if (countLabel) parts.push(countLabel);
   if (policy?.max_restarts != null) parts.push(`最多重启 ${policy.max_restarts} 次`);
   if (policy?.restart_backoff_s != null) parts.push(`退避 ${policy.restart_backoff_s}s`);
   return parts.length ? parts.join(" · ") : "默认";
 }
 
 /** 配置页 Worker 策略行：仅模式与节点数，不含重启退避（避免与接入重试等重复）。 */
-export function workerPolicyConfigLabel(policy: Deployment["worker_policy"]): string {
+export function workerPolicyConfigLabel(policy: Deployment["worker_policy"], scheduleType?: string): string {
   const parts: string[] = [];
   if (policy?.type) parts.push(workerPolicyTypeLabel(String(policy.type)));
-  if (policy?.min_workers != null) parts.push(`最少 ${policy.min_workers} 节点`);
+  const countLabel = workerPolicyCountLabel(policy, scheduleType);
+  if (countLabel) parts.push(countLabel);
   return parts.length ? parts.join(" · ") : "默认";
 }
 
@@ -258,9 +260,9 @@ export function truncateOverviewText(text: string | null | undefined, maxLen: nu
 
 export function assignmentRoleLabel(role: string): string {
   const r = String(role || "").toLowerCase();
-  if (r === "leader") return "Leader";
-  if (r === "standby") return "Standby";
-  if (r === "replica") return "Replica";
+  if (r === "leader") return "主节点";
+  if (r === "standby") return "备用";
+  if (r === "replica") return "副本";
   return role || "—";
 }
 
@@ -308,10 +310,300 @@ export function computeCronNextRunIso(cronExpr: string | undefined | null): stri
   }
 }
 
-export function configuredWorkerCount(policy: Deployment["worker_policy"]): number | null {
-  const n = policy?.min_workers;
-  if (typeof n === "number" && Number.isFinite(n)) return Math.max(1, Math.floor(n));
+export function targetWorkersFromPolicy(policy: Deployment["worker_policy"]): number | null {
+  const p = policy ?? {};
+  const raw = p.target_workers ?? (p as { min_workers?: number }).min_workers;
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.max(1, Math.floor(raw));
   return null;
+}
+
+export function configuredWorkerCount(policy: Deployment["worker_policy"]): number | null {
+  return targetWorkersFromPolicy(policy);
+}
+
+export function workerPolicyCountLabel(
+  policy: Deployment["worker_policy"],
+  scheduleType?: string,
+): string | null {
+  const n = targetWorkersFromPolicy(policy);
+  if (n == null) return null;
+  const type = String(policy?.type ?? "single_active");
+  const st = String(scheduleType ?? "");
+  if (st === "once") return "1 节点";
+  if (type === "multi_active") return `目标 ${n} 并发`;
+  const standby = Math.max(0, n - 1);
+  if (standby === 0) return "1 主节点";
+  return `1 主 + ${standby} 备`;
+}
+
+export type ScheduleTriggerChip = {
+  label: string;
+  value: string;
+  mono?: boolean;
+  highlight?: boolean;
+  muted?: boolean;
+};
+
+export type RoleBlockKey = "leader" | "standby" | "replica";
+
+export type RoleBindKind = "any" | "specified";
+
+/** How the worker shown in a role block relates to assignment / targeting. */
+export type RoleOccupancy =
+  | "assigned_ok"
+  | "assigned_weak"
+  | "specified_idle"
+  | "vacant";
+
+export type WorkerChipView = {
+  key: string;
+  role: RoleBlockKey;
+  roleLabel: string;
+  bindKind: RoleBindKind;
+  occupancy: RoleOccupancy;
+  workerId: string | null;
+  workerStatus: string | null;
+  /** 2–4 字状态角标，如「未配」「离线」 */
+  microLabel: string | null;
+  title: string | null;
+};
+
+export type ScheduleNodeOverview = {
+  scheduleTypeLabel: string;
+  triggerChips: ScheduleTriggerChip[];
+  policyTypeLabel: string;
+  allocationRatio: string;
+  allocationTone: "ok" | "warn" | "muted";
+  workerChips: WorkerChipView[];
+};
+
+function shortOccupancyLabel(
+  occupancy: RoleOccupancy,
+  bindKind: RoleBindKind,
+  workerStatus: string | null,
+  deploymentStatus: string,
+): string | null {
+  if (occupancy === "specified_idle") return "未配";
+  if (occupancy === "vacant") {
+    return isDeploymentLive(deploymentStatus) ? null : "未启";
+  }
+  if (occupancy === "assigned_weak") {
+    if (workerStatus === "dead") return "离线";
+    if (workerStatus === "idle") return "空闲";
+    return "异常";
+  }
+  if (occupancy === "assigned_ok" && bindKind === "specified") return null;
+  return null;
+}
+
+function roleSkeleton(policyType: string | undefined, configured: number | null): RoleBlockKey[] {
+  if (policyType === "single_active") {
+    const n = Math.max(configured ?? 1, 1);
+    const roles: RoleBlockKey[] = ["leader"];
+    for (let i = 1; i < n; i++) roles.push("standby");
+    return roles.length ? roles : ["leader"];
+  }
+  const n = Math.max(configured ?? 1, 1);
+  return Array.from({ length: n }, () => "replica" as RoleBlockKey);
+}
+
+function specifiedWorkerIds(targeting: WorkerTargeting | undefined): string[] {
+  if (!targeting) return [];
+  if (targeting.mode === "pin") {
+    const id = String(targeting.worker_id ?? "").trim();
+    return id ? [id] : [];
+  }
+  if (targeting.mode === "pool") {
+    return (targeting.worker_ids || []).map((x) => String(x).trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function assignmentForRole(
+  role: RoleBlockKey,
+  by: ReturnType<typeof groupAssignmentsByRole>,
+): Assignment | null {
+  const list = by[role];
+  return list.length ? list[0] : null;
+}
+
+function isDeploymentLive(status: string): boolean {
+  return status === "running" || status === "pending";
+}
+
+function isWorkerHealthy(status: string | null): boolean {
+  return status === "active";
+}
+
+function resolveWorkerChip(
+  role: RoleBlockKey,
+  assignment: Assignment | null,
+  specifiedId: string | null,
+  workerStatus: (workerId: string) => string | null,
+  deploymentStatus: string,
+  formatTs: (iso: string | null) => string,
+): WorkerChipView {
+  const bindKind: RoleBindKind = specifiedId ? "specified" : "any";
+  const live = isDeploymentLive(deploymentStatus);
+  const roleName = assignmentRoleLabel(role);
+
+  if (assignment) {
+    const st = workerStatus(assignment.worker_id);
+    let occupancy: RoleOccupancy = "assigned_ok";
+    const titleParts = [`${roleName}`, assignment.worker_id];
+    if (assignment.lease_expires_at) {
+      titleParts.push(`租约 ${formatTs(assignment.lease_expires_at)}`);
+    }
+
+    if (specifiedId && assignment.worker_id !== specifiedId) {
+      occupancy = "assigned_weak";
+      titleParts.push(`与指定 ${specifiedId} 不一致`);
+    } else if (!live) {
+      occupancy = "assigned_weak";
+      titleParts.push(deploymentStatus === "stopped" ? "部署已停止" : "部署未在运行");
+    } else if (!isWorkerHealthy(st)) {
+      occupancy = "assigned_weak";
+      if (st) titleParts.push(workerStatusLabel(st));
+    } else if (bindKind === "specified") {
+      titleParts.push("已指定 · 已分配");
+    } else {
+      titleParts.push("已分配");
+    }
+
+    return {
+      key: `role-${role}`,
+      role,
+      roleLabel: roleName,
+      bindKind,
+      occupancy,
+      workerId: assignment.worker_id,
+      workerStatus: st,
+      microLabel: shortOccupancyLabel(occupancy, bindKind, st, deploymentStatus),
+      title: titleParts.join(" · "),
+    };
+  }
+
+  if (specifiedId) {
+    const st = workerStatus(specifiedId);
+    const titleParts = [`${roleName}`, `指定 ${specifiedId}`, "尚未分配"];
+    if (!live) {
+      titleParts.push(deploymentStatus === "stopped" ? "部署未启动" : "等待部署就位");
+    } else if (st) {
+      titleParts.push(workerStatusLabel(st));
+    }
+
+    return {
+      key: `role-${role}`,
+      role,
+      roleLabel: roleName,
+      bindKind: "specified",
+      occupancy: "specified_idle",
+      workerId: specifiedId,
+      workerStatus: st,
+      microLabel: shortOccupancyLabel("specified_idle", "specified", st, deploymentStatus),
+      title: titleParts.join(" · "),
+    };
+  }
+
+  const title = live ? `${roleName} · 任意节点 · 待分配` : `${roleName} · 部署未启动`;
+  return {
+    key: `role-${role}`,
+    role,
+    roleLabel: roleName,
+    bindKind: "any",
+    occupancy: "vacant",
+    workerId: null,
+    workerStatus: null,
+    microLabel: shortOccupancyLabel("vacant", "any", null, deploymentStatus),
+    title,
+  };
+}
+
+/** Structured model for deployment overview schedule + node panel. */
+export function buildScheduleNodeOverview(
+  d: DeploymentDetail,
+  workerStatus: (workerId: string) => string | null,
+  opts: {
+    cronNextIso: string | null;
+    formatTs: (iso: string | null) => string;
+    consumerId: string | null;
+    maxInFlight: number | null;
+  },
+): ScheduleNodeOverview {
+  const st = String(d.schedule_type);
+  const typeLabel = scheduleTypeLabel(st);
+  const triggerChips: ScheduleTriggerChip[] = [];
+
+  if (st === "cron") {
+    const expr = String(d.schedule_config?.cron_expr ?? "").trim();
+    if (expr) triggerChips.push({ label: "Cron", value: expr, mono: true });
+    if (opts.cronNextIso) {
+      triggerChips.push({
+        label: "下次运行",
+        value: opts.formatTs(opts.cronNextIso),
+        mono: true,
+        highlight: true,
+      });
+    } else if (expr) {
+      triggerChips.push({ label: "下次运行", value: "表达式无法解析", muted: true });
+    }
+  } else if (st === "subscription") {
+    triggerChips.push({
+      label: "消费者",
+      value: opts.consumerId || "—",
+      mono: true,
+    });
+    if (opts.maxInFlight != null) {
+      triggerChips.push({ label: "并发上限", value: String(opts.maxInFlight), mono: true });
+    }
+  } else {
+    triggerChips.push({
+      label: "触发",
+      value: "手动启动后执行，无自动调度",
+      muted: true,
+    });
+  }
+
+  const configured = configuredWorkerCount(d.worker_policy);
+  const policyType = d.worker_policy?.type ? String(d.worker_policy.type) : undefined;
+  const policyTypeLabel = policyType ? workerPolicyTypeLabel(policyType) : "默认";
+  const specifiedIds = specifiedWorkerIds(d.worker_targeting);
+
+  const by = groupAssignmentsByRole(d.assignments);
+  const assigned = d.assignments?.length ?? 0;
+  const roles = roleSkeleton(policyType, configured);
+
+  const workerChips = roles.map((role, index) =>
+    resolveWorkerChip(
+      role,
+      assignmentForRole(role, by),
+      specifiedIds[index] ?? null,
+      workerStatus,
+      String(d.status),
+      opts.formatTs,
+    ),
+  );
+
+  let allocationRatio: string;
+  let allocationTone: ScheduleNodeOverview["allocationTone"] = "muted";
+  if (configured != null) {
+    allocationRatio = `${assigned}/${configured}`;
+    if (assigned === 0) allocationTone = "warn";
+    else if (assigned < configured) allocationTone = "warn";
+    else allocationTone = "ok";
+  } else {
+    allocationRatio = String(assigned);
+    allocationTone = assigned > 0 ? "ok" : "warn";
+  }
+
+  return {
+    scheduleTypeLabel: typeLabel,
+    triggerChips,
+    policyTypeLabel,
+    allocationRatio,
+    allocationTone,
+    workerChips,
+  };
 }
 
 export type OverviewAlertItem = {
@@ -395,7 +687,7 @@ export function deploymentScheduleSubline(
     maxInFlight: number | null;
   },
 ): string {
-  const policy = workerPolicySummary(d.worker_policy);
+  const policy = workerPolicySummary(d.worker_policy, String(d.schedule_type));
   const target = workerTargetingLabel(d.worker_targeting);
   const extras = [policy !== "默认" ? policy : "", target !== "任意节点" ? target : ""].filter(Boolean);
 
@@ -424,7 +716,7 @@ export function formatAssignmentSummary(
 
   let head: string;
   if (assigned === 0) {
-    head = configured != null ? `未分配（需 ${configured} 个节点）` : "未分配";
+    head = configured != null ? `未分配（目标 ${configured} 个节点）` : "未分配";
   } else if (configured != null) {
     head = `${assigned}/${configured} 已分配`;
   } else {
@@ -511,7 +803,7 @@ export function buildDeploymentConfigSections(
   sections.push({
     title: "Worker",
     rows: [
-      { label: "策略", value: workerPolicyConfigLabel(d.worker_policy) },
+      { label: "策略", value: workerPolicyConfigLabel(d.worker_policy, String(d.schedule_type)) },
       { label: "定向", value: workerTargetingLabel(d.worker_targeting) },
     ],
   });

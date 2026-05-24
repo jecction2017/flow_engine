@@ -198,20 +198,29 @@ class CommitVersionBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class WorkerPolicyBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    type: str = Field(default="single_active", pattern=r"^(single_active|multi_active)$")
+    target_workers: int = Field(default=1, ge=1)
+    max_restarts: int = Field(default=3, ge=0)
+    restart_backoff_s: int = Field(default=15, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_min_workers(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "min_workers" in data:
+            raise ValueError("min_workers renamed to target_workers")
+        return data
+
+
 class CreateDeploymentBody(BaseModel):
     flow_code: str = Field(..., min_length=1, max_length=128)
     ver_no: int = Field(..., ge=1)
     mode: str = Field(default="production", pattern=r"^(shadow|production)$")
     schedule_type: str = Field(..., pattern=r"^(once|cron|subscription)$")
     schedule_config: dict[str, Any] = Field(default_factory=dict)
-    worker_policy: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "type": "single_active",
-            "min_workers": 1,
-            "max_restarts": 3,
-            "restart_backoff_s": 15,
-        }
-    )
+    worker_policy: WorkerPolicyBody = Field(default_factory=WorkerPolicyBody)
     capability_policy: list[CapabilityRule] = Field(default_factory=list)
     env_profile_code: str = ""
     worker_targeting: dict[str, Any] = Field(
@@ -280,20 +289,51 @@ class UpdateDeploymentConfigBody(BaseModel):
     mode: str = Field(default="production", pattern=r"^(shadow|production)$")
     schedule_type: str = Field(..., pattern=r"^(once|cron|subscription)$")
     schedule_config: dict[str, Any] = Field(default_factory=dict)
-    worker_policy: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "type": "single_active",
-            "min_workers": 1,
-            "max_restarts": 3,
-            "restart_backoff_s": 15,
-        }
-    )
+    worker_policy: WorkerPolicyBody = Field(default_factory=WorkerPolicyBody)
     capability_policy: list[CapabilityRule] = Field(default_factory=list)
     env_profile_code: str = ""
     worker_targeting: dict[str, Any] = Field(default_factory=dict)
 
 
 _DEPLOYMENT_CONFIG_EDITABLE_STATUSES = frozenset({"stopped", "failed"})
+
+
+def _validate_worker_policy(
+    schedule_type: str,
+    worker_policy: WorkerPolicyBody,
+    worker_targeting: dict[str, Any],
+) -> None:
+    target = int(worker_policy.target_workers)
+    if schedule_type == "once" and target != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="once schedule requires worker_policy.target_workers == 1",
+        )
+    mode = str(worker_targeting.get("mode") or "any")
+    if mode == "pin" and target != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="pin worker_targeting requires worker_policy.target_workers == 1",
+        )
+    if mode == "pool":
+        pool_ids = worker_targeting.get("worker_ids") or []
+        if not isinstance(pool_ids, list):
+            raise HTTPException(status_code=400, detail="worker_targeting.worker_ids must be a list")
+        pool_len = len([x for x in pool_ids if str(x).strip()])
+        if target != pool_len:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"pool worker_targeting requires worker_policy.target_workers == "
+                    f"len(worker_ids) ({pool_len})"
+                ),
+            )
+
+
+def _worker_policy_to_store(worker_policy: WorkerPolicyBody) -> dict[str, Any]:
+    from flow_engine.runner.worker_policy import normalize_worker_policy
+
+    return normalize_worker_policy(worker_policy.model_dump())
 
 
 def _validate_deployment_schedule(
@@ -321,21 +361,23 @@ def _apply_deployment_config_row(
     mode: str,
     schedule_type: str,
     schedule_config: dict[str, Any],
-    worker_policy: dict[str, Any],
+    worker_policy: WorkerPolicyBody,
     capability_policy: list[CapabilityRule],
     env_profile_code: str,
     worker_targeting: dict[str, Any],
 ) -> None:
     _validate_deployment_schedule(schedule_type, schedule_config)
+    targeting = _normalize_worker_targeting(worker_targeting or {})
+    _validate_worker_policy(schedule_type, worker_policy, targeting)
     row.flow_code = flow_code
     row.ver_no = ver_no
     row.mode = mode
     row.schedule_type = schedule_type
     row.schedule_config = schedule_config or {}
-    row.worker_policy = worker_policy or {}
+    row.worker_policy = _worker_policy_to_store(worker_policy)
     row.capability_policy = [r.model_dump() for r in capability_policy]
     row.env_profile_code = env_profile_code or ""
-    row.worker_targeting = _normalize_worker_targeting(worker_targeting or {})
+    row.worker_targeting = targeting
 
 
 class PatchDeploymentBody(BaseModel):
@@ -1354,6 +1396,8 @@ def create_app() -> FastAPI:
     # -----------------------------------------------------------------------
 
     def _serialize_deployment(row: FeFlowDeployment) -> dict[str, Any]:
+        from flow_engine.runner.worker_policy import normalize_worker_policy
+
         return {
             "id": row.id,
             "flow_code": row.flow_code,
@@ -1361,7 +1405,7 @@ def create_app() -> FastAPI:
             "mode": row.mode,
             "schedule_type": row.schedule_type,
             "schedule_config": row.schedule_config,
-            "worker_policy": row.worker_policy,
+            "worker_policy": normalize_worker_policy(row.worker_policy),
             "capability_policy": row.capability_policy,
             "worker_targeting": _coerce_worker_targeting_for_read(getattr(row, "worker_targeting", None) or {}),
             "status": row.status,
@@ -1375,6 +1419,8 @@ def create_app() -> FastAPI:
     @app.post("/api/deployments")
     def create_deployment(body: CreateDeploymentBody) -> dict[str, Any]:
         _validate_deployment_schedule(body.schedule_type, body.schedule_config or {})
+        targeting = _normalize_worker_targeting(body.worker_targeting or {})
+        _validate_worker_policy(body.schedule_type, body.worker_policy, targeting)
         with db_session() as s:
             from flow_engine.db.models import FeFlowVersion
 
@@ -1396,14 +1442,13 @@ def create_app() -> FastAPI:
                 initial_status = "pending"
             else:
                 initial_status = "stopped"
-            targeting = _normalize_worker_targeting(body.worker_targeting or {})
             row = FeFlowDeployment(
                 flow_code=body.flow_code,
                 ver_no=body.ver_no,
                 mode=body.mode,
                 schedule_type=body.schedule_type,
                 schedule_config=body.schedule_config or {},
-                worker_policy=body.worker_policy or {},
+                worker_policy=_worker_policy_to_store(body.worker_policy),
                 capability_policy=[r.model_dump() for r in body.capability_policy],
                 status=initial_status,
                 env_profile_code=body.env_profile_code or "",

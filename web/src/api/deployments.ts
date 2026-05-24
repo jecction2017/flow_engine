@@ -31,7 +31,7 @@ export type CapabilityRule = {
 
 export type WorkerPolicy = {
   type?: string;
-  min_workers?: number;
+  target_workers?: number;
   max_restarts?: number;
   restart_backoff_s?: number;
   [k: string]: unknown;
