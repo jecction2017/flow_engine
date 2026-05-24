@@ -33,13 +33,16 @@
       </div>
     </header>
 
-    <section v-if="detail.error || detail.failure_detail" class="rd-failure">
-      <div class="rd-failure-head">运行失败</div>
+    <CollapsibleFailureCard
+      v-if="detail.error || detail.failure_detail"
+      title="运行失败"
+      :preview="failurePreview"
+    >
       <FailureReportPanel
         :failure-detail="detail.failure_detail"
         :fallback-text="detail.error"
       />
-    </section>
+    </CollapsibleFailureCard>
 
     <nav v-if="tabs.length > 1" class="rd-tabs">
       <button
@@ -130,7 +133,9 @@
 import { computed, onMounted, ref, watch } from "vue";
 import type { FlowRunDetail } from "@/api/flowRuns";
 import { useFlowLabels } from "@/composables/useFlowLabels";
+import CollapsibleFailureCard from "@/components/CollapsibleFailureCard.vue";
 import FailureReportPanel from "@/components/FailureReportPanel.vue";
+import { hasFailureDetail } from "@/utils/formatFailureReport";
 import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
@@ -181,6 +186,16 @@ const tabs = computed<{ id: TabId; label: string }[]>(() => {
 const flowLogs = computed(() =>
   Array.isArray(props.detail.flow_logs) ? props.detail.flow_logs : [],
 );
+
+const failurePreview = computed(() => {
+  const d = props.detail.failure_detail;
+  if (hasFailureDetail(d)) {
+    return (d.summary ?? d.exception_message ?? "").trim();
+  }
+  const err = (props.detail.error ?? "").trim();
+  if (!err) return "";
+  return err.split(/\r?\n/)[0]?.slice(0, 96) ?? "";
+});
 
 const hasGlobalNs = computed(() => {
   const g = props.detail.global_ns;
@@ -410,20 +425,6 @@ void isTestRun;
   background: color-mix(in srgb, #3b82f6 14%, transparent);
   color: #1d4ed8;
   border-color: color-mix(in srgb, #3b82f6 35%, transparent);
-}
-
-.rd-failure {
-  border: 1px solid color-mix(in srgb, #ef4444 35%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in srgb, #fef2f2 60%, var(--surface));
-  padding: 10px 12px;
-}
-
-.rd-failure-head {
-  font-size: 12px;
-  font-weight: 700;
-  color: #b91c1c;
-  margin-bottom: 8px;
 }
 
 .rd-tabs {

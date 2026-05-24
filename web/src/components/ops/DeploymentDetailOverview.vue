@@ -2,20 +2,21 @@
   <div class="dep-overview">
     <!-- 1. 告警：仅有实质问题时展示 -->
     <div v-if="alerts.length" class="alerts" role="alert">
-      <div v-for="a in alerts" :key="a.id" class="alert" :class="a.level">
-        <div class="alert-text">
-          <strong class="alert-category">{{ a.category || a.title }}</strong>
-          <p v-if="a.log" class="alert-log mono small">{{ a.log }}</p>
-          <p v-else-if="a.detail" class="muted small alert-meta">{{ a.detail }}</p>
-          <p v-if="a.log && a.detail" class="muted small alert-meta">{{ a.detail }}</p>
-        </div>
-        <button
-          v-if="a.action === 'workers'"
-          type="button"
-          class="btn small ghost"
-          @click="emit('navigate-workers')"
-        >节点</button>
-      </div>
+      <CollapsibleFailureCard
+        v-for="a in alerts"
+        :key="`${deployment.id}-${a.id}`"
+        :title="a.category || a.title"
+        :preview="alertPreview(a)"
+        :tone="a.level"
+      >
+        <p v-if="a.detail" class="ov-fail-meta muted small">{{ a.detail }}</p>
+        <pre v-if="a.log" class="ov-fail-log mono small">{{ a.log }}</pre>
+        <template v-if="showAlertLink(a)" #footer>
+          <button type="button" class="failure-card-link" @click.stop="onAlertLink(a)">
+            {{ alertLinkLabel(a) }}
+          </button>
+        </template>
+      </CollapsibleFailureCard>
     </div>
 
     <!-- 2. 运行调度：触发规则 + 节点策略/角色就位 -->
@@ -285,6 +286,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import CollapsibleFailureCard from "@/components/CollapsibleFailureCard.vue";
 import type { DeploymentDetail } from "@/api/deployments";
 import type { FlowRunSummary } from "@/api/flowRuns";
 import type { SubscriptionMessageRow, SubscriptionSummary } from "@/api/subscriptionObservability";
@@ -301,6 +303,7 @@ import {
   subscriptionFieldsFromScheduleConfig,
   truncateOverviewText,
   workerStatusLabel,
+  type OverviewAlertItem,
   type WorkerChipView,
 } from "@/utils/deploymentOverview";
 
@@ -331,6 +334,34 @@ watch(
     configView.value = "form";
   },
 );
+
+function alertPreview(a: OverviewAlertItem): string {
+  if (a.id === "msg-failed") return "";
+  if (a.detail) return a.detail;
+  if (a.log) return truncateOverviewText(a.log.split(/\r?\n/)[0] ?? "", 96);
+  return "";
+}
+
+function showAlertLink(a: OverviewAlertItem): boolean {
+  return a.runId != null || Boolean(a.action);
+}
+
+function alertLinkLabel(a: OverviewAlertItem): string {
+  if (a.runId != null || a.action === "runs") return "查看运行详情";
+  if (a.action === "workers") return "查看节点";
+  if (a.action === "messages") return "查看消费";
+  return "查看详情";
+}
+
+function onAlertLink(a: OverviewAlertItem) {
+  if (a.runId != null) {
+    emit("open-run", a.runId);
+    return;
+  }
+  if (a.action === "workers") emit("navigate-workers");
+  else if (a.action === "messages") emit("navigate-tab", "messages");
+  else if (a.action === "runs") emit("navigate-tab", "runs");
+}
 
 const isSubscription = computed(() => props.deployment.schedule_type === "subscription");
 
@@ -446,54 +477,26 @@ function messageStatusTagClass(status: string): string {
 .alerts {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  width: 100%;
 }
 
-.alert {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border-left: 3px solid var(--border);
-  background: color-mix(in srgb, var(--accent-soft) 20%, var(--surface));
-}
-
-.alert.warn {
-  border-left-color: #d97706;
-  background: color-mix(in srgb, #fef3c7 45%, var(--surface));
-}
-
-.alert.bad {
-  border-left-color: #b91c1c;
-  background: color-mix(in srgb, #fee2e2 40%, var(--surface));
-}
-
-.alert-text {
-  min-width: 0;
-  font-size: 12px;
+.ov-fail-meta {
+  margin: 0;
   line-height: 1.4;
 }
 
-.alert-category {
-  display: block;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.alert-log {
+.ov-fail-log {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  color: color-mix(in srgb, var(--danger, #b91c1c) 88%, var(--text));
+  color: #7f1d1d;
   line-height: 1.45;
-  max-height: 120px;
+  max-height: 200px;
   overflow: auto;
-}
-
-.alert-meta {
-  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #fecaca 22%, transparent);
 }
 
 /* —— 运行调度 —— */

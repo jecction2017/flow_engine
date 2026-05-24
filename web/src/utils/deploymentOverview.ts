@@ -159,6 +159,14 @@ function latestFailedRunError(runs: FlowRunSummary[] | undefined): string | null
   return null;
 }
 
+export function latestFailedRunId(runs: FlowRunSummary[] | undefined): number | null {
+  if (!runs?.length) return null;
+  for (const r of runs) {
+    if (String(r.status) === "failed") return r.id;
+  }
+  return null;
+}
+
 export function buildDeploymentFailureLog(
   detail: Record<string, unknown> | null | undefined,
   runsPreview?: FlowRunSummary[],
@@ -679,6 +687,8 @@ export type OverviewAlertItem = {
   /** 失败原因 / 日志正文 */
   log?: string;
   action?: HealthSuggestedAction;
+  /** 关联失败运行，用于跳转到运行详情 */
+  runId?: number;
 };
 
 /** 仅返回需要人工处理的告警（不含状态说明类废话）。 */
@@ -709,6 +719,7 @@ export function buildDeploymentOverviewAlerts(
     const log = hasDetail
       ? buildDeploymentFailureLog(detail!, runsPreview)
       : latestFailedRunError(runsPreview) ?? undefined;
+    const runId = statusDetailRunId(detail ?? null) ?? latestFailedRunId(runsPreview) ?? undefined;
     items.push({
       id: "status-detail",
       level: st === "failed" ? "bad" : "warn",
@@ -717,6 +728,7 @@ export function buildDeploymentOverviewAlerts(
       log: log || undefined,
       detail: meta.length ? meta.join(" · ") : undefined,
       action: statusDetailSuggestedAction(detail ?? null),
+      runId,
     });
     return items;
   }
@@ -746,6 +758,8 @@ export function buildDeploymentOverviewAlerts(
       id: "msg-failed",
       level: "warn",
       title: `${msgFailed} 条消息处理失败`,
+      detail: "可在消费页查看失败消息明细",
+      action: "messages",
     });
   }
 
