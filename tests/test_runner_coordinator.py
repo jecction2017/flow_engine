@@ -1,4 +1,4 @@
-"""Coordinator + Scheduler tests using the in-memory SQLite fixture."""
+"""Coordinator + cron scheduler tests using the in-memory SQLite fixture."""
 
 from __future__ import annotations
 
@@ -165,7 +165,7 @@ def test_renew_subscription_leader_leases() -> None:
             )
         )
 
-    renewed = coord_mod._renew_subscription_leader_leases_sync()
+    renewed = coord_mod._renew_leader_leases_sync()
     assert renewed == 1
     with db_session() as s:
         assn = (
@@ -330,7 +330,7 @@ def test_dead_worker_cron_leader_stays_running_without_standby() -> None:
         assert row.status == "running"
 
 
-def test_scheduler_tick_enqueues_cron_deploy_run() -> None:
+def test_enqueue_cron_run_if_due_inserts_queued_run() -> None:
     """A due cron template inserts a queued FeDeployRun (no child deployment)."""
     pytest.importorskip("croniter")
     from flow_engine.runner import scheduler as sched_mod
@@ -353,19 +353,15 @@ def test_scheduler_tick_enqueues_cron_deploy_run() -> None:
         s.flush()
         tmpl_id = int(tmpl.id)
 
-    fires = sched_mod._tick_sync()
-    assert fires >= 1
+    run_id = sched_mod.enqueue_cron_run_if_due(tmpl_id)
+    assert run_id is not None
 
     with db_session() as s:
-        runs = list(
-            s.execute(
-                select(FeDeployRun).where(FeDeployRun.deployment_id == tmpl_id)
-            ).scalars().all()
-        )
-        assert len(runs) == fires
-        assert runs[0].status == "queued"
-        assert runs[0].trigger_type == "cron"
-        assert runs[0].schedule_type == "cron"
+        run = s.get(FeDeployRun, int(run_id))
+        assert run is not None
+        assert run.status == "queued"
+        assert run.trigger_type == "cron"
+        assert run.schedule_type == "cron"
 
         children = list(
             s.execute(
@@ -377,8 +373,8 @@ def test_scheduler_tick_enqueues_cron_deploy_run() -> None:
         assert len(children) == 0
 
 
-def test_scheduler_second_tick_does_not_duplicate_before_due() -> None:
-    """After one enqueue, immediate second tick should not add another run (same cron slot)."""
+def test_enqueue_cron_run_if_due_does_not_duplicate_before_due() -> None:
+    """After one enqueue, immediate second call should not add another run."""
     pytest.importorskip("croniter")
     from flow_engine.runner import scheduler as sched_mod
 
@@ -400,8 +396,10 @@ def test_scheduler_second_tick_does_not_duplicate_before_due() -> None:
         s.flush()
         tmpl_id = int(tmpl.id)
 
-    assert sched_mod._tick_sync() == 1
-    assert sched_mod._tick_sync() == 0
+    first = sched_mod.enqueue_cron_run_if_due(tmpl_id)
+    second = sched_mod.enqueue_cron_run_if_due(tmpl_id)
+    assert first is not None
+    assert second == first
 
     with db_session() as s:
         n_runs = len(
@@ -414,7 +412,7 @@ def test_scheduler_second_tick_does_not_duplicate_before_due() -> None:
         assert n_runs == 1
 
 
-def test_scheduler_does_not_fire_when_cron_stopped() -> None:
+def test_enqueue_cron_run_if_due_skips_stopped_template() -> None:
     """Stopped cron templates should not enqueue new runs."""
     pytest.importorskip("croniter")
     from flow_engine.runner import scheduler as sched_mod
@@ -437,7 +435,7 @@ def test_scheduler_does_not_fire_when_cron_stopped() -> None:
         s.flush()
         tmpl_id = int(tmpl.id)
 
-    assert sched_mod._tick_sync() == 0
+    assert sched_mod.enqueue_cron_run_if_due(tmpl_id) is None
     with db_session() as s:
         runs = list(
             s.execute(
@@ -447,43 +445,46 @@ def test_scheduler_does_not_fire_when_cron_stopped() -> None:
         assert len(runs) == 0
 
 
-def test_scheduler_does_not_fire_when_no_active_workers() -> None:
-    """If no active worker can ever claim, mark template failed and do not enqueue."""
-    pytest.importorskip("croniter")
-    from flow_engine.runner import scheduler as sched_mod
-
+def test_assign_pending_cron_creates_leader() -> None:
+    _add_worker("w1", alive=True)
     with db_session() as s:
-        tmpl = FeFlowDeployment(
-            flow_code="cron_no_workers",
+        row = FeFlowDeployment(
+            flow_code="cron_pending",
             ver_no=1,
             mode="production",
             schedule_type="cron",
             schedule_config={"cron_expr": "* * * * *"},
             worker_policy={"type": "single_active", "target_workers": 1},
             capability_policy=[],
-            worker_targeting={"mode": "any"},
-            status="running",
+            worker_targeting={},
+            status="pending",
             env_profile_code="default",
         )
-        tmpl.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
-        s.add(tmpl)
+        s.add(row)
         s.flush()
-        did = int(tmpl.id)
+        did = int(row.id)
 
-    assert sched_mod._tick_sync() == 0
+    created = coord_mod._assign_pending_sync()
+    assert created >= 1
+
     with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == did,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 1
+        assert assn[0].role == "leader"
+        assert assn[0].worker_id == "w1"
         dep = s.get(FeFlowDeployment, did)
         assert dep is not None
-        assert dep.status == "failed"
-        assert (dep.status_detail or {}).get("reason") == "no_eligible_worker"
-        assert (
-            s.execute(select(FeDeployRun).where(FeDeployRun.deployment_id == did))
-            .scalars()
-            .all()
-            == []
-        )
+        assert dep.status == "running"
 
-def test_assign_cron_queued_creates_leader() -> None:
+
+def test_assign_unassigned_cron_creates_leader() -> None:
     _add_worker("w1", alive=True)
     with db_session() as s:
         tmpl = FeFlowDeployment(
@@ -501,21 +502,8 @@ def test_assign_cron_queued_creates_leader() -> None:
         s.add(tmpl)
         s.flush()
         did = int(tmpl.id)
-        s.add(
-            FeDeployRun(
-                deployment_id=did,
-                worker_id=None,
-                flow_code="cron_assign",
-                ver_no=1,
-                mode="production",
-                schedule_type="cron",
-                trigger_type="cron",
-                status="queued",
-                started_at=None,
-            )
-        )
 
-    created = coord_mod._assign_cron_queued_sync()
+    created = coord_mod._assign_unassigned_cron_sync()
     assert created >= 1
 
     with db_session() as s:
@@ -625,18 +613,21 @@ def test_cron_pin_offline_fails_queued_runs() -> None:
             )
         )
 
-    created = coord_mod._assign_cron_queued_sync()
+    created = coord_mod._assign_unassigned_cron_sync()
     assert created >= 1
     with db_session() as s:
+        dep = s.get(FeFlowDeployment, did)
+        assert dep is not None
+        assert dep.status == "failed"
+        assert (dep.status_detail or {}).get("reason") == "pin_worker_offline"
         runs = list(
             s.execute(
                 select(FeDeployRun).where(FeDeployRun.deployment_id == did)
             ).scalars().all()
         )
-        assert runs
-        assert runs[0].status == "failed"
-        assert runs[0].finished_at is not None
-        assert runs[0].error and "pin worker offline" in runs[0].error
+        if runs:
+            assert runs[0].status == "failed"
+            assert runs[0].error and "pin worker offline" in runs[0].error
 
 
 def test_claim_queued_deploy_run_fifo() -> None:

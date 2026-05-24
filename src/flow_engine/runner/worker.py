@@ -2,8 +2,8 @@
 
 设计文档 §8.3。Worker 是一个独立 asyncio 进程：
 * 启动：注册 ``FeWorker`` + 启动心跳与轮询两个后台 Task；
-* 运行：每个 ``FeWorkerAssignment`` 关联一个 asyncio.Task，按 schedule_type
-  执行 once / cron / subscription 流程；
+* 运行：每个 ``FeWorkerAssignment`` 关联一个 asyncio.Task；cron/subscription
+  为长期任务（本地定时/消费），once 为单次执行后释放 assignment；
 * 停止：取消所有 Task、回写 ``FeWorker.status='dead'``。
 
 DB 操作均同步（SQLAlchemy）；async 调用方使用 ``asyncio.to_thread``。
@@ -36,7 +36,7 @@ from flow_engine.engine.loader import load_flow_from_dict
 from flow_engine.engine.models import FlowState
 from flow_engine.engine.observability import RunRef
 from flow_engine.engine.orchestrator import FlowRuntime
-from flow_engine.runner import deploy_persistence, span_persistence
+from flow_engine.runner import deploy_persistence, scheduler, span_persistence
 from flow_engine.runner.exceptions import RunnerConfigError
 from flow_engine.runner.worker_policy import policy_type_from_policy
 from flow_engine.runner.models import CapabilityRule, RunMode, RunOptions
@@ -247,6 +247,40 @@ def _role_may_execute(
     if wp_type == "multi_active":
         return role == "replica"
     return role == "leader"
+
+
+def _cron_seconds_until_next_fire(deployment_id: int) -> float:
+    """Seconds until the next cron slot (minimum 1s when already due)."""
+    now = datetime.now(timezone.utc)
+    with db_session() as s:
+        row = s.get(FeFlowDeployment, int(deployment_id))
+        if row is None or row.deleted_at is not None:
+            return float(ASSIGNMENT_POLL_INTERVAL_S)
+        nxt = scheduler.next_cron_fire_at(row, now=now, session=s)
+    if nxt is None:
+        return float(ASSIGNMENT_POLL_INTERVAL_S)
+    delta = (nxt - now).total_seconds()
+    return max(1.0, delta)
+
+
+def _can_fire_cron(
+    deployment: dict[str, Any],
+    assignment: dict[str, Any],
+) -> bool:
+    """Whether this worker may enqueue/execute a cron tick (leader + valid lease)."""
+    wp = deployment.get("worker_policy") or {}
+    if policy_type_from_policy(wp) == "multi_active":
+        return _role_may_execute(deployment, assignment)
+    if str(assignment.get("role") or "") != "leader":
+        return False
+    lease = assignment.get("lease_expires_at")
+    if lease is None:
+        return True
+    if not isinstance(lease, datetime):
+        return True
+    if lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    return lease > datetime.now(timezone.utc)
 
 
 def _can_consume_subscription(
@@ -518,7 +552,9 @@ class Worker:
         try:
             if st == "subscription":
                 await self._run_subscription(deployment)
-            elif st in ("once", "cron"):
+            elif st == "cron":
+                await self._run_cron(deployment)
+            elif st == "once":
                 slot = await self._await_execute_slot(deployment_id)
                 if slot is None:
                     return
@@ -527,8 +563,8 @@ class Worker:
                 logger.error("unknown schedule_type=%s for deployment %s", st, deployment_id)
                 await asyncio.to_thread(_set_deployment_status, deployment_id, "failed")
         finally:
-            # once/cron release assignment after a single run; subscription keeps it.
-            if st in ("once", "cron"):
+            # once releases assignment after a single run; cron/subscription keep it.
+            if st == "once":
                 try:
                     await asyncio.to_thread(_release_assignment, self.worker_id, deployment_id)
                 except Exception:  # noqa: BLE001
@@ -540,33 +576,130 @@ class Worker:
 
     # ---------------- run modes ----------------
 
-    async def _run_once_flow(self, deployment: dict[str, Any]) -> None:
+    async def _await_cron_fire_slot(
+        self, deployment_id: int
+    ) -> dict[str, Any] | None:
+        """Block until this worker may fire cron, or return None if assignment ended."""
+        while not self._stop_evt.is_set():
+            deployment = await asyncio.to_thread(_read_deployment, deployment_id)
+            if deployment is None:
+                return None
+            rows = await asyncio.to_thread(_list_assignments, self.worker_id)
+            info = next(
+                (r for r in rows if int(r["deployment_id"]) == deployment_id),
+                None,
+            )
+            if info is None:
+                return None
+            if _can_fire_cron(deployment, info):
+                return info
+            await asyncio.sleep(ASSIGNMENT_POLL_INTERVAL_S)
+        return None
+
+    async def _run_cron(self, deployment: dict[str, Any]) -> None:
+        """Long-lived loop: sleep until due, enqueue run, execute, repeat."""
         deployment_id = int(deployment["id"])
-        st = str(deployment.get("schedule_type") or "once")
-        run_id: int | None = None
-        backend: AsyncBufferedDBBackend | None = None
         try:
-            if st == "cron":
+            while not self._stop_evt.is_set():
+                slot = await self._await_cron_fire_slot(deployment_id)
+                if slot is None:
+                    return
+
+                deployment = await asyncio.to_thread(_read_deployment, deployment_id)
+                if deployment is None:
+                    return
+                if str(deployment.get("status") or "") != "running":
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_evt.wait(),
+                            timeout=ASSIGNMENT_POLL_INTERVAL_S,
+                        )
+                        return
+                    except asyncio.TimeoutError:
+                        continue
+
+                enqueued = await asyncio.to_thread(
+                    scheduler.enqueue_cron_run_if_due,
+                    deployment_id,
+                    worker_id=self.worker_id,
+                )
+                if enqueued is None:
+                    wait_s = await asyncio.to_thread(
+                        _cron_seconds_until_next_fire, deployment_id
+                    )
+                    wait_s = min(wait_s, 3600.0)
+                    try:
+                        await asyncio.wait_for(self._stop_evt.wait(), timeout=wait_s)
+                        return
+                    except asyncio.TimeoutError:
+                        continue
+
                 run_id = await asyncio.to_thread(
                     deploy_persistence.claim_queued_deploy_run,
                     deployment_id,
                     self.worker_id,
                 )
                 if run_id is None:
-                    logger.warning(
-                        "cron queue empty after assignment deployment_id=%s",
-                        deployment_id,
-                    )
-                    return
-                run_id, runtime, profile_id, backend = await self._prepare_runtime(
-                    deployment,
-                    trigger_context=None,
-                    existing_run_id=run_id,
-                )
-            else:
-                run_id, runtime, profile_id, backend = await self._prepare_runtime(
-                    deployment, trigger_context=None
-                )
+                    await asyncio.sleep(ASSIGNMENT_POLL_INTERVAL_S)
+                    continue
+
+                await self._execute_cron_run(deployment, run_id)
+        except asyncio.CancelledError:
+            raise
+
+    async def _execute_cron_run(
+        self, deployment: dict[str, Any], run_id: int
+    ) -> None:
+        deployment_id = int(deployment["id"])
+        backend: AsyncBufferedDBBackend | None = None
+        try:
+            run_id, runtime, profile_id, backend = await self._prepare_runtime(
+                deployment,
+                trigger_context=None,
+                existing_run_id=run_id,
+            )
+            await backend.start()
+            try:
+                with profile_scope(profile_id):
+                    result = await runtime.run()
+            finally:
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    logger.exception("obs backend drain failed run_id=%s", run_id)
+            await asyncio.to_thread(
+                deploy_persistence.complete_deploy_run, run_id, result
+            )
+        except asyncio.CancelledError:
+            if backend is not None:
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.to_thread(
+                deploy_persistence.fail_deploy_run, run_id, "cancelled"
+            )
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.exception("cron run failed deployment_id=%s", deployment_id)
+            if backend is not None:
+                try:
+                    await backend.drain()
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.to_thread(
+                deploy_persistence.fail_deploy_run, run_id, str(e)
+            )
+
+    async def _run_once_flow(self, deployment: dict[str, Any]) -> None:
+        deployment_id = int(deployment["id"])
+        st = str(deployment.get("schedule_type") or "once")
+        run_id: int | None = None
+        backend: AsyncBufferedDBBackend | None = None
+        try:
+            run_id, runtime, profile_id, backend = await self._prepare_runtime(
+                deployment, trigger_context=None
+            )
             await backend.start()
             try:
                 with profile_scope(profile_id):
