@@ -19,6 +19,21 @@ if TYPE_CHECKING:
     from flow_engine.engine.orchestrator import FlowRunResult
     from flow_engine.runner.models import RunMode
 
+
+def flow_run_failure_message(result: "FlowRunResult") -> str:
+    """Human-readable failure summary for deploy/test run rows and ledgers."""
+    msg = (result.message or "").strip()
+    if msg:
+        return msg
+    from flow_engine.engine.models import NodeState
+
+    failed = sorted(
+        nid for nid, st in (result.node_state or {}).items() if st == NodeState.FAILED
+    )
+    if failed:
+        return f"Flow failed at node(s): {', '.join(failed)}"
+    return result.state.value
+
 _FLOW_LOGS_MAX = 500
 
 
@@ -128,7 +143,9 @@ def complete_deploy_run(run_id: int, result: "FlowRunResult") -> None:
             return
         row.status = status
         row.finished_at = datetime.now(timezone.utc)
-        if result.message:
+        if status == "failed":
+            row.error = flow_run_failure_message(result)
+        elif result.message:
             row.error = result.message
         row.flow_logs = _normalize_flow_logs(list(result.flow_logs))
         row.global_ns = _extract_global_ns(result)

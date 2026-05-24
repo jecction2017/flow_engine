@@ -190,16 +190,31 @@ def apply_outputs(
     ctx: ContextStack,
 ) -> None:
     """outputs_map: starlark key (dotted) -> context path."""
+    from flow_engine.engine.exceptions import FlowEngineError
+
     for key, path in outputs_map.items():
-        val = _dig_key(result, key.split("."))
+        try:
+            val = _dig_key(result, key.split("."))
+        except KeyError as e:
+            missing = e.args[0] if e.args else key
+            if isinstance(missing, list):
+                missing_key = ".".join(str(p) for p in missing)
+            else:
+                missing_key = str(missing)
+            raise FlowEngineError(
+                f"Output mapping missing key {missing_key!r} in task result "
+                f"(maps to context path {path!r})"
+            ) from e
         ctx.set_path(path, val)
 
 
 def _dig_key(obj: dict[str, Any], parts: list[str]) -> Any:
     cur: Any = obj
-    for p in parts:
+    for i, p in enumerate(parts):
         if not isinstance(cur, dict):
-            raise KeyError(parts)
+            raise KeyError(parts[: i + 1])
+        if p not in cur:
+            raise KeyError(parts[: i + 1])
         cur = cur[p]
     return cur
 

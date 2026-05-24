@@ -222,8 +222,8 @@ async def _process_one(
             except Exception:  # noqa: BLE001
                 logger.exception("obs drain failed run_id=%s", run_id)
 
+        await asyncio.to_thread(deploy_persistence.complete_deploy_run, run_id, result)
         if result.state == FlowState.COMPLETED:
-            await asyncio.to_thread(deploy_persistence.complete_deploy_run, run_id, result)
             await asyncio.to_thread(
                 finish_message_processing,
                 deployment_id=deployment_id,
@@ -235,12 +235,7 @@ async def _process_one(
             )
             await _commit_positions(session, [pos])
         else:
-            err = getattr(result, "error", None) or str(result.state)
-            await asyncio.to_thread(
-                deploy_persistence.fail_deploy_run,
-                run_id,
-                err,
-            )
+            err = deploy_persistence.flow_run_failure_message(result)
             await asyncio.to_thread(
                 finish_message_processing,
                 deployment_id=deployment_id,
@@ -249,9 +244,9 @@ async def _process_one(
                 offset=msg.offset,
                 status="failed",
                 deploy_run_id=run_id,
-                error=str(err),
+                error=err,
             )
-            await _handle_poison(spec, msg, session, handle, sub, pos, error=str(err))
+            await _handle_poison(spec, msg, session, handle, sub, pos, error=err)
     except Exception as e:  # noqa: BLE001
         logger.exception(
             "subscription message failed deployment_id=%s %s:%s:%s",

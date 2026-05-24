@@ -1093,7 +1093,14 @@ class FlowRuntime:
                     close_status = "failed"
                     close_error = str(e)
                     raise
-                self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                try:
+                    self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                except BaseException as e:  # noqa: BLE001
+                    self._mark(nid, NodeState.FAILED)
+                    metric_status = "failed"
+                    close_status = "failed"
+                    close_error = str(e)
+                    raise
                 self._mark(nid, NodeState.SUCCESS)
             finally:
                 # Span/metric emission MUST happen in finally so that
@@ -1143,7 +1150,14 @@ class FlowRuntime:
                     close_status = "failed"
                     close_error = str(e)
                     raise
-                self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                try:
+                    self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                except BaseException as e:  # noqa: BLE001
+                    self._mark(nid, NodeState.FAILED)
+                    metric_status = "failed"
+                    close_status = "failed"
+                    close_error = str(e)
+                    raise
                 self._mark(nid, NodeState.SUCCESS)
             finally:
                 if span_token is not None:

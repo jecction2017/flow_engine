@@ -18,9 +18,12 @@ import pytest
 import yaml
 
 from flow_engine.engine.compiler import compile_flow
-from flow_engine.engine.models import FlowDefinition
+from flow_engine.engine.context import ContextStack
+from flow_engine.engine.exceptions import FlowEngineError
+from flow_engine.engine.models import FlowDefinition, FlowState, NodeState
 from flow_engine.engine.observability import RunRef
-from flow_engine.engine.orchestrator import FlowRuntime
+from flow_engine.engine.orchestrator import FlowRunResult, FlowRuntime
+from flow_engine.engine.starlark_glue import apply_outputs
 from flow_engine.runner import deploy_persistence, span_persistence
 from flow_engine.runner.models import RunMode, RunOptions
 from flow_engine.runner.obs_backend import AsyncBufferedDBBackend, ObsRuntimeConfig
@@ -103,6 +106,83 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
     a_spans = [s for s in page["items"] if s["node_id"] == "a"]
     assert a_spans, "expected a span for task node 'a'"
     assert a_spans[0]["parent_span_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_deploy_run_failed_stores_actionable_error() -> None:
+    """Output-mapping failures must persist on fe_deploy_run.error, not FlowState.FAILED."""
+    flow = _flow(
+        """
+        name: f
+        strategies:
+          default_sync: {name: default_sync, mode: sync}
+        nodes:
+          - id: map_out
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {}
+            boundary:
+              outputs:
+                alarm_id: "$.global.alarm_id"
+        """
+    )
+
+    run_id = deploy_persistence.create_deploy_run(
+        deployment_id=11,
+        worker_id="w1",
+        flow_code="f",
+        ver_no=1,
+        mode=RunMode.PRODUCTION,
+        schedule_type="subscription",
+        trigger_type="message",
+        trigger_context={"event_meta": {"topic": "alerts"}},
+    )
+
+    res = await FlowRuntime(
+        flow,
+        run_opts=RunOptions(mode=RunMode.PRODUCTION),
+        flow_code="f",
+    ).run()
+
+    assert res.state == FlowState.FAILED
+    assert res.message is not None
+    assert "alarm_id" in res.message
+
+    deploy_persistence.complete_deploy_run(run_id, res)
+
+    detail = deploy_persistence.get_deploy_run_detail(run_id)
+    assert detail is not None
+    assert detail["status"] == "failed"
+    assert detail["error"]
+    assert "alarm_id" in detail["error"]
+    assert "FlowState" not in detail["error"]
+
+
+def test_flow_run_failure_message_prefers_message_and_failed_nodes() -> None:
+    ctx = ContextStack()
+    with_msg = FlowRunResult(
+        state=FlowState.FAILED,
+        context=ctx,
+        message="Output mapping missing key 'alarm_id'",
+    )
+    assert (
+        deploy_persistence.flow_run_failure_message(with_msg)
+        == "Output mapping missing key 'alarm_id'"
+    )
+
+    without_msg = FlowRunResult(
+        state=FlowState.FAILED,
+        context=ctx,
+        node_state={"n1": NodeState.FAILED},
+    )
+    assert deploy_persistence.flow_run_failure_message(without_msg) == "Flow failed at node(s): n1"
+
+
+def test_apply_outputs_missing_key_raises_flow_engine_error() -> None:
+    ctx = ContextStack()
+    with pytest.raises(FlowEngineError, match="alarm_id"):
+        apply_outputs({}, {"alarm_id": "$.global.alarm_id"}, ctx)
 
 
 @pytest.mark.asyncio
