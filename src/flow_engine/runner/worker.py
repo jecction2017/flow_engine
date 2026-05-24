@@ -211,9 +211,18 @@ def _read_flow_body(flow_code: str, ver_no: int) -> dict[str, Any]:
 def _once_run_failure_status_detail(
     error: BaseException, *, run_id: int | None
 ) -> dict[str, Any]:
+    if run_id is None:
+        reason = "flow_prepare_failed"
+        category = "flow_prepare"
+    else:
+        reason = "run_failed"
+        category = "flow_execution"
     return {
-        "reason": "flow_prepare_failed" if run_id is None else "run_failed",
-        "message": str(error),
+        "reason": reason,
+        "category": category,
+        "error_type": type(error).__name__,
+        "message": f"{type(error).__name__}: {error}",
+        "run_id": run_id,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 

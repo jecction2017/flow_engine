@@ -1456,6 +1456,10 @@ def create_app() -> FastAPI:
             )
             s.add(row)
             s.flush()
+            if body.schedule_type == "cron" and initial_status == "running":
+                from flow_engine.runner import scheduler
+
+                scheduler.refresh_cron_schedule_config(row, session=s)
             return _serialize_deployment(row)
 
     @app.get("/api/deployments")

@@ -572,7 +572,7 @@ class FeFlowDeployment(_AuditCols, Base):
 
     schedule_config:
         once:         {}
-        cron:         {"cron_expr": "0 8 * * *"}
+        cron:         {"cron_expr": "0 8 * * *", "last_run_at": "...", "next_run_at": "..."}
         subscription: SubscriptionSpec JSON（见 docs/subscription-scheduling-design.md）
 
     worker_policy:

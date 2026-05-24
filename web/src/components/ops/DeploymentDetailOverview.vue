@@ -4,8 +4,10 @@
     <div v-if="alerts.length" class="alerts" role="alert">
       <div v-for="a in alerts" :key="a.id" class="alert" :class="a.level">
         <div class="alert-text">
-          <strong>{{ a.title }}</strong>
-          <span v-if="a.detail" class="muted small"> — {{ a.detail }}</span>
+          <strong class="alert-category">{{ a.category || a.title }}</strong>
+          <p v-if="a.log" class="alert-log mono small">{{ a.log }}</p>
+          <p v-else-if="a.detail" class="muted small alert-meta">{{ a.detail }}</p>
+          <p v-if="a.log && a.detail" class="muted small alert-meta">{{ a.detail }}</p>
         </div>
         <button
           v-if="a.action === 'workers'"
@@ -13,12 +15,6 @@
           class="btn small ghost"
           @click="emit('navigate-workers')"
         >节点</button>
-        <button
-          v-else-if="a.action === 'runs'"
-          type="button"
-          class="btn small ghost"
-          @click="emit('navigate-tab', 'runs')"
-        >运行</button>
       </div>
     </div>
 
@@ -143,16 +139,17 @@
                 <tr>
                   <th style="width:80px">运行</th>
                   <th style="width:100px">状态</th>
+                  <th style="width:140px">开始时间</th>
                   <th style="width:110px">耗时</th>
                   <th>Worker</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="loadingRunsPreview">
-                  <td colspan="4" class="muted center">加载中…</td>
+                  <td colspan="5" class="muted center">加载中…</td>
                 </tr>
                 <tr v-else-if="!runsPreview.length">
-                  <td colspan="4" class="muted center">暂无运行记录</td>
+                  <td colspan="5" class="muted center">暂无运行记录</td>
                 </tr>
                 <tr
                   v-for="r in runsPreview"
@@ -163,6 +160,9 @@
                   <td class="mono">#{{ r.id }}</td>
                   <td>
                     <span class="tag small" :class="runStatusTagClass(r.status)">{{ runStatusLabel(r.status) }}</span>
+                  </td>
+                  <td class="mono small ov-cell-ellipsis" :title="r.started_at ? formatTs(r.started_at) : undefined">
+                    {{ r.started_at ? formatTs(r.started_at) : "—" }}
                   </td>
                   <td class="mono small">{{ runElapsed(r) }}</td>
                   <td class="mono small">{{ r.worker_id || "—" }}</td>
@@ -334,7 +334,9 @@ watch(
 
 const isSubscription = computed(() => props.deployment.schedule_type === "subscription");
 
-const alerts = computed(() => buildDeploymentOverviewAlerts(props.deployment, props.subSummary));
+const alerts = computed(() =>
+  buildDeploymentOverviewAlerts(props.deployment, props.subSummary, props.runsPreview),
+);
 
 const subFields = computed(() =>
   subscriptionFieldsFromScheduleConfig(
@@ -351,7 +353,12 @@ const cronExpr = computed(() => {
   return String(props.deployment.schedule_config?.cron_expr ?? "").trim() || null;
 });
 
-const cronNextRunIso = computed(() => computeCronNextRunIso(cronExpr.value));
+const cronNextRunIso = computed(() =>
+  computeCronNextRunIso(
+    cronExpr.value,
+    props.deployment.schedule_config as Record<string, unknown> | undefined,
+  ),
+);
 
 function workerStatusForId(workerId: string): string | null {
   const w = props.workers.find((x) => x.worker_id === workerId);
@@ -444,10 +451,10 @@ function messageStatusTagClass(status: string): string {
 
 .alert {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-radius: 8px;
   border-left: 3px solid var(--border);
   background: color-mix(in srgb, var(--accent-soft) 20%, var(--surface));
@@ -469,8 +476,24 @@ function messageStatusTagClass(status: string): string {
   line-height: 1.4;
 }
 
-.alert-text strong {
+.alert-category {
+  display: block;
   font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.alert-log {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--danger, #b91c1c) 88%, var(--text));
+  line-height: 1.45;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.alert-meta {
+  margin: 4px 0 0;
 }
 
 /* —— 运行调度 —— */

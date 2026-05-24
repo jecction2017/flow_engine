@@ -24,6 +24,7 @@ from flow_engine.db.models import (
     FeWorkerAssignment,
 )
 from flow_engine.db.session import db_session
+from flow_engine.runner import scheduler
 from flow_engine.runner.worker_policy import (
     policy_type_from_policy,
     target_workers_from_policy,
@@ -100,6 +101,98 @@ def _list_dead_workers() -> list[str]:
             .where(FeWorker.deleted_at.is_(None))
         )
         return list(s.execute(stmt).scalars().all())
+
+
+def _list_failover_worker_ids() -> list[str]:
+    """Workers whose assignments must be released (stale heartbeat or explicit dead)."""
+    cutoff = _now() - timedelta(seconds=DEAD_THRESHOLD_S)
+    with db_session() as s:
+        stale = list(
+            s.execute(
+                select(FeWorker.worker_id)
+                .where(FeWorker.status == "active")
+                .where(FeWorker.last_heartbeat <= cutoff)
+                .where(FeWorker.deleted_at.is_(None))
+            ).scalars().all()
+        )
+        dead_with_assn = list(
+            s.execute(
+                select(FeWorker.worker_id)
+                .join(
+                    FeWorkerAssignment,
+                    FeWorkerAssignment.worker_id == FeWorker.worker_id,
+                )
+                .where(FeWorker.status == "dead")
+                .where(FeWorker.deleted_at.is_(None))
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+                .distinct()
+            ).scalars().all()
+        )
+    return list(dict.fromkeys([*stale, *dead_with_assn]))
+
+
+def _deployment_has_active_assignment(s: Any, dep_id: int) -> bool:
+    return (
+        s.execute(
+            select(FeWorkerAssignment.id)
+            .where(FeWorkerAssignment.deployment_id == dep_id)
+            .where(FeWorkerAssignment.deleted_at.is_(None))
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _fail_orphaned_cron_queued_runs(
+    s: Any,
+    dep_id: int,
+    *,
+    reason: str,
+    now: datetime | None = None,
+) -> int:
+    """Fail queued cron runs so a lost worker slot does not block future fires."""
+    ts = now or _now()
+    queued = list(
+        s.execute(
+            select(FeDeployRun)
+            .where(FeDeployRun.deployment_id == dep_id)
+            .where(FeDeployRun.status == "queued")
+            .where(FeDeployRun.trigger_type == "cron")
+            .where(FeDeployRun.deleted_at.is_(None))
+        ).scalars().all()
+    )
+    for r in queued:
+        r.status = "failed"
+        r.finished_at = ts
+        r.error = reason
+    return len(queued)
+
+
+def _cron_reassignable(
+    *,
+    active_workers: list[str] | set[str],
+    targeting_raw: Any,
+    worker_policy: Any,
+) -> bool:
+    mode, eligible_set = _eligible_by_targeting(
+        active_workers=active_workers,
+        targeting_raw=targeting_raw,
+    )
+    if mode == "pin" and not eligible_set:
+        return False
+    target = target_workers_from_policy(worker_policy or {})
+    return bool(eligible_set) and target > 0
+
+
+def _recover_cron_deployment_schedule(
+    dep_row: FeFlowDeployment,
+    *,
+    session: Any,
+    now: datetime,
+) -> None:
+    """After worker (re)assignment, skip missed slots and clear stale health detail."""
+    dep_row.status_detail = None
+    scheduler.align_cron_next_fire(dep_row, session=session, now=now)
 
 
 def _upsert_assignment(
@@ -387,6 +480,8 @@ def _assign_pending_sync() -> int:
             dep_row = s.get(FeFlowDeployment, dep["id"])
             if dep_row is not None and dep_row.status == "pending":
                 dep_row.status = "running"
+                if str(dep_row.schedule_type or "") == "cron":
+                    _recover_cron_deployment_schedule(dep_row, session=s, now=now)
     return created
 
 
@@ -394,9 +489,6 @@ def _assign_unassigned_cron_sync() -> int:
     """Assign workers to running cron deployments that have no active assignment."""
     created = 0
     workers = _list_active_workers()
-    if not workers:
-        return 0
-
     now = _now()
     lease_until = now + timedelta(seconds=LEADER_LEASE_S)
 
@@ -413,16 +505,7 @@ def _assign_unassigned_cron_sync() -> int:
         )
         for dep_row in cron_deps:
             dep_id = int(dep_row.id)
-            active_assn = (
-                s.execute(
-                    select(FeWorkerAssignment)
-                    .where(FeWorkerAssignment.deployment_id == dep_id)
-                    .where(FeWorkerAssignment.deleted_at.is_(None))
-                )
-                .scalars()
-                .first()
-            )
-            if active_assn is not None:
+            if _deployment_has_active_assignment(s, dep_id):
                 continue
 
             wp = dep_row.worker_policy or {}
@@ -442,34 +525,46 @@ def _assign_unassigned_cron_sync() -> int:
             if mode == "pin" and not eligible_set:
                 targeting = _normalize_targeting(getattr(dep_row, "worker_targeting", None) or {})
                 pin = targeting.get("worker_id")
-                queued = list(
-                    s.execute(
-                        select(FeDeployRun)
-                        .where(FeDeployRun.deployment_id == dep_id)
-                        .where(FeDeployRun.status == "queued")
-                        .where(FeDeployRun.deleted_at.is_(None))
-                    )
-                    .scalars()
-                    .all()
+                queued_failed = _fail_orphaned_cron_queued_runs(
+                    s,
+                    dep_id,
+                    reason=f"pin worker offline: {pin}",
+                    now=now,
                 )
-                for r in queued:
-                    r.status = "failed"
-                    r.finished_at = _now()
-                    r.error = f"pin worker offline: {pin}"
-                    created += 1
                 dep_row.status = "failed"
                 dep_row.status_detail = {
                     "reason": "pin_worker_offline",
                     "worker_id": pin,
                     "targeting": targeting,
-                    "queued_failed": len(queued),
-                    "ts": _now().isoformat(),
+                    "queued_failed": queued_failed,
+                    "ts": now.isoformat(),
                     "message": "cron pin worker offline",
                 }
                 logger.warning(
                     "cron deployment pin worker not active: dep_id=%s worker_id=%s",
                     dep_id,
                     pin,
+                )
+                continue
+
+            if not workers or not eligible_set:
+                queued_failed = _fail_orphaned_cron_queued_runs(
+                    s,
+                    dep_id,
+                    reason="no active worker available for cron assignment",
+                    now=now,
+                )
+                dep_row.status = "pending"
+                dep_row.status_detail = {
+                    "reason": "no_eligible_worker",
+                    "queued_failed": queued_failed,
+                    "ts": now.isoformat(),
+                    "message": "cron waiting for an active worker",
+                }
+                logger.info(
+                    "cron deployment unassigned with no workers: dep_id=%s queued_failed=%s",
+                    dep_id,
+                    queued_failed,
                 )
                 continue
 
@@ -507,6 +602,7 @@ def _assign_unassigned_cron_sync() -> int:
                         lease_expires_at=None,
                     )
                     created += 1
+            _recover_cron_deployment_schedule(dep_row, session=s, now=now)
     return created
 
 
@@ -541,15 +637,15 @@ def _renew_leader_leases_sync() -> int:
 def _check_dead_workers_sync() -> int:
     """Promote / re-assign assignments owned by dead workers. Returns # actions taken."""
     actions = 0
-    dead_ids = _list_dead_workers()
-    if not dead_ids:
+    failover_ids = _list_failover_worker_ids()
+    if not failover_ids:
         return 0
-    active_ids = set(_list_active_workers()) - set(dead_ids)
+    active_ids = set(_list_active_workers())
     now = _now()
     lease_until = now + timedelta(seconds=LEADER_LEASE_S)
 
     with db_session() as s:
-        for dead in dead_ids:
+        for dead in failover_ids:
             row = (
                 s.execute(select(FeWorker).where(FeWorker.worker_id == dead))
                 .scalar_one_or_none()
@@ -582,11 +678,37 @@ def _check_dead_workers_sync() -> int:
                         promoted.role = "leader"
                         promoted.lease_expires_at = lease_until
                         actions += 1
+                        dep_row = s.get(FeFlowDeployment, a.deployment_id)
+                        if (
+                            dep_row is not None
+                            and dep_row.schedule_type == "cron"
+                            and dep_row.status == "running"
+                        ):
+                            _recover_cron_deployment_schedule(dep_row, session=s, now=now)
                     else:
-                        # No standby → re-queue the deployment (once/subscription).
                         dep_row = s.get(FeFlowDeployment, a.deployment_id)
                         if dep_row is not None and dep_row.status == "running":
-                            if dep_row.schedule_type != "cron":
+                            if dep_row.schedule_type == "cron":
+                                if not _cron_reassignable(
+                                    active_workers=active_ids,
+                                    targeting_raw=getattr(dep_row, "worker_targeting", None) or {},
+                                    worker_policy=dep_row.worker_policy,
+                                ):
+                                    queued_failed = _fail_orphaned_cron_queued_runs(
+                                        s,
+                                        int(dep_row.id),
+                                        reason=f"worker lost: {dead}",
+                                        now=now,
+                                    )
+                                    dep_row.status = "pending"
+                                    dep_row.status_detail = {
+                                        "reason": "no_eligible_worker",
+                                        "worker_id": dead,
+                                        "queued_failed": queued_failed,
+                                        "ts": now.isoformat(),
+                                        "message": "cron leader lost with no replacement worker",
+                                    }
+                            else:
                                 dep_row.status = "pending"
                             actions += 1
                 elif a.role == "replica":
@@ -623,6 +745,88 @@ def _check_dead_workers_sync() -> int:
     return actions
 
 
+def _reap_orphaned_queued_cron_runs_sync() -> int:
+    """Fail queued cron runs that cannot be claimed (no assignment / dead worker)."""
+    now = _now()
+    cutoff = now - timedelta(seconds=DEAD_THRESHOLD_S)
+    actions = 0
+    with db_session() as s:
+        runs = list(
+            s.execute(
+                select(FeDeployRun)
+                .where(FeDeployRun.status == "queued")
+                .where(FeDeployRun.trigger_type == "cron")
+                .where(FeDeployRun.deleted_at.is_(None))
+            ).scalars().all()
+        )
+        if not runs:
+            return 0
+
+        dep_ids = {int(r.deployment_id) for r in runs}
+        deps = {
+            int(d.id): d
+            for d in s.execute(
+                select(FeFlowDeployment).where(FeFlowDeployment.id.in_(list(dep_ids)))
+            ).scalars().all()
+        }
+        assigned_deps = {
+            int(x)
+            for x in s.execute(
+                select(FeWorkerAssignment.deployment_id)
+                .where(FeWorkerAssignment.deployment_id.in_(list(dep_ids)))
+                .where(FeWorkerAssignment.deleted_at.is_(None))
+                .distinct()
+            ).scalars().all()
+        }
+        worker_ids = {str(r.worker_id) for r in runs if r.worker_id}
+        workers = {
+            w.worker_id: w
+            for w in s.execute(
+                select(FeWorker).where(FeWorker.worker_id.in_(list(worker_ids)))
+            ).scalars().all()
+        } if worker_ids else {}
+
+        for r in runs:
+            dep = deps.get(int(r.deployment_id))
+            if dep is None or dep.deleted_at is not None:
+                r.status = "failed"
+                r.finished_at = now
+                r.error = "orphaned: deployment missing"
+                actions += 1
+                continue
+            if dep.status != "running":
+                r.status = "failed"
+                r.finished_at = now
+                r.error = f"orphaned: deployment status={dep.status}"
+                actions += 1
+                continue
+            if int(dep.id) not in assigned_deps:
+                r.status = "failed"
+                r.finished_at = now
+                r.error = "orphaned: no active worker assignment"
+                actions += 1
+                continue
+            wid = str(r.worker_id or "")
+            if not wid:
+                continue
+            w = workers.get(wid)
+            last_hb = w.last_heartbeat if w is not None else None
+            if last_hb is not None and last_hb.tzinfo is None:
+                last_hb = last_hb.replace(tzinfo=timezone.utc)
+            worker_lost = (
+                w is None
+                or w.deleted_at is not None
+                or w.status != "active"
+                or (last_hb is not None and last_hb <= cutoff)
+            )
+            if worker_lost:
+                r.status = "failed"
+                r.finished_at = now
+                r.error = f"orphaned: worker lost: {wid}"
+                actions += 1
+    return actions
+
+
 # ---------------------------------------------------------------------------
 # Coordinator class
 # ---------------------------------------------------------------------------
@@ -643,10 +847,11 @@ class Coordinator:
                 try:
                     await asyncio.to_thread(_stop_stopping_deployments_sync)
                     await asyncio.to_thread(_assign_pending_sync)
+                    await asyncio.to_thread(_check_dead_workers_sync)
                     await asyncio.to_thread(_assign_unassigned_cron_sync)
                     await asyncio.to_thread(_renew_leader_leases_sync)
-                    await asyncio.to_thread(_check_dead_workers_sync)
                     await asyncio.to_thread(_reap_stale_runs_sync)
+                    await asyncio.to_thread(_reap_orphaned_queued_cron_runs_sync)
                 except Exception:  # noqa: BLE001
                     logger.exception("coordinator tick failed")
 

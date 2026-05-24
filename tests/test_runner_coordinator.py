@@ -294,7 +294,7 @@ def test_dead_worker_leader_promotes_standby() -> None:
 
 
 def test_dead_worker_cron_leader_stays_running_without_standby() -> None:
-    """Cron template should not flip to pending when leader dies and no standby."""
+    """Cron template stays running when leader dies and another worker can take over."""
     _add_worker("dead_w", alive=False)
     _add_worker("alive_w", alive=True)
     with db_session() as s:
@@ -323,11 +323,147 @@ def test_dead_worker_cron_leader_stays_running_without_standby() -> None:
         )
 
     coord_mod._check_dead_workers_sync()
+    coord_mod._assign_unassigned_cron_sync()
 
     with db_session() as s:
         row = s.get(FeFlowDeployment, dep_id)
         assert row is not None
         assert row.status == "running"
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert len(assn) == 1
+        assert assn[0].worker_id == "alive_w"
+        assert assn[0].role == "leader"
+
+
+def test_dead_worker_cron_leader_goes_pending_without_workers() -> None:
+    """Cron leader loss with no replacement worker should become pending."""
+    _add_worker("dead_w", alive=False)
+    with db_session() as s:
+        dep = FeFlowDeployment(
+            flow_code="cron_no_worker",
+            ver_no=1,
+            mode="production",
+            schedule_type="cron",
+            schedule_config={"cron_expr": "* * * * *"},
+            worker_policy={"type": "single_active", "target_workers": 1},
+            capability_policy=[],
+            worker_targeting={},
+            status="running",
+            env_profile_code="default",
+        )
+        s.add(dep)
+        s.flush()
+        dep_id = int(dep.id)
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="dead_w",
+                role="leader",
+                lease_expires_at=datetime.now(timezone.utc),
+            )
+        )
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id=None,
+                flow_code="cron_no_worker",
+                ver_no=1,
+                mode="production",
+                schedule_type="cron",
+                trigger_type="cron",
+                status="queued",
+                started_at=None,
+            )
+        )
+
+    coord_mod._check_dead_workers_sync()
+
+    with db_session() as s:
+        row = s.get(FeFlowDeployment, dep_id)
+        assert row is not None
+        assert row.status == "pending"
+        assert (row.status_detail or {}).get("reason") == "no_eligible_worker"
+        run = (
+            s.execute(select(FeDeployRun).where(FeDeployRun.deployment_id == dep_id))
+            .scalars()
+            .first()
+        )
+        assert run is not None
+        assert run.status == "failed"
+
+
+def test_explicit_dead_worker_assignment_is_cleaned_up() -> None:
+    """Workers marked dead on graceful stop must release assignments."""
+    with db_session() as s:
+        s.add(
+            FeWorker(
+                worker_id="stopped_w",
+                host="h",
+                pid=1,
+                status="dead",
+                last_heartbeat=datetime.now(timezone.utc),
+                capabilities={"max_concurrent_flows": 4},
+            )
+        )
+        dep_id = _add_deployment(schedule_type="cron", status="running")
+        s.add(
+            FeWorkerAssignment(
+                deployment_id=dep_id,
+                worker_id="stopped_w",
+                role="leader",
+                lease_expires_at=datetime.now(timezone.utc),
+            )
+        )
+
+    actions = coord_mod._check_dead_workers_sync()
+    assert actions >= 1
+    with db_session() as s:
+        assn = list(
+            s.execute(
+                select(FeWorkerAssignment).where(
+                    FeWorkerAssignment.deployment_id == dep_id,
+                    FeWorkerAssignment.deleted_at.is_(None),
+                )
+            ).scalars().all()
+        )
+        assert assn == []
+
+
+def test_reap_orphaned_queued_cron_run_without_assignment() -> None:
+    dep_id = _add_deployment(schedule_type="cron", status="running")
+    with db_session() as s:
+        s.add(
+            FeDeployRun(
+                deployment_id=dep_id,
+                worker_id=None,
+                flow_code="dep_flow",
+                ver_no=1,
+                mode="production",
+                schedule_type="cron",
+                trigger_type="cron",
+                status="queued",
+                started_at=None,
+            )
+        )
+
+    actions = coord_mod._reap_orphaned_queued_cron_runs_sync()
+    assert actions >= 1
+    with db_session() as s:
+        run = (
+            s.execute(select(FeDeployRun).where(FeDeployRun.deployment_id == dep_id))
+            .scalars()
+            .first()
+        )
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error and "no active worker assignment" in run.error
 
 
 def test_enqueue_cron_run_if_due_inserts_queued_run() -> None:
@@ -362,6 +498,14 @@ def test_enqueue_cron_run_if_due_inserts_queued_run() -> None:
         assert run.status == "queued"
         assert run.trigger_type == "cron"
         assert run.schedule_type == "cron"
+
+        dep = s.get(FeFlowDeployment, tmpl_id)
+        assert dep is not None
+        cfg = dep.schedule_config or {}
+        assert cfg.get("last_run_at")
+        assert cfg.get("next_run_at")
+        assert str(cfg["last_run_at"]).endswith("Z")
+        assert "." not in str(cfg["next_run_at"])
 
         children = list(
             s.execute(
@@ -410,6 +554,88 @@ def test_enqueue_cron_run_if_due_does_not_duplicate_before_due() -> None:
             )
         )
         assert n_runs == 1
+
+
+def test_enqueue_cron_run_if_due_skips_missed_cycles() -> None:
+    """Recovery after downtime must not backfill missed cron slots."""
+    pytest.importorskip("croniter")
+    from flow_engine.runner import scheduler as sched_mod
+
+    base = datetime(2026, 5, 24, 11, 28, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 24, 11, 34, 24, tzinfo=timezone.utc)
+    with db_session() as s:
+        tmpl = FeFlowDeployment(
+            flow_code="cron_skip",
+            ver_no=1,
+            mode="production",
+            schedule_type="cron",
+            schedule_config={
+                "cron_expr": "*/3 * * * *",
+                "last_run_at": "2026-05-24T11:28:00Z",
+                "next_run_at": "2026-05-24T11:30:00Z",
+            },
+            worker_policy={"type": "single_active", "target_workers": 1},
+            capability_policy=[],
+            worker_targeting={},
+            status="running",
+            env_profile_code="default",
+        )
+        tmpl.created_at = base
+        s.add(tmpl)
+        s.flush()
+        tmpl_id = int(tmpl.id)
+
+    assert sched_mod.enqueue_cron_run_if_due(tmpl_id, now=now) is None
+
+    with db_session() as s:
+        runs = list(
+            s.execute(
+                select(FeDeployRun).where(FeDeployRun.deployment_id == tmpl_id)
+            ).scalars().all()
+        )
+        assert len(runs) == 0
+        dep = s.get(FeFlowDeployment, tmpl_id)
+        assert dep is not None
+        assert dep.schedule_config.get("next_run_at") == "2026-05-24T11:36:00Z"
+
+
+def test_recover_cron_clears_status_detail_and_skips_missed() -> None:
+    pytest.importorskip("croniter")
+    _add_worker("w1", alive=True)
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code="cron_recover",
+            ver_no=1,
+            mode="production",
+            schedule_type="cron",
+            schedule_config={
+                "cron_expr": "*/3 * * * *",
+                "last_run_at": "2026-05-24T11:28:00Z",
+                "next_run_at": "2026-05-24T11:30:00Z",
+            },
+            worker_policy={"type": "single_active", "target_workers": 1},
+            capability_policy=[],
+            worker_targeting={},
+            status="pending",
+            status_detail={
+                "reason": "no_eligible_worker",
+                "message": "cron leader lost with no replacement worker",
+                "ts": "2026-05-24T11:34:03.609466+00:00",
+            },
+            env_profile_code="default",
+        )
+        s.add(row)
+        s.flush()
+        did = int(row.id)
+
+    coord_mod._assign_pending_sync()
+
+    with db_session() as s:
+        dep = s.get(FeFlowDeployment, did)
+        assert dep is not None
+        assert dep.status == "running"
+        assert dep.status_detail is None
+        assert dep.schedule_config.get("next_run_at") != "2026-05-24T11:30:00Z"
 
 
 def test_enqueue_cron_run_if_due_skips_stopped_template() -> None:
@@ -613,8 +839,7 @@ def test_cron_pin_offline_fails_queued_runs() -> None:
             )
         )
 
-    created = coord_mod._assign_unassigned_cron_sync()
-    assert created >= 1
+    coord_mod._assign_unassigned_cron_sync()
     with db_session() as s:
         dep = s.get(FeFlowDeployment, did)
         assert dep is not None

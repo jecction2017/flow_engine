@@ -44,6 +44,8 @@ export type WorkerTargeting =
 
 export type ScheduleConfig = {
   cron_expr?: string;
+  last_run_at?: string;
+  next_run_at?: string;
   [k: string]: unknown;
 };
 

@@ -114,11 +114,63 @@ export function deploymentScheduleSubtitle(
 
 export function statusDetailReasonLabel(detail: Record<string, unknown> | null | undefined): string {
   const reason = String(detail?.reason || "").trim();
+  if (reason === "run_failed") return "流程运行失败";
+  if (reason === "flow_prepare_failed") return "流程准备失败";
   if (reason === "no_eligible_worker") return "无可用工作节点";
   if (reason === "pin_worker_offline") return "绑定节点离线";
   if (reason === "subscription_ingress_failed") return "订阅接入失败";
   if (reason === "subscription_ingress_retrying") return "订阅接入重试中";
   return reason || "异常";
+}
+
+/** User-facing failure classification for deployment status_detail. */
+export function statusDetailCategoryLabel(
+  detail: Record<string, unknown> | null | undefined,
+): string {
+  const category = String(detail?.category ?? "").trim();
+  if (category === "flow_execution") return "流程节点运行异常";
+  if (category === "flow_prepare") return "流程准备异常";
+  if (category === "scheduling") return "调度异常";
+  if (category === "subscription_ingress") return "订阅接入异常";
+
+  const reason = String(detail?.reason ?? "").trim();
+  if (reason === "run_failed") return "流程节点运行异常";
+  if (reason === "flow_prepare_failed") return "流程准备异常";
+  if (reason === "no_eligible_worker" || reason === "pin_worker_offline") return "调度异常";
+  if (reason === "subscription_ingress_failed" || reason === "subscription_ingress_retrying") {
+    return "订阅接入异常";
+  }
+  return statusDetailReasonLabel(detail);
+}
+
+export function statusDetailRunId(detail: Record<string, unknown> | null | undefined): number | null {
+  const n = detail?.run_id;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
+function latestFailedRunError(runs: FlowRunSummary[] | undefined): string | null {
+  if (!runs?.length) return null;
+  for (const r of runs) {
+    if (String(r.status) === "failed") {
+      const err = (r.error ?? "").trim();
+      if (err) return err;
+    }
+  }
+  return null;
+}
+
+export function buildDeploymentFailureLog(
+  detail: Record<string, unknown> | null | undefined,
+  runsPreview?: FlowRunSummary[],
+): string {
+  const parts: string[] = [];
+  const msg = statusDetailMessage(detail);
+  if (msg) parts.push(msg);
+  const runErr = latestFailedRunError(runsPreview);
+  if (runErr && runErr !== msg) parts.push(runErr);
+  const runId = statusDetailRunId(detail);
+  if (runId != null) parts.push(`关联运行 #${runId}`);
+  return parts.join("\n");
 }
 
 export function statusDetailMessage(detail: Record<string, unknown> | null | undefined): string {
@@ -161,12 +213,13 @@ export type HealthSuggestedAction = "workers" | "messages" | "runs";
 
 export function statusDetailSuggestedAction(
   detail: Record<string, unknown> | null | undefined,
-): HealthSuggestedAction {
+): HealthSuggestedAction | undefined {
   const reason = String(detail?.reason || "").trim();
   if (reason === "no_eligible_worker" || reason === "pin_worker_offline") return "workers";
   if (reason === "subscription_ingress_failed" || reason === "subscription_ingress_retrying") {
     return "messages";
   }
+  if (reason === "run_failed" || reason === "flow_prepare_failed") return undefined;
   return "runs";
 }
 
@@ -201,7 +254,10 @@ export function shouldShowHealthBanner(
   d: DeploymentDetail,
   subSummary: SubscriptionSummary | null,
 ): boolean {
-  if (d.status_detail && Object.keys(d.status_detail).length > 0) return true;
+  const st = String(d.status);
+  if (d.status_detail && Object.keys(d.status_detail).length > 0 && st !== "running") {
+    return true;
+  }
   const alertStatuses = new Set(["failed", "stopping", "pending"]);
   if (!alertStatuses.has(String(d.status))) return false;
   const noAssignment = !(d.assignments?.length);
@@ -303,13 +359,22 @@ export function isCronScheduleActive(d: Pick<Deployment, "schedule_type" | "stat
   return String(d.schedule_type) === "cron" && String(d.status) === "running";
 }
 
-/** Next cron fire (UTC ISO) from now; null if expression invalid or empty. */
-export function computeCronNextRunIso(cronExpr: string | undefined | null): string | null {
+/** Next cron fire (UTC ISO). Prefers backend-persisted ``schedule_config.next_run_at``. */
+export function computeCronNextRunIso(
+  cronExpr: string | undefined | null,
+  scheduleConfig?: Record<string, unknown> | null,
+): string | null {
+  const cfg = scheduleConfig ?? {};
+  const stored = String(cfg.next_run_at ?? "").trim();
+  if (stored) return stored;
+
   const expr = String(cronExpr ?? "").trim();
   if (!expr) return null;
   try {
-    const it = parseExpression(expr, { utc: true, currentDate: new Date() });
-    return it.next().toDate().toISOString();
+    const lastRaw = String(cfg.last_run_at ?? "").trim();
+    const currentDate = lastRaw ? new Date(lastRaw) : new Date();
+    const it = parseExpression(expr, { utc: true, currentDate });
+    return it.next().toDate().toISOString().replace(/\.\d{3}Z$/, "Z");
   } catch {
     return null;
   }
@@ -608,7 +673,11 @@ export type OverviewAlertItem = {
   id: string;
   level: "bad" | "warn";
   title: string;
+  /** 失败分类（与 title 相同，供模板语义化展示） */
+  category?: string;
   detail?: string;
+  /** 失败原因 / 日志正文 */
+  log?: string;
   action?: HealthSuggestedAction;
 };
 
@@ -616,17 +685,16 @@ export type OverviewAlertItem = {
 export function buildDeploymentOverviewAlerts(
   d: DeploymentDetail,
   subSummary: SubscriptionSummary | null,
+  runsPreview?: FlowRunSummary[],
 ): OverviewAlertItem[] {
   const items: OverviewAlertItem[] = [];
   const detail = d.status_detail;
   const hasDetail = Boolean(detail && Object.keys(detail).length > 0);
   const st = String(d.status);
 
-  if (st === "failed" || hasDetail) {
+  if (st === "failed" || (hasDetail && st !== "running")) {
     const meta: string[] = [];
     if (detail) {
-      const msg = statusDetailMessage(detail);
-      if (msg) meta.push(msg);
       const when = statusDetailWhen(detail);
       if (when) meta.push(`时间 ${when}`);
       const att = statusDetailIngressAttempt(detail);
@@ -635,10 +703,18 @@ export function buildDeploymentOverviewAlerts(
       const next = statusDetailNextRetryAt(detail);
       if (next) meta.push(`下次重试 ${next}`);
     }
+    const category = hasDetail
+      ? statusDetailCategoryLabel(detail!)
+      : deploymentStatusLabel(st);
+    const log = hasDetail
+      ? buildDeploymentFailureLog(detail!, runsPreview)
+      : latestFailedRunError(runsPreview) ?? undefined;
     items.push({
       id: "status-detail",
       level: st === "failed" ? "bad" : "warn",
-      title: hasDetail ? statusDetailReasonLabel(detail!) : deploymentStatusLabel(st),
+      title: category,
+      category,
+      log: log || undefined,
       detail: meta.length ? meta.join(" · ") : undefined,
       action: statusDetailSuggestedAction(detail ?? null),
     });
