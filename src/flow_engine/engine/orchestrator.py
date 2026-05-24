@@ -25,6 +25,13 @@ from flow_engine.engine.exceptions import (
     TerminateInterrupt,
     raise_flow_control,
 )
+from flow_engine.engine.failure_report import (
+    FailureCategory,
+    FailureReport,
+    failure_report_from_exception,
+    format_failure_summary_line,
+    format_failure_text,
+)
 from flow_engine.engine.models import (
     BaseNode,
     ExecutionStrategy,
@@ -203,6 +210,7 @@ class FlowRunResult:
     state: FlowState
     context: ContextStack
     message: str | None = None
+    failure_report: dict[str, Any] | None = None
     node_state: dict[str, NodeState] = field(default_factory=dict)
     node_runs: list[NodeRunInfo] = field(default_factory=list)
     # Flow-level hook logs (on_start / on_complete / on_failure). These
@@ -256,10 +264,42 @@ class FlowRuntime:
         self._run_opts: RunOptions = run_opts or RunOptions()
         self.obs: ObservabilityBackend = obs or NullBackend()
         self.flow_code: str = flow_code or ""
+        self._primary_failure: FailureReport | None = None
 
     def _nid(self, m: FlowMember) -> str:
         # id 是节点唯一逻辑主键；模型层已保证非空，此处无需回落 name。
         return m.id
+
+    def _node_name(self, m: FlowMember) -> str:
+        name = getattr(m, "name", "") or ""
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return self._nid(m)
+
+    def _record_failure(self, report: FailureReport) -> None:
+        if self._primary_failure is None:
+            self._primary_failure = report
+
+    def _raise_flow_error(
+        self,
+        report: FailureReport,
+        *,
+        from_exc: BaseException | None = None,
+    ) -> None:
+        self._record_failure(report)
+        if from_exc is not None:
+            raise FlowEngineError(report.summary, report=report) from from_exc
+        raise FlowEngineError(report.summary, report=report)
+
+    @staticmethod
+    def _close_error_text(exc: BaseException, *, compact: bool = False) -> str:
+        from flow_engine.engine.exceptions import FlowEngineError as _FE
+
+        if isinstance(exc, _FE) and exc.report is not None:
+            if compact:
+                return format_failure_summary_line(exc.report)
+            return format_failure_text(exc.report)
+        return str(exc)
 
     def _now_ms(self) -> int:
         """Milliseconds since :meth:`run` started tracking (0 before start)."""
@@ -669,21 +709,38 @@ class FlowRuntime:
     def _direct_child_ids(members: list[FlowMember]) -> list[str]:
         return [m.id for m in members]
 
-    def _apply_outputs_safe(self, ctx: ContextStack, result: dict[str, Any], outputs: dict[str, str]) -> None:
+    def _apply_outputs_safe(
+        self,
+        ctx: ContextStack,
+        result: dict[str, Any],
+        outputs: dict[str, str],
+        *,
+        node_id: str,
+        node_name: str,
+    ) -> None:
         # `ContextStack.set_path` is internally locked; this helper exists so
         # that call sites read clearly and so we can group the boundary write
         # atomically in the future if multi-key transactional semantics are
         # ever required.
         with ctx.lock:
-            apply_outputs(result, outputs, ctx)
+            apply_outputs(
+                result, outputs, ctx, node_id=node_id, node_name=node_name
+            )
 
     def _result(self, message: str | None) -> FlowRunResult:
         with self._runs_lock:
             runs = sorted(self._node_runs_list, key=lambda r: r.order)
+        failure_dict = (
+            self._primary_failure.to_dict() if self._primary_failure is not None else None
+        )
+        display_msg = message
+        if failure_dict is not None:
+            display_msg = format_failure_text(failure_dict)
         return FlowRunResult(
             state=self.flow_state,
             context=self.ctx,
-            message=message,
+            message=display_msg,
+            failure_report=failure_dict,
             node_state=dict(self.node_state),
             node_runs=runs,
             flow_logs=list(self._flow_logs),
@@ -765,20 +822,35 @@ class FlowRuntime:
             # A jump escaped every enclosing scope -> treat as failure rather
             # than leaking a control-flow exception to the caller.
             self.flow_state = FlowState.FAILED
-            msg = f"Unresolved jump target: {j.target!r}"
+            report = failure_report_from_exception(
+                j,
+                category=FailureCategory.FLOW_UNRESOLVED_JUMP,
+                phase="flow",
+                summary=f"未解析的跳转目标: {j.target!r}",
+                context={"jump_target": j.target},
+            )
+            self._record_failure(report)
             final_status = "failed"
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
                     run_hook_script(
                         self.flow.hooks.on_failure,
                         self.ctx,
-                        {"error": msg},
+                        {"error": report.summary},
                         source="on_failure",
                     )
                 )
-            return self._result(msg)
+            return self._result(None)
         except FlowEngineError as e:
             self.flow_state = FlowState.FAILED
+            if e.report is not None:
+                self._record_failure(e.report)
+            elif self._primary_failure is None:
+                self._record_failure(
+                    failure_report_from_exception(
+                        e, category=FailureCategory.FLOW_EXECUTION, phase="flow"
+                    )
+                )
             final_status = "failed"
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
@@ -789,10 +861,16 @@ class FlowRuntime:
                         source="on_failure",
                     )
                 )
-            return self._result(str(e))
+            return self._result(None)
         except Exception as e:  # noqa: BLE001
             logger.exception("Flow failed")
             self.flow_state = FlowState.FAILED
+            if self._primary_failure is None:
+                self._record_failure(
+                    failure_report_from_exception(
+                        e, category=FailureCategory.FLOW_EXECUTION, phase="flow"
+                    )
+                )
             final_status = "failed"
             if self.flow.hooks and self.flow.hooks.on_failure:
                 self._append_flow_logs(
@@ -803,7 +881,7 @@ class FlowRuntime:
                         source="on_failure",
                     )
                 )
-            return self._result(str(e))
+            return self._result(None)
         finally:
             # Emit a single flow-level duration+status metric. The
             # ``"__flow_root__"`` label is kept for back-compat with
@@ -1029,7 +1107,15 @@ class FlowRuntime:
                 if decision == "ignore":
                     return {}
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Timeout in node {nid}") from e
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.TASK_TIMEOUT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="task_script",
+                    script=node.script,
+                )
+                self._raise_flow_error(report, from_exc=e)
             except sl.StarlarkError as e:
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1038,7 +1124,26 @@ class FlowRuntime:
                 if decision == "ignore":
                     return {}
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Starlark error in {nid}: {e}") from e
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.TASK_STARLARK_SCRIPT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="task_script",
+                    script=node.script,
+                )
+                self._raise_flow_error(report, from_exc=e)
+            except FlowEngineError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    return {}
+                self._mark(nid, NodeState.FAILED)
+                if e.report is not None:
+                    self._record_failure(e.report)
+                raise
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1047,10 +1152,27 @@ class FlowRuntime:
                 if decision == "ignore":
                     return {}
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Error in {nid}: {e}") from e
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.TASK_STARLARK_SCRIPT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="task_script",
+                    script=node.script,
+                )
+                self._raise_flow_error(report, from_exc=e)
 
         self._mark(nid, NodeState.FAILED)
-        raise FlowEngineError(f"Node {nid} failed after retries: {last_exc!r}")
+        report = failure_report_from_exception(
+            last_exc or RuntimeError("unknown"),
+            category=FailureCategory.NODE_RETRY_EXHAUSTED,
+            node_id=nid,
+            node_name=self._node_name(node),
+            phase="task_script",
+            script=node.script,
+            summary=f"节点 {nid} 在重试耗尽后仍失败",
+        )
+        self._raise_flow_error(report)
 
     async def _execute_task_node(
         self,
@@ -1091,15 +1213,23 @@ class FlowRuntime:
                 except BaseException as e:  # noqa: BLE001
                     metric_status = "failed"
                     close_status = "failed"
-                    close_error = str(e)
+                    close_error = self._close_error_text(e)
                     raise
                 try:
-                    self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                    self._apply_outputs_safe(
+                        ctx,
+                        result,
+                        node.boundary.outputs,
+                        node_id=nid,
+                        node_name=self._node_name(node),
+                    )
                 except BaseException as e:  # noqa: BLE001
                     self._mark(nid, NodeState.FAILED)
                     metric_status = "failed"
                     close_status = "failed"
-                    close_error = str(e)
+                    close_error = self._close_error_text(e)
+                    if isinstance(e, FlowEngineError) and e.report is not None:
+                        self._record_failure(e.report)
                     raise
                 self._mark(nid, NodeState.SUCCESS)
             finally:
@@ -1148,15 +1278,23 @@ class FlowRuntime:
                     self._mark(nid, NodeState.FAILED)
                     metric_status = "failed"
                     close_status = "failed"
-                    close_error = str(e)
+                    close_error = self._close_error_text(e)
                     raise
                 try:
-                    self._apply_outputs_safe(ctx, result, node.boundary.outputs)
+                    self._apply_outputs_safe(
+                        ctx,
+                        result,
+                        node.boundary.outputs,
+                        node_id=nid,
+                        node_name=self._node_name(node),
+                    )
                 except BaseException as e:  # noqa: BLE001
                     self._mark(nid, NodeState.FAILED)
                     metric_status = "failed"
                     close_status = "failed"
-                    close_error = str(e)
+                    close_error = self._close_error_text(e)
+                    if isinstance(e, FlowEngineError) and e.report is not None:
+                        self._record_failure(e.report)
                     raise
                 self._mark(nid, NodeState.SUCCESS)
             finally:
@@ -1342,7 +1480,14 @@ class FlowRuntime:
                     self._mark(nid, NodeState.SUCCESS)
                     return
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Timeout in node {nid}") from e
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.TASK_TIMEOUT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="flow",
+                )
+                self._raise_flow_error(report, from_exc=e)
             except sl.StarlarkError as e:
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1352,7 +1497,30 @@ class FlowRuntime:
                     self._mark(nid, NodeState.SUCCESS)
                     return
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Starlark error in {nid}: {e}") from e
+                script = getattr(node, "script", None)
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.LOOP_STARLARK_SCRIPT
+                    if isinstance(node, LoopNode)
+                    else FailureCategory.TASK_STARLARK_SCRIPT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="loop_body" if isinstance(node, LoopNode) else "flow",
+                    script=script if isinstance(script, str) else None,
+                )
+                self._raise_flow_error(report, from_exc=e)
+            except FlowEngineError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    self._mark(nid, NodeState.SUCCESS)
+                    return
+                self._mark(nid, NodeState.FAILED)
+                if e.report is not None:
+                    self._record_failure(e.report)
+                raise
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1362,9 +1530,24 @@ class FlowRuntime:
                     self._mark(nid, NodeState.SUCCESS)
                     return
                 self._mark(nid, NodeState.FAILED)
-                raise FlowEngineError(f"Error in {nid}: {e}") from e
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.FLOW_EXECUTION,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="flow",
+                )
+                self._raise_flow_error(report, from_exc=e)
         self._mark(nid, NodeState.FAILED)
-        raise FlowEngineError(f"Node {nid} failed after retries: {last_exc!r}")
+        report = failure_report_from_exception(
+            last_exc or RuntimeError("unknown"),
+            category=FailureCategory.NODE_RETRY_EXHAUSTED,
+            node_id=nid,
+            node_name=self._node_name(node),
+            phase="flow",
+            summary=f"节点 {nid} 在重试耗尽后仍失败",
+        )
+        self._raise_flow_error(report)
 
     def _handle_on_error(self, node: BaseNode, exc: BaseException) -> str:
         """Decide what to do with `exc` based on `node.on_error`.
@@ -1450,9 +1633,15 @@ class FlowRuntime:
                     continue
                 if decision == "ignore":
                     return
-                raise FlowEngineError(
-                    f"Timeout in loop iteration {self._nid(node)}"
-                ) from e
+                nid = self._nid(node)
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.LOOP_TIMEOUT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="loop_body",
+                )
+                self._raise_flow_error(report, from_exc=e)
             except sl.StarlarkError as e:
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1460,9 +1649,25 @@ class FlowRuntime:
                     continue
                 if decision == "ignore":
                     return
-                raise FlowEngineError(
-                    f"Starlark error in loop iteration {self._nid(node)}: {e}"
-                ) from e
+                nid = self._nid(node)
+                report = failure_report_from_exception(
+                    e,
+                    category=FailureCategory.LOOP_STARLARK_SCRIPT,
+                    node_id=nid,
+                    node_name=self._node_name(node),
+                    phase="loop_body",
+                )
+                self._raise_flow_error(report, from_exc=e)
+            except FlowEngineError as e:
+                last_exc = e
+                decision = self._handle_on_error(node, e)
+                if decision == "retry":
+                    continue
+                if decision == "ignore":
+                    return
+                if e.report is not None:
+                    self._record_failure(e.report)
+                raise
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 decision = self._handle_on_error(node, e)
@@ -1471,9 +1676,16 @@ class FlowRuntime:
                 if decision == "ignore":
                     return
                 raise
-        raise FlowEngineError(
-            f"Loop iteration {self._nid(node)} failed after retries: {last_exc!r}"
+        nid = self._nid(node)
+        report = failure_report_from_exception(
+            last_exc or RuntimeError("unknown"),
+            category=FailureCategory.NODE_RETRY_EXHAUSTED,
+            node_id=nid,
+            node_name=self._node_name(node),
+            phase="loop_body",
+            summary=f"循环节点 {nid} 迭代在重试耗尽后仍失败",
         )
+        self._raise_flow_error(report)
 
     async def _execute_loop(
         self,

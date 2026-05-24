@@ -905,7 +905,12 @@ class FeDeployRun(_AuditCols, Base):
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
-        comment="失败 / 终止时的错误信息",
+        comment="失败 / 终止时的错误信息（人类可读全文）",
+    )
+    failure_detail: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="结构化失败报告（who/when/what/how）；与 error 同源",
     )
     flow_logs: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSON,
@@ -1072,7 +1077,12 @@ class FeTestRun(_AuditCols, Base):
     error: Mapped[str | None] = mapped_column(
         MEDIUMTEXT,
         nullable=True,
-        comment="失败 / 终止时的错误信息（详细执行记录见 fe_run_span）",
+        comment="失败 / 终止时的错误信息（人类可读全文；详细执行记录见 fe_run_span）",
+    )
+    failure_detail: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="结构化失败报告（who/when/what/how）；与 error 同源",
     )
     evaluation: Mapped[dict[str, Any] | None] = mapped_column(
         JSON,

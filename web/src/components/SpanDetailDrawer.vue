@@ -31,7 +31,7 @@
       </div>
     </header>
 
-    <p v-if="span.error" class="err">{{ span.error }}</p>
+    <pre v-if="span.error" class="err mono">{{ span.error }}</pre>
 
     <section v-if="childSummaries.length" class="sd-section">
       <div class="sd-section-head">

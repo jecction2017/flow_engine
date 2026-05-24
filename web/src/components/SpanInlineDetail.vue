@@ -1,6 +1,6 @@
 <template>
   <div class="sid-inline">
-    <div v-if="span.error" class="sid-err">{{ span.error }}</div>
+    <pre v-if="span.error" class="sid-err mono">{{ span.error }}</pre>
     <section v-if="hasLogs" class="sid-block">
       <div class="sid-head">
         <span>日志（{{ logs.length }}）</span>

@@ -188,9 +188,13 @@ def apply_outputs(
     result: dict[str, Any],
     outputs_map: dict[str, str],
     ctx: ContextStack,
+    *,
+    node_id: str | None = None,
+    node_name: str | None = None,
 ) -> None:
     """outputs_map: starlark key (dotted) -> context path."""
     from flow_engine.engine.exceptions import FlowEngineError
+    from flow_engine.engine.failure_report import failure_report_for_output_mapping
 
     for key, path in outputs_map.items():
         try:
@@ -201,10 +205,14 @@ def apply_outputs(
                 missing_key = ".".join(str(p) for p in missing)
             else:
                 missing_key = str(missing)
-            raise FlowEngineError(
-                f"Output mapping missing key {missing_key!r} in task result "
-                f"(maps to context path {path!r})"
-            ) from e
+            report = failure_report_for_output_mapping(
+                node_id=node_id or "",
+                node_name=node_name or node_id or "",
+                missing_key=missing_key,
+                context_path=path,
+                result_keys=sorted(result.keys()) if isinstance(result, dict) else None,
+            )
+            raise FlowEngineError(report.summary, report=report) from e
         ctx.set_path(path, val)
 
 

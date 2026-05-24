@@ -74,6 +74,7 @@ def complete_test_run(
     *,
     status: str,
     error: str | None,
+    failure_detail: dict[str, Any] | None = None,
     flow_logs: list[dict[str, Any]] | None = None,
     global_ns: dict[str, Any] | None = None,
 ) -> None:
@@ -88,6 +89,8 @@ def complete_test_run(
         row.finished_at = datetime.now(timezone.utc)
         if error:
             row.error = error
+        if failure_detail:
+            row.failure_detail = dict(failure_detail)
         row.flow_logs = _normalize_flow_logs(flow_logs)
         row.global_ns = dict(global_ns) if global_ns else None
 
@@ -178,6 +181,9 @@ def get_test_run_detail(run_id: int) -> dict[str, Any] | None:
             "started_at": utc_isoformat(row.started_at),
             "finished_at": utc_isoformat(row.finished_at),
             "error": row.error,
+            "failure_detail": (
+                dict(row.failure_detail) if row.failure_detail else None
+            ),
             "evaluation": evaluation,
             "flow_logs": list(row.flow_logs) if row.flow_logs else None,
             "global_ns": dict(row.global_ns) if row.global_ns else None,

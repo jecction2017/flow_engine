@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from flow_engine.engine.failure_report import FailureReport
 
 
 class FlowEngineError(Exception):
     """Base class for engine errors."""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        report: "FailureReport | None" = None,
+    ) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 class CompilationError(FlowEngineError):

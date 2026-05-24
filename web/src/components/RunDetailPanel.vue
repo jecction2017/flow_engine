@@ -33,7 +33,13 @@
       </div>
     </header>
 
-    <p v-if="detail.error" class="err">{{ detail.error }}</p>
+    <section v-if="detail.error || detail.failure_detail" class="rd-failure">
+      <div class="rd-failure-head">运行失败</div>
+      <FailureReportPanel
+        :failure-detail="detail.failure_detail"
+        :fallback-text="detail.error"
+      />
+    </section>
 
     <nav v-if="tabs.length > 1" class="rd-tabs">
       <button
@@ -124,6 +130,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import type { FlowRunDetail } from "@/api/flowRuns";
 import { useFlowLabels } from "@/composables/useFlowLabels";
+import FailureReportPanel from "@/components/FailureReportPanel.vue";
 import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
@@ -405,14 +412,18 @@ void isTestRun;
   border-color: color-mix(in srgb, #3b82f6 35%, transparent);
 }
 
-.err {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, #fecaca 30%, transparent);
-  color: #b91c1c;
+.rd-failure {
+  border: 1px solid color-mix(in srgb, #ef4444 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, #fef2f2 60%, var(--surface));
+  padding: 10px 12px;
+}
+
+.rd-failure-head {
   font-size: 12px;
-  white-space: pre-wrap;
+  font-weight: 700;
+  color: #b91c1c;
+  margin-bottom: 8px;
 }
 
 .rd-tabs {

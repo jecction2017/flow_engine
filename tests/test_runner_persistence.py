@@ -157,6 +157,11 @@ async def test_deploy_run_failed_stores_actionable_error() -> None:
     assert detail["error"]
     assert "alarm_id" in detail["error"]
     assert "FlowState" not in detail["error"]
+    assert "【分类】" in detail["error"]
+    fd = detail.get("failure_detail")
+    assert isinstance(fd, dict)
+    assert fd.get("category") == "task_output_mapping"
+    assert fd.get("node_id") == "map_out"
 
 
 def test_flow_run_failure_message_prefers_message_and_failed_nodes() -> None:

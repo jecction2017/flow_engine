@@ -29,6 +29,27 @@ export type FlowRunStatus =
   | "terminated"
   | string;
 
+/** Structured runtime failure (who / when / what / how). */
+export type FailureDetail = {
+  category?: string;
+  category_label?: string;
+  occurred_at?: string;
+  summary?: string;
+  node_id?: string | null;
+  node_name?: string | null;
+  phase?: string | null;
+  phase_label?: string | null;
+  exception_type?: string | null;
+  exception_message?: string | null;
+  source_file?: string | null;
+  line?: number | null;
+  column?: number | null;
+  detail?: string | null;
+  script_excerpt?: string | null;
+  context?: Record<string, unknown>;
+  cause_chain?: string[];
+};
+
 export type RunEvaluation = {
   verdict?: string;
   flow_state?: string;
@@ -103,6 +124,8 @@ export type FlowRunDetail = {
   case_index?: number | null;
   case_key?: string | null;
   error: string | null;
+  /** Structured failure report; mirrors ``error`` with who/when/what/how fields. */
+  failure_detail?: FailureDetail | null;
   evaluation?: RunEvaluation | null;
   /** 流程级钩子日志（部署/测试运行持久化）。 */
   flow_logs?: LogEntry[] | null;

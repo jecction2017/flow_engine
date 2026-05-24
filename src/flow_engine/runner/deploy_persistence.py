@@ -22,17 +22,18 @@ if TYPE_CHECKING:
 
 def flow_run_failure_message(result: "FlowRunResult") -> str:
     """Human-readable failure summary for deploy/test run rows and ledgers."""
-    msg = (result.message or "").strip()
-    if msg:
-        return msg
+    from flow_engine.engine.failure_report import failure_text_from_run_result
     from flow_engine.engine.models import NodeState
 
     failed = sorted(
         nid for nid, st in (result.node_state or {}).items() if st == NodeState.FAILED
     )
-    if failed:
-        return f"Flow failed at node(s): {', '.join(failed)}"
-    return result.state.value
+    return failure_text_from_run_result(
+        message=result.message,
+        failure_report=result.failure_report,
+        failed_node_ids=failed or None,
+        state_value=result.state.value,
+    )
 
 _FLOW_LOGS_MAX = 500
 
@@ -145,6 +146,9 @@ def complete_deploy_run(run_id: int, result: "FlowRunResult") -> None:
         row.finished_at = datetime.now(timezone.utc)
         if status == "failed":
             row.error = flow_run_failure_message(result)
+            row.failure_detail = (
+                dict(result.failure_report) if result.failure_report else None
+            )
         elif result.message:
             row.error = result.message
         row.flow_logs = _normalize_flow_logs(list(result.flow_logs))
@@ -347,6 +351,9 @@ def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:
                 int(row.sampled_span_count) if row.sampled_span_count is not None else None
             ),
             "error": row.error,
+            "failure_detail": (
+                dict(row.failure_detail) if row.failure_detail else None
+            ),
             "flow_logs": list(row.flow_logs) if row.flow_logs else None,
             "global_ns": dict(row.global_ns) if row.global_ns else None,
         }

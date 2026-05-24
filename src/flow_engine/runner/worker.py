@@ -211,19 +211,34 @@ def _read_flow_body(flow_code: str, ver_no: int) -> dict[str, Any]:
 def _once_run_failure_status_detail(
     error: BaseException, *, run_id: int | None
 ) -> dict[str, Any]:
+    from flow_engine.engine.failure_report import (
+        FailureCategory,
+        failure_report_for_prepare,
+        failure_report_from_exception,
+        format_failure_text,
+    )
+
     if run_id is None:
         reason = "flow_prepare_failed"
         category = "flow_prepare"
+        report = failure_report_for_prepare(error)
     else:
         reason = "run_failed"
         category = "flow_execution"
+        report = failure_report_from_exception(
+            error,
+            category=FailureCategory.FLOW_EXECUTION,
+            phase="flow",
+        )
+    detail = report.to_dict()
     return {
         "reason": reason,
         "category": category,
         "error_type": type(error).__name__,
-        "message": f"{type(error).__name__}: {error}",
+        "message": format_failure_text(detail),
+        "failure_detail": detail,
         "run_id": run_id,
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": detail.get("occurred_at") or datetime.now(timezone.utc).isoformat(),
     }
 
 

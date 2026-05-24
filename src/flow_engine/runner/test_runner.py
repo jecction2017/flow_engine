@@ -309,11 +309,19 @@ async def _run_single_test_case(
         from flow_engine.engine.models import FlowState as _FS
 
         status = "completed" if result.state == _FS.COMPLETED else ("terminated" if result.state == _FS.TERMINATED else "failed")
+        from flow_engine.runner.deploy_persistence import flow_run_failure_message
+
+        err = (
+            flow_run_failure_message(result)
+            if status == "failed"
+            else result.message
+        )
         await asyncio.to_thread(
             test_persistence.complete_test_run,
             run_id,
             status=status,
-            error=result.message,
+            error=err,
+            failure_detail=result.failure_report,
             flow_logs=list(result.flow_logs),
             global_ns=gns,
         )
