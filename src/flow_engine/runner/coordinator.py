@@ -23,6 +23,7 @@ from flow_engine.db.models import (
     FeWorkerAssignment,
 )
 from flow_engine.db.session import db_session
+from flow_engine.runner.scheduler import Scheduler
 from flow_engine.runner.worker_policy import (
     policy_type_from_policy,
     target_workers_from_policy,

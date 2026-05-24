@@ -449,7 +449,6 @@
                 @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()"
               >消费</button>
               <button type="button" class="seg" :class="{ active: depDetailTab === 'runs' }" @click="depDetailTab = 'runs'; depRunsOffset=0; loadEmbeddedDepRuns()">运行</button>
-              <button type="button" class="seg" :class="{ active: depDetailTab === 'config' }" @click="depDetailTab = 'config'">配置</button>
               <button type="button" class="seg jump" @click="viewRuns(selectedDeployment, { forceGlobal: true })">
                 全局运行页 <span class="jump-ico" aria-hidden="true">↗</span>
               </button>
@@ -466,18 +465,11 @@
                 :loading-runs-preview="loadingDepOverviewRuns"
                 :format-ts="formatTs"
                 :run-elapsed="runElapsed"
-                @refresh="refreshDeploymentOverview"
                 @navigate-tab="onOverviewNavigateTab"
                 @navigate-workers="switchTab('workers')"
                 @open-run="openOverviewRun"
                 @open-message="openSubscriptionMessage"
-                @edit="openEditDeployment()"
               />
-            </section>
-
-            <section v-else-if="depDetailTab === 'config'" class="panel-body">
-              <div class="lbl">部署配置（只读）</div>
-              <pre class="cfg mono">{{ deploymentCfgText(selectedDeployment) }}</pre>
             </section>
 
             <section v-else-if="depDetailTab === 'messages'" class="panel-body">
@@ -856,6 +848,52 @@ import {
 } from "@/utils/deploymentOverview";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
+type DepDetailTabId = "overview" | "messages" | "runs";
+
+const OPS_CENTER_STATE_KEY = "flowEngine:ops:centerState";
+
+type OpsCenterPersistedState = {
+  tab: TabId;
+  depSelection: "overview" | number;
+  depDetailTab: DepDetailTabId;
+};
+
+const OPS_ALLOWED_TABS = new Set<TabId>(["overview", "deployments", "runs", "workers"]);
+const OPS_ALLOWED_DETAIL_TABS = new Set<DepDetailTabId>(["overview", "messages", "runs"]);
+
+function readStoredOpsCenterState(): OpsCenterPersistedState | null {
+  try {
+    const raw = localStorage.getItem(OPS_CENTER_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OpsCenterPersistedState>;
+    if (!parsed.tab || !OPS_ALLOWED_TABS.has(parsed.tab)) return null;
+    const depSelection =
+      parsed.depSelection === "overview"
+        ? "overview"
+        : typeof parsed.depSelection === "number"
+            && Number.isInteger(parsed.depSelection)
+            && parsed.depSelection > 0
+          ? parsed.depSelection
+          : "overview";
+    const depDetailTab =
+      parsed.depDetailTab && OPS_ALLOWED_DETAIL_TABS.has(parsed.depDetailTab)
+        ? parsed.depDetailTab
+        : "overview";
+    return { tab: parsed.tab, depSelection, depDetailTab };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredOpsCenterState(state: OpsCenterPersistedState) {
+  try {
+    localStorage.setItem(OPS_CENTER_STATE_KEY, JSON.stringify(state));
+  } catch {
+    /* private mode / denied */
+  }
+}
+
+const storedOpsCenterState = readStoredOpsCenterState();
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "deployments", label: "部署管理" },
@@ -863,7 +901,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "workers", label: "工作节点" },
 ];
 
-const tab = ref<TabId>("deployments");
+const tab = ref<TabId>(storedOpsCenterState?.tab ?? "deployments");
 const error = ref("");
 const notice = ref("");
 
@@ -912,15 +950,24 @@ const depFilters = reactive<{ flow_code: string; status: string; mode: string }>
   status: "",
   mode: "",
 });
-const selectedDeploymentId = ref<number | null>(null);
+const initialStoredDeploymentId =
+  storedOpsCenterState?.tab === "deployments"
+  && storedOpsCenterState.depSelection !== "overview"
+  && typeof storedOpsCenterState.depSelection === "number"
+    ? storedOpsCenterState.depSelection
+    : null;
+
+const selectedDeploymentId = ref<number | null>(initialStoredDeploymentId);
 const selectedDeployment = ref<DeploymentDetail | null>(null);
-const depDetailTab = ref<"overview" | "messages" | "runs" | "config">("overview");
+const depDetailTab = ref<DepDetailTabId>(storedOpsCenterState?.depDetailTab ?? "overview");
 const DEP_CENTER_OVERVIEW_LABEL = "总概览";
 const CENTER_OVERVIEW_PAGE_SIZE = 10;
 const CENTER_OVERVIEW_SCROLL_ROWS = 5;
 const CENTER_OVERVIEW_LOOKBACK_HOURS = 24;
 
-const depWorkspace = ref<"overview" | "create" | "detail" | "edit">("overview");
+const depWorkspace = ref<"overview" | "create" | "detail" | "edit">(
+  initialStoredDeploymentId != null ? "detail" : "overview",
+);
 
 const centerOverviewRuns = ref<FlowRunSummary[]>([]);
 const centerOverviewRunsOffset = ref(0);
@@ -1072,14 +1119,17 @@ function openRunFromCenterOverview(runId: number) {
   void selectRun(runId);
 }
 
-async function selectDeployment(id: number) {
+async function selectDeployment(
+  id: number,
+  opts?: { detailTab?: DepDetailTabId },
+) {
   closeGlobalRunDrawer();
   closeDepMenu();
   if (tab.value !== "deployments") {
     tab.value = "deployments";
   }
   selectedDeploymentId.value = id;
-  depDetailTab.value = "overview";
+  depDetailTab.value = opts?.detailTab ?? "overview";
   depWorkspace.value = "detail";
   depRunsOffset.value = 0;
   depRunsResp.value = null;
@@ -1098,6 +1148,8 @@ async function selectDeployment(id: number) {
     await loadDeploymentOverviewData(id);
     if (depDetailTab.value === "messages") {
       await loadSubscriptionMessages();
+    } else if (depDetailTab.value === "runs") {
+      await loadEmbeddedDepRuns();
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -1145,12 +1197,12 @@ async function refreshDeploymentOverview() {
   }
 }
 
-function onOverviewNavigateTab(tab: "runs" | "messages" | "config") {
-  depDetailTab.value = tab;
-  if (tab === "messages") {
+function onOverviewNavigateTab(nextTab: DepDetailTabId) {
+  depDetailTab.value = nextTab;
+  if (nextTab === "messages") {
     depMessagesOffset.value = 0;
     void loadSubscriptionMessages();
-  } else if (tab === "runs") {
+  } else if (nextTab === "runs") {
     depRunsOffset.value = 0;
     void loadEmbeddedDepRuns();
   }
@@ -1680,20 +1732,6 @@ watch(
   { immediate: true },
 );
 
-function deploymentCfgText(d: DeploymentDetail): string {
-  return JSON.stringify(
-    {
-      schedule_config: d.schedule_config,
-      worker_policy: d.worker_policy,
-      capability_policy: d.capability_policy,
-      worker_targeting: d.worker_targeting,
-      env_profile_code: d.env_profile_code,
-    },
-    null,
-    2,
-  );
-}
-
 // ---------------- Flow runs ----------------
 
 const runFilters = reactive<{
@@ -1841,6 +1879,55 @@ async function loadWorkers() {
   }
 }
 
+function snapshotOpsCenterState(): OpsCenterPersistedState {
+  const depSelection: "overview" | number =
+    tab.value === "deployments"
+    && depWorkspace.value === "detail"
+    && selectedDeploymentId.value != null
+      ? selectedDeploymentId.value
+      : "overview";
+
+  return {
+    tab: tab.value,
+    depSelection,
+    depDetailTab: depDetailTab.value,
+  };
+}
+
+function persistOpsCenterState() {
+  if (depWorkspace.value === "create" || depWorkspace.value === "edit") return;
+  writeStoredOpsCenterState(snapshotOpsCenterState());
+}
+
+async function hydrateOpsCenterState() {
+  if (!storedOpsCenterState) {
+    if (tab.value === "deployments") {
+      openDeployOverview();
+    } else {
+      switchTab(tab.value);
+    }
+    return;
+  }
+
+  if (storedOpsCenterState.tab !== "deployments") {
+    switchTab(storedOpsCenterState.tab);
+    return;
+  }
+
+  if (typeof storedOpsCenterState.depSelection === "number") {
+    await loadDeployments();
+    if (deployments.value.some((d) => d.id === storedOpsCenterState.depSelection)) {
+      await selectDeployment(storedOpsCenterState.depSelection, {
+        detailTab: storedOpsCenterState.depDetailTab,
+      });
+    } else {
+      openDeployOverview();
+    }
+  } else {
+    openDeployOverview();
+  }
+}
+
 // ---------------- Helpers ----------------
 
 function switchTab(id: TabId) {
@@ -1916,14 +2003,13 @@ function formatRelative(iso: string | null): string {
   return formatTs(iso);
 }
 
-void switchTab("deployments");
-// Ensure the deployments workbench opens on overview by default.
-if (tab.value === "deployments") openDeployOverview();
-
 onMounted(() => {
   document.addEventListener("pointerdown", onDocPointerDown, true);
   void ensureFlowList();
+  void hydrateOpsCenterState();
 });
+
+watch([tab, selectedDeploymentId, depWorkspace, depDetailTab], persistOpsCenterState);
 
 onUnmounted(() => {
   document.removeEventListener("pointerdown", onDocPointerDown, true);

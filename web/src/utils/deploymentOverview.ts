@@ -1,6 +1,6 @@
 /** Labels and helpers for deployment detail overview (运行中心 · 管理详情 · 概览). */
 
-import { CronExpressionParser } from "cron-parser";
+import { parseExpression } from "cron-parser";
 import type { Assignment, Deployment, DeploymentDetail, WorkerTargeting } from "@/api/deployments";
 import type { SubscriptionSummary } from "@/api/subscriptionObservability";
 import type { FlowRunSummary } from "@/api/flowRuns";
@@ -298,12 +298,17 @@ export function subscriptionFieldsFromScheduleConfig(
   return { consumer_id, max_in_flight };
 }
 
-/** Next cron fire (UTC ISO); null if expression invalid. */
+/** Cron template is actively scheduled (Coordinator only fires when status is running). */
+export function isCronScheduleActive(d: Pick<Deployment, "schedule_type" | "status">): boolean {
+  return String(d.schedule_type) === "cron" && String(d.status) === "running";
+}
+
+/** Next cron fire (UTC ISO) from now; null if expression invalid or empty. */
 export function computeCronNextRunIso(cronExpr: string | undefined | null): string | null {
   const expr = String(cronExpr ?? "").trim();
   if (!expr) return null;
   try {
-    const it = CronExpressionParser.parse(expr, { utc: true });
+    const it = parseExpression(expr, { utc: true, currentDate: new Date() });
     return it.next().toDate().toISOString();
   } catch {
     return null;
@@ -342,6 +347,8 @@ export type ScheduleTriggerChip = {
   mono?: boolean;
   highlight?: boolean;
   muted?: boolean;
+  /** 订阅等场景：消费者占宽、并发上限占窄 */
+  layout?: "wide" | "compact";
 };
 
 export type RoleBlockKey = "leader" | "standby" | "replica";
@@ -349,11 +356,7 @@ export type RoleBlockKey = "leader" | "standby" | "replica";
 export type RoleBindKind = "any" | "specified";
 
 /** How the worker shown in a role block relates to assignment / targeting. */
-export type RoleOccupancy =
-  | "assigned_ok"
-  | "assigned_weak"
-  | "specified_idle"
-  | "vacant";
+export type RoleOccupancy = "assigned_ok" | "assigned_weak" | "vacant";
 
 export type WorkerChipView = {
   key: string;
@@ -363,8 +366,6 @@ export type WorkerChipView = {
   occupancy: RoleOccupancy;
   workerId: string | null;
   workerStatus: string | null;
-  /** 2–4 字状态角标，如「未配」「离线」 */
-  microLabel: string | null;
   title: string | null;
 };
 
@@ -374,26 +375,35 @@ export type ScheduleNodeOverview = {
   policyTypeLabel: string;
   allocationRatio: string;
   allocationTone: "ok" | "warn" | "muted";
+  /** Pin / pool worker ids for inline「绑定」segment; null when targeting is any. */
+  bindingIds: string | null;
   workerChips: WorkerChipView[];
 };
 
-function shortOccupancyLabel(
-  occupancy: RoleOccupancy,
-  bindKind: RoleBindKind,
-  workerStatus: string | null,
-  deploymentStatus: string,
-): string | null {
-  if (occupancy === "specified_idle") return "未配";
-  if (occupancy === "vacant") {
-    return isDeploymentLive(deploymentStatus) ? null : "未启";
+function bindingIdsForTargeting(targeting: WorkerTargeting | undefined): string | null {
+  if (!targeting) return null;
+  if (targeting.mode === "pin") {
+    const id = String(targeting.worker_id ?? "").trim();
+    return id || null;
   }
-  if (occupancy === "assigned_weak") {
-    if (workerStatus === "dead") return "离线";
-    if (workerStatus === "idle") return "空闲";
-    return "异常";
+  if (targeting.mode === "pool") {
+    const ids = (targeting.worker_ids || []).map((x) => String(x).trim()).filter(Boolean);
+    return ids.length ? ids.join(" ") : null;
   }
-  if (occupancy === "assigned_ok" && bindKind === "specified") return null;
   return null;
+}
+
+function assignmentsForRoleSlots(
+  roles: RoleBlockKey[],
+  by: AssignmentsByRole,
+): (Assignment | null)[] {
+  const cursor: Record<RoleBlockKey, number> = { leader: 0, standby: 0, replica: 0 };
+  return roles.map((role) => {
+    const list = by[role];
+    const idx = cursor[role];
+    cursor[role] += 1;
+    return list[idx] ?? null;
+  });
 }
 
 function roleSkeleton(policyType: string | undefined, configured: number | null): RoleBlockKey[] {
@@ -419,14 +429,6 @@ function specifiedWorkerIds(targeting: WorkerTargeting | undefined): string[] {
   return [];
 }
 
-function assignmentForRole(
-  role: RoleBlockKey,
-  by: ReturnType<typeof groupAssignmentsByRole>,
-): Assignment | null {
-  const list = by[role];
-  return list.length ? list[0] : null;
-}
-
 function isDeploymentLive(status: string): boolean {
   return status === "running" || status === "pending";
 }
@@ -437,85 +439,67 @@ function isWorkerHealthy(status: string | null): boolean {
 
 function resolveWorkerChip(
   role: RoleBlockKey,
+  slotIndex: number,
   assignment: Assignment | null,
   specifiedId: string | null,
   workerStatus: (workerId: string) => string | null,
   deploymentStatus: string,
   formatTs: (iso: string | null) => string,
 ): WorkerChipView {
+  const roleName = assignmentRoleLabel(role);
+  const key = `role-${role}-${slotIndex}`;
+
+  if (!assignment) {
+    const titleParts = [`${roleName} · 待分配`];
+    if (specifiedId) titleParts.push(`指定 ${specifiedId}`);
+    if (!isDeploymentLive(deploymentStatus)) {
+      titleParts.push(deploymentStatus === "stopped" ? "部署未启动" : "部署未在运行");
+    }
+    return {
+      key,
+      role,
+      roleLabel: roleName,
+      bindKind: specifiedId ? "specified" : "any",
+      occupancy: "vacant",
+      workerId: null,
+      workerStatus: null,
+      title: titleParts.join(" · "),
+    };
+  }
+
   const bindKind: RoleBindKind = specifiedId ? "specified" : "any";
   const live = isDeploymentLive(deploymentStatus);
-  const roleName = assignmentRoleLabel(role);
-
-  if (assignment) {
-    const st = workerStatus(assignment.worker_id);
-    let occupancy: RoleOccupancy = "assigned_ok";
-    const titleParts = [`${roleName}`, assignment.worker_id];
-    if (assignment.lease_expires_at) {
-      titleParts.push(`租约 ${formatTs(assignment.lease_expires_at)}`);
-    }
-
-    if (specifiedId && assignment.worker_id !== specifiedId) {
-      occupancy = "assigned_weak";
-      titleParts.push(`与指定 ${specifiedId} 不一致`);
-    } else if (!live) {
-      occupancy = "assigned_weak";
-      titleParts.push(deploymentStatus === "stopped" ? "部署已停止" : "部署未在运行");
-    } else if (!isWorkerHealthy(st)) {
-      occupancy = "assigned_weak";
-      if (st) titleParts.push(workerStatusLabel(st));
-    } else if (bindKind === "specified") {
-      titleParts.push("已指定 · 已分配");
-    } else {
-      titleParts.push("已分配");
-    }
-
-    return {
-      key: `role-${role}`,
-      role,
-      roleLabel: roleName,
-      bindKind,
-      occupancy,
-      workerId: assignment.worker_id,
-      workerStatus: st,
-      microLabel: shortOccupancyLabel(occupancy, bindKind, st, deploymentStatus),
-      title: titleParts.join(" · "),
-    };
+  const st = workerStatus(assignment.worker_id);
+  let occupancy: RoleOccupancy = "assigned_ok";
+  const titleParts = [`${roleName}`, assignment.worker_id];
+  if (assignment.lease_expires_at) {
+    titleParts.push(`租约 ${formatTs(assignment.lease_expires_at)}`);
   }
 
-  if (specifiedId) {
-    const st = workerStatus(specifiedId);
-    const titleParts = [`${roleName}`, `指定 ${specifiedId}`, "尚未分配"];
-    if (!live) {
-      titleParts.push(deploymentStatus === "stopped" ? "部署未启动" : "等待部署就位");
-    } else if (st) {
-      titleParts.push(workerStatusLabel(st));
-    }
-
-    return {
-      key: `role-${role}`,
-      role,
-      roleLabel: roleName,
-      bindKind: "specified",
-      occupancy: "specified_idle",
-      workerId: specifiedId,
-      workerStatus: st,
-      microLabel: shortOccupancyLabel("specified_idle", "specified", st, deploymentStatus),
-      title: titleParts.join(" · "),
-    };
+  if (specifiedId && assignment.worker_id !== specifiedId) {
+    occupancy = "assigned_weak";
+    titleParts.push(`与指定 ${specifiedId} 不一致`);
+  } else if (!live) {
+    occupancy = "assigned_weak";
+    titleParts.push(deploymentStatus === "stopped" ? "部署已停止" : "部署未在运行");
+  } else if (!isWorkerHealthy(st)) {
+    occupancy = "assigned_weak";
+    if (st) titleParts.push(workerStatusLabel(st));
+  } else if (bindKind === "specified") {
+    titleParts.push("已绑定");
+  } else {
+    titleParts.push("已分配");
   }
 
-  const title = live ? `${roleName} · 任意节点 · 待分配` : `${roleName} · 部署未启动`;
   return {
-    key: `role-${role}`,
+    key,
     role,
     roleLabel: roleName,
-    bindKind: "any",
-    occupancy: "vacant",
-    workerId: null,
-    workerStatus: null,
-    microLabel: shortOccupancyLabel("vacant", "any", null, deploymentStatus),
-    title,
+    bindKind,
+    occupancy,
+    workerId: assignment.worker_id,
+    workerStatus: st,
+    title: titleParts.join(" · "),
   };
 }
 
@@ -537,7 +521,10 @@ export function buildScheduleNodeOverview(
   if (st === "cron") {
     const expr = String(d.schedule_config?.cron_expr ?? "").trim();
     if (expr) triggerChips.push({ label: "Cron", value: expr, mono: true });
-    if (opts.cronNextIso) {
+    const cronScheduled = isCronScheduleActive(d);
+    if (!cronScheduled) {
+      triggerChips.push({ label: "下次运行", value: "无", muted: true });
+    } else if (opts.cronNextIso) {
       triggerChips.push({
         label: "下次运行",
         value: opts.formatTs(opts.cronNextIso),
@@ -546,15 +533,23 @@ export function buildScheduleNodeOverview(
       });
     } else if (expr) {
       triggerChips.push({ label: "下次运行", value: "表达式无法解析", muted: true });
+    } else {
+      triggerChips.push({ label: "下次运行", value: "无", muted: true });
     }
   } else if (st === "subscription") {
     triggerChips.push({
       label: "消费者",
       value: opts.consumerId || "—",
       mono: true,
+      layout: "wide",
     });
     if (opts.maxInFlight != null) {
-      triggerChips.push({ label: "并发上限", value: String(opts.maxInFlight), mono: true });
+      triggerChips.push({
+        label: "并发上限",
+        value: String(opts.maxInFlight),
+        mono: true,
+        layout: "compact",
+      });
     }
   } else {
     triggerChips.push({
@@ -572,11 +567,13 @@ export function buildScheduleNodeOverview(
   const by = groupAssignmentsByRole(d.assignments);
   const assigned = d.assignments?.length ?? 0;
   const roles = roleSkeleton(policyType, configured);
+  const slotAssignments = assignmentsForRoleSlots(roles, by);
 
   const workerChips = roles.map((role, index) =>
     resolveWorkerChip(
       role,
-      assignmentForRole(role, by),
+      index,
+      slotAssignments[index] ?? null,
       specifiedIds[index] ?? null,
       workerStatus,
       String(d.status),
@@ -602,6 +599,7 @@ export function buildScheduleNodeOverview(
     policyTypeLabel,
     allocationRatio,
     allocationTone,
+    bindingIds: bindingIdsForTargeting(d.worker_targeting),
     workerChips,
   };
 }
@@ -693,7 +691,10 @@ export function deploymentScheduleSubline(
 
   if (d.schedule_type === "cron") {
     const expr = String(d.schedule_config?.cron_expr ?? "").trim();
-    const next = opts.cronNextIso ? `下次 ${opts.formatTs(opts.cronNextIso)}` : "";
+    let next = "";
+    if (isCronScheduleActive(d)) {
+      next = opts.cronNextIso ? `下次 ${opts.formatTs(opts.cronNextIso)}` : "";
+    }
     return [expr, next, ...extras].filter(Boolean).join(" · ");
   }
 
@@ -821,4 +822,18 @@ export function buildDeploymentConfigSections(
   }
 
   return sections;
+}
+
+export function formatDeploymentConfigJson(d: DeploymentDetail): string {
+  return JSON.stringify(
+    {
+      schedule_config: d.schedule_config,
+      worker_policy: d.worker_policy,
+      capability_policy: d.capability_policy,
+      worker_targeting: d.worker_targeting,
+      env_profile_code: d.env_profile_code,
+    },
+    null,
+    2,
+  );
 }

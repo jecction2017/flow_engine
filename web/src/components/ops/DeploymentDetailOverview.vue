@@ -26,21 +26,27 @@
     <section class="sched-ov" aria-label="运行调度">
       <header class="sched-ov-head">
         <h3 class="sched-ov-title">运行调度</h3>
-        <button type="button" class="btn small ghost" @click="emit('refresh')">刷新</button>
       </header>
 
       <div class="sched-ov-body">
         <article class="sched-ov-col sched-ov-col--trigger">
           <div class="sched-type-row">
-            <span class="sched-ov-col-label">调度类型</span>
-            <span class="sched-type-badge">{{ scheduleOverview.scheduleTypeLabel }}</span>
+            <span class="sched-inline-kv">
+              <span class="sched-inline-kv-label">调度类型：</span>
+              <span class="sched-inline-kv-value">{{ scheduleOverview.scheduleTypeLabel }}</span>
+            </span>
           </div>
           <div class="sched-trigger-grid">
             <div
               v-for="chip in scheduleOverview.triggerChips"
               :key="chip.label"
               class="sched-kv"
-              :class="{ 'sched-kv--highlight': chip.highlight, 'sched-kv--muted': chip.muted }"
+              :class="{
+                'sched-kv--highlight': chip.highlight,
+                'sched-kv--muted': chip.muted,
+                'sched-kv--wide': chip.layout === 'wide',
+                'sched-kv--compact': chip.layout === 'compact',
+              }"
             >
               <span class="sched-kv-label">{{ chip.label }}</span>
               <span class="sched-kv-value" :class="{ mono: chip.mono }">{{ chip.value }}</span>
@@ -50,16 +56,20 @@
 
         <article class="sched-ov-col sched-ov-col--nodes">
           <div class="sched-meta-row">
-            <span class="sched-meta-chip">
-              <span class="sched-meta-chip-label">节点策略</span>
-              <span class="sched-meta-chip-value">{{ scheduleOverview.policyTypeLabel }}</span>
+            <span class="sched-inline-kv">
+              <span class="sched-inline-kv-label">策略：</span>
+              <span class="sched-inline-kv-value">{{ scheduleOverview.policyTypeLabel }}</span>
             </span>
-            <span class="sched-meta-chip">
-              <span class="sched-meta-chip-label">已分配</span>
+            <span class="sched-inline-kv">
+              <span class="sched-inline-kv-label">已分配：</span>
               <span
-                class="sched-meta-chip-value mono"
-                :class="`sched-meta-chip-value--${scheduleOverview.allocationTone}`"
+                class="sched-inline-kv-value mono"
+                :class="`sched-inline-kv-value--${scheduleOverview.allocationTone}`"
               >{{ scheduleOverview.allocationRatio }}</span>
+            </span>
+            <span v-if="scheduleOverview.bindingIds" class="sched-inline-kv">
+              <span class="sched-inline-kv-label">绑定 </span>
+              <span class="sched-inline-kv-value mono">{{ scheduleOverview.bindingIds }}</span>
             </span>
           </div>
 
@@ -71,27 +81,25 @@
               :class="workerChipClasses(chip)"
               :title="chip.title ?? undefined"
             >
-              <span class="worker-chip-role">{{ chip.roleLabel }}</span>
-              <span class="worker-chip-id mono">{{ chip.workerId || "—" }}</span>
-              <span class="worker-chip-flags" aria-hidden="true">
-                <span v-if="chip.bindKind === 'specified'" class="wf wf-pin">定</span>
+              <template v-if="chip.occupancy === 'vacant'">
+                <span class="worker-chip-role">{{ chip.roleLabel }}</span>
+                <span class="worker-chip-id worker-chip-id--empty">—</span>
+              </template>
+              <template v-else>
+                <span class="worker-chip-role">{{ chip.roleLabel }}</span>
+                <span class="worker-chip-id mono">{{ chip.workerId }}</span>
+                <span v-if="chip.bindKind === 'specified'" class="worker-chip-flags" aria-hidden="true">
+                  <span class="wf wf-pin">定</span>
+                </span>
                 <span
-                  v-if="chip.occupancy === 'assigned_ok' || chip.occupancy === 'assigned_weak'"
-                  class="wf wf-assign"
-                >配</span>
-                <span v-if="chip.microLabel" class="wf wf-state">{{ chip.microLabel }}</span>
-              </span>
-              <span
-                v-if="chip.workerStatus && chip.occupancy !== 'vacant'"
-                class="worker-chip-dot"
-                :class="workerStatusClass(chip.workerStatus)"
-              />
+                  v-if="chip.workerStatus"
+                  class="worker-chip-dot"
+                  :class="workerStatusClass(chip.workerStatus)"
+                />
+              </template>
             </div>
           </div>
 
-          <div v-if="scheduleOverview.allocationTone === 'warn'" class="sched-ov-foot">
-            <button type="button" class="btn small ghost" @click="emit('navigate-workers')">查看节点</button>
-          </div>
         </article>
       </div>
     </section>
@@ -122,17 +130,12 @@
               <div class="ov-label">失败</div>
             </div>
           </div>
-          <div class="ov-panel-actions">
-            <button type="button" class="btn small primary" @click="emit('navigate-tab', 'runs')">查看全部运行</button>
-          </div>
         </article>
 
         <article class="ov-panel ov-panel--table">
           <header class="ov-panel-head">
             <h4 class="ov-panel-title">最近运行</h4>
-            <button type="button" class="btn small ghost" :disabled="loadingRunsPreview" @click="emit('refresh')">
-              刷新
-            </button>
+            <span v-if="loadingRunsPreview" class="muted small">加载中…</span>
           </header>
           <div class="ov-table-wrap">
             <table class="grid-table mini">
@@ -205,20 +208,11 @@
             </p>
           </template>
           <div v-else class="muted small pad">暂无消费统计</div>
-          <div class="ov-panel-actions">
-            <button type="button" class="btn small primary" @click="emit('navigate-tab', 'messages')">消息账本</button>
-          </div>
         </article>
 
         <article class="ov-panel ov-panel--table">
           <header class="ov-panel-head">
             <h4 class="ov-panel-title">最近失败消息</h4>
-            <button
-              v-if="failedMessageCount > 0"
-              type="button"
-              class="btn small ghost"
-              @click="emit('navigate-tab', 'messages')"
-            >消息账本</button>
           </header>
           <div class="ov-table-wrap">
             <table v-if="failedMessageCount > 0 && subSummary" class="grid-table mini">
@@ -258,12 +252,22 @@
     <section class="config-panel" aria-label="部署配置">
       <header class="config-panel-head">
         <h3 class="config-panel-title">部署配置</h3>
-        <div class="config-panel-actions">
-          <button type="button" class="btn small ghost" @click="emit('edit')">编辑</button>
-          <button type="button" class="btn small ghost" @click="emit('navigate-tab', 'config')">JSON</button>
-        </div>
+        <nav class="config-view-tabs" aria-label="配置视图">
+          <button
+            type="button"
+            class="config-view-tab"
+            :class="{ active: configView === 'form' }"
+            @click="configView = 'form'"
+          >表单</button>
+          <button
+            type="button"
+            class="config-view-tab"
+            :class="{ active: configView === 'json' }"
+            @click="configView = 'json'"
+          >JSON</button>
+        </nav>
       </header>
-      <div class="config-groups">
+      <div v-if="configView === 'form'" class="config-groups">
         <div v-for="sec in configSections" :key="sec.title" class="config-group">
           <div class="config-group-label">{{ sec.title }}</div>
           <dl class="config-rows">
@@ -274,12 +278,13 @@
           </dl>
         </div>
       </div>
+      <pre v-else class="config-json mono">{{ configJsonText }}</pre>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { DeploymentDetail } from "@/api/deployments";
 import type { FlowRunSummary } from "@/api/flowRuns";
 import type { SubscriptionMessageRow, SubscriptionSummary } from "@/api/subscriptionObservability";
@@ -290,6 +295,7 @@ import {
   buildScheduleNodeOverview,
   computeCronNextRunIso,
   countRunsByStatus,
+  formatDeploymentConfigJson,
   messageStatusLabel,
   runStatusLabel,
   subscriptionFieldsFromScheduleConfig,
@@ -311,13 +317,20 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  refresh: [];
-  "navigate-tab": [tab: "runs" | "messages" | "config"];
+  "navigate-tab": [tab: "runs" | "messages"];
   "navigate-workers": [];
   "open-run": [runId: number];
   "open-message": [message: SubscriptionMessageRow];
-  edit: [];
 }>();
+
+const configView = ref<"form" | "json">("form");
+
+watch(
+  () => props.deployment.id,
+  () => {
+    configView.value = "form";
+  },
+);
 
 const isSubscription = computed(() => props.deployment.schedule_type === "subscription");
 
@@ -362,12 +375,10 @@ function workerStatusClass(status: string): string {
 
 function workerChipClasses(chip: WorkerChipView): Record<string, boolean> {
   return {
-    "worker-chip--specified": chip.bindKind === "specified",
-    "worker-chip--any": chip.bindKind === "any",
+    "worker-chip--vacant": chip.occupancy === "vacant",
+    "worker-chip--specified": chip.bindKind === "specified" && chip.occupancy !== "vacant",
     "worker-chip--assigned-ok": chip.occupancy === "assigned_ok",
     "worker-chip--assigned-weak": chip.occupancy === "assigned_weak",
-    "worker-chip--specified-idle": chip.occupancy === "specified_idle",
-    "worker-chip--vacant": chip.occupancy === "vacant",
   };
 }
 
@@ -394,6 +405,8 @@ const runMetrics = computed(() => {
 });
 
 const configSections = computed(() => buildDeploymentConfigSections(props.deployment, props.formatTs));
+
+const configJsonText = computed(() => formatDeploymentConfigJson(props.deployment));
 
 function truncateText(text: string | null | undefined, maxLen: number) {
   return truncateOverviewText(text, maxLen);
@@ -488,19 +501,36 @@ function messageStatusTagClass(status: string): string {
 .sched-type-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  min-width: 0;
 }
 
-.sched-type-badge {
-  font-size: 11px;
+.sched-inline-kv {
+  display: inline;
+  font-size: 12px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.sched-inline-kv-label {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.sched-inline-kv-value {
   font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
-  color: var(--accent);
-  white-space: nowrap;
+  word-break: break-word;
+}
+
+.sched-inline-kv-value--ok {
+  color: #047857;
+}
+
+.sched-inline-kv-value--warn {
+  color: #b45309;
+}
+
+.sched-inline-kv-value--muted {
+  color: var(--muted);
 }
 
 .sched-ov-body {
@@ -537,6 +567,28 @@ function messageStatusTagClass(status: string): string {
   gap: 8px;
 }
 
+.sched-trigger-grid:has(> .sched-kv:only-child) {
+  grid-template-columns: 1fr;
+}
+
+.sched-trigger-grid:has(> .sched-kv--wide):has(> .sched-kv--compact) {
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 88px);
+}
+
+.sched-kv--wide {
+  min-width: 0;
+}
+
+.sched-kv--compact {
+  min-width: 72px;
+  max-width: 88px;
+  padding-inline: 8px;
+}
+
+.sched-kv--compact .sched-kv-value {
+  text-align: center;
+}
+
 .sched-kv {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -553,9 +605,16 @@ function messageStatusTagClass(status: string): string {
   background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface));
 }
 
+.sched-kv--muted {
+  gap: 2px;
+}
+
 .sched-kv--muted .sched-kv-value {
   font-weight: 500;
   color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+  word-break: keep-all;
 }
 
 .sched-kv-label {
@@ -574,42 +633,8 @@ function messageStatusTagClass(status: string): string {
 .sched-meta-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.sched-meta-chip {
-  display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px dashed color-mix(in srgb, var(--border) 90%, transparent);
-  background: color-mix(in srgb, var(--border) 22%, transparent);
-  max-width: 100%;
-}
-
-.sched-meta-chip-label {
-  color: var(--muted);
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.sched-meta-chip-value {
-  font-weight: 700;
-}
-
-.sched-meta-chip-value--ok {
-  color: #047857;
-}
-
-.sched-meta-chip-value--warn {
-  color: #b45309;
-}
-
-.sched-meta-chip-value--muted {
-  color: var(--muted);
+  gap: 12px 16px;
 }
 
 .worker-chip-row {
@@ -636,23 +661,19 @@ function messageStatusTagClass(status: string): string {
   cursor: default;
 }
 
-.worker-chip--any {
+.worker-chip--vacant {
   border-style: dashed;
-  background: color-mix(in srgb, var(--border) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--border) 85%, transparent);
+  background: color-mix(in srgb, var(--border) 8%, var(--surface));
+}
+
+.worker-chip-id--empty {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .worker-chip--specified {
   border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
-}
-
-.worker-chip--specified-idle {
-  border-style: dashed;
-  border-color: color-mix(in srgb, #d97706 42%, var(--border));
-  background: color-mix(in srgb, #fef3c7 32%, var(--surface));
-}
-
-.worker-chip--specified-idle .worker-chip-id {
-  color: #92400e;
 }
 
 .worker-chip--assigned-weak {
@@ -662,11 +683,6 @@ function messageStatusTagClass(status: string): string {
 
 .worker-chip--assigned-ok.worker-chip--specified {
   background: color-mix(in srgb, var(--accent-soft) 18%, #fbfdff);
-}
-
-.worker-chip--vacant .worker-chip-id {
-  color: var(--muted);
-  font-weight: 600;
 }
 
 .worker-chip-role {
@@ -890,9 +906,52 @@ function messageStatusTagClass(status: string): string {
   font-weight: 700;
 }
 
-.config-panel-actions {
-  display: flex;
-  gap: 6px;
+
+.config-view-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.config-view-tab {
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--muted);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.config-view-tab:hover:not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+
+.config-view-tab.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.config-json {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #0b1220;
+  color: #e2e8f0;
 }
 
 .config-groups {
