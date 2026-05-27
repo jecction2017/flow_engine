@@ -115,8 +115,26 @@
         <div class="result-block">
           <div class="lbl row result-block-hd">
             <span class="lbl-row">响应</span>
+            <div v-if="canToggleResponseView" class="result-view-toggle" role="group" aria-label="响应展示模式">
+              <button
+                type="button"
+                class="mini mini-view"
+                :class="{ active: responseViewMode === 'text' }"
+                @click="responseViewMode = 'text'"
+              >
+                文本
+              </button>
+              <button
+                type="button"
+                class="mini mini-view"
+                :class="{ active: responseViewMode === 'json' }"
+                @click="responseViewMode = 'json'"
+              >
+                JSON
+              </button>
+            </div>
           </div>
-          <pre class="out mono">{{ responseText }}</pre>
+          <pre class="out mono" :class="{ 'out-wrap': responseViewMode === 'text' }">{{ displayedResponseText }}</pre>
         </div>
 
         <div class="result-block">
@@ -182,6 +200,7 @@ const store = useFlowStudioStore();
 const ctxText = ref("{}");
 const responseText = ref("// 等待调试输出");
 const pending = ref(false);
+const responsePayload = ref<unknown | null>(null);
 /** 调试执行状态：用于结果区醒目展示，与旧版右侧小字 hint 分离。 */
 type ResultPhase = "idle" | "pending" | "ok" | "http_err" | "starlark_err" | "offline" | "blocked";
 const resultPhase = ref<ResultPhase>("idle");
@@ -255,6 +274,41 @@ const ctxInjectKeys = computed(() => {
   return Object.keys(parsedCtx.value.value);
 });
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+const responseJsonText = computed(() => {
+  if (responsePayload.value == null) return responseText.value;
+  try {
+    return JSON.stringify(responsePayload.value, null, 2);
+  } catch {
+    return String(responsePayload.value);
+  }
+});
+
+const failureText = computed(() => {
+  const rec = asRecord(responsePayload.value);
+  if (!rec) return "";
+  const error = typeof rec.error === "string" ? rec.error.trim() : "";
+  const traceback = typeof rec.traceback === "string" ? rec.traceback.trim() : "";
+  if (!error && !traceback) return "";
+  const sections: string[] = [];
+  if (error) sections.push(`error:\n${error}`);
+  if (traceback) sections.push(`traceback:\n${traceback}`);
+  return sections.join("\n\n");
+});
+
+const canToggleResponseView = computed(() => failureText.value.length > 0);
+const responseViewMode = ref<"text" | "json">("json");
+
+const displayedResponseText = computed(() =>
+  responseViewMode.value === "text" && canToggleResponseView.value
+    ? failureText.value
+    : responseJsonText.value,
+);
+
 function defaultCtxText(): string {
   return JSON.stringify(store.doc.initial_context ?? {}, null, 2);
 }
@@ -270,6 +324,8 @@ function loadUserScriptSession(path: string) {
   capabilityPolicy.value = saved?.capabilityPolicy ?? [];
   resultPhase.value = "idle";
   responseText.value = "// 等待调试输出";
+  responsePayload.value = null;
+  responseViewMode.value = "json";
   logs.value = [];
 }
 
@@ -295,6 +351,8 @@ watch(
     ctxText.value = saved !== undefined ? saved : defaultCtxText();
     resultPhase.value = "idle";
     responseText.value = "// 等待调试输出";
+    responsePayload.value = null;
+    responseViewMode.value = "json";
     logs.value = [];
   },
   { immediate: true },
@@ -332,6 +390,8 @@ async function run() {
     responseText.value = isUserScriptMode.value
       ? "// 脚本内容为空"
       : "// 仅 Task 节点可调试";
+    responsePayload.value = null;
+    responseViewMode.value = "json";
     logs.value = [];
     return;
   }
@@ -339,6 +399,8 @@ async function run() {
   pending.value = true;
   resultPhase.value = "pending";
   responseText.value = "";
+  responsePayload.value = null;
+  responseViewMode.value = "json";
   logs.value = [];
 
   const capability_policy = isUserScriptMode.value
@@ -366,23 +428,30 @@ async function run() {
       { capabilityPolicy: body.capability_policy as unknown as Record<string, unknown>[] },
     );
     if (!httpOk) {
-      responseText.value =
-        typeof response.error === "string" ? response.error : JSON.stringify(response, null, 2);
+      responsePayload.value = response;
+      responseText.value = typeof response.error === "string" ? response.error : JSON.stringify(response, null, 2);
+      responseViewMode.value = typeof response.error === "string" || typeof response.traceback === "string" ? "text" : "json";
       resultPhase.value = "http_err";
       return;
     }
     logs.value = runLogs;
+    responsePayload.value = response;
     responseText.value = JSON.stringify(response, null, 2);
+    responseViewMode.value = response.ok === false && (typeof response.error === "string" || typeof response.traceback === "string")
+      ? "text"
+      : "json";
     resultPhase.value = response.ok === false ? "starlark_err" : "ok";
   } catch {
+    responsePayload.value = {
+      note: "未检测到后端 API，以下为请求体预览（可对接 flow_engine 调试端点）",
+      request: body,
+    };
     responseText.value = JSON.stringify(
-      {
-        note: "未检测到后端 API，以下为请求体预览（可对接 flow_engine 调试端点）",
-        request: body,
-      },
+      responsePayload.value,
       null,
       2,
     );
+    responseViewMode.value = "json";
     resultPhase.value = "offline";
   } finally {
     pending.value = false;
@@ -916,6 +985,22 @@ defineExpose({ run, pending });
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+.result-view-toggle {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.mini-view {
+  min-width: 46px;
+  font-weight: 600;
+}
+
+.mini-view.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, #fff);
+}
+
 .area.invalid {
   border-color: #fca5a5;
   background: #fff7f7;
@@ -952,6 +1037,11 @@ defineExpose({ run, pending });
   overflow: auto;
   font-size: 10.5px;
   line-height: 1.45;
+}
+
+.out-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .logs {

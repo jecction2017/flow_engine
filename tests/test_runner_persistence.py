@@ -131,6 +131,65 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deploy_run_global_ns_strips_runtime_jump_data() -> None:
+    flow = _flow(
+        """
+        name: jump_persist_strip
+        strategies:
+          default_sync: {name: default_sync, mode: sync}
+        nodes:
+          - id: jumper
+            type: task
+            strategy_ref: default_sync
+            script: |
+              flow_jump(
+                "after",
+                reason="skip-by-rule",
+                data={"secret": "sensitive", "id": 7},
+              )
+              {}
+          - id: skipped
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"x": 1}
+          - id: after
+            type: task
+            strategy_ref: default_sync
+            script: |
+              {"ok": True}
+            boundary:
+              outputs: {ok: "$.global.ok"}
+        """
+    )
+
+    dep_id = _seed_deployment(flow_code="jump_strip")
+    run_id = deploy_persistence.create_deploy_run(
+        deployment_id=dep_id,
+        worker_id="w1",
+        flow_code="jump_strip",
+        ver_no=1,
+        mode=RunMode.PRODUCTION,
+        schedule_type="once",
+        trigger_type="manual",
+        trigger_context={},
+    )
+
+    res = await FlowRuntime(flow, run_opts=RunOptions(mode=RunMode.PRODUCTION)).run()
+    assert res.state == FlowState.COMPLETED
+    # Runtime context keeps payload for downstream nodes in the same run.
+    assert res.context.global_ns["jumper"]["jump_record"]["data"]["secret"] == "sensitive"
+
+    deploy_persistence.complete_deploy_run(run_id, res)
+    detail = deploy_persistence.get_deploy_run_detail(run_id)
+    assert detail is not None
+    persisted = detail["global_ns"]["jumper"]["jump_record"]
+    assert persisted.get("reason") == "skip-by-rule"
+    assert "data" not in persisted
+    assert "data" not in detail["global_ns"]["jumper"]["jump_records"][0]
+
+
+@pytest.mark.asyncio
 async def test_deploy_run_failed_stores_actionable_error() -> None:
     """Output-mapping failures must persist on fe_deploy_run.error, not FlowState.FAILED."""
     flow = _flow(

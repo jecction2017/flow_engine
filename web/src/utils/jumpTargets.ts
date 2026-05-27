@@ -4,12 +4,26 @@ import type { FlowDocument, FlowNode } from "@/types/flow";
 import { displayName, nodeId } from "@/types/flow";
 
 type ParentMap = Map<string, string | null>;
+type FlatNodeMeta = {
+  node: FlowNode;
+  pathLabels: string[];
+};
 
 function walkNodes(nodes: FlowNode[], out: FlowNode[]): void {
   for (const n of nodes) {
     out.push(n);
     if (n.type === "loop" || n.type === "subflow") {
       walkNodes(n.children, out);
+    }
+  }
+}
+
+function walkNodeMeta(nodes: FlowNode[], out: FlatNodeMeta[], prefix: string[] = []): void {
+  for (const n of nodes) {
+    const pathLabels = [...prefix, displayName(n)];
+    out.push({ node: n, pathLabels });
+    if (n.type === "loop" || n.type === "subflow") {
+      walkNodeMeta(n.children, out, pathLabels);
     }
   }
 }
@@ -76,21 +90,33 @@ function jumpAllowed(
   return false;
 }
 
-export type JumpTargetOption = { id: string; label: string };
+export type JumpTargetOption = {
+  id: string;
+  label: string;
+  path: string;
+  searchTokens: string[];
+};
 
 /**
  * Returns node ids that ``on_error.action=jump`` may target from ``sourceNodeId``.
  */
 export function listJumpTargets(doc: FlowDocument, sourceNodeId: string): JumpTargetOption[] {
   const parent = buildParentMap(doc.nodes);
-  const flat: FlowNode[] = [];
-  walkNodes(doc.nodes, flat);
+  const flat: FlatNodeMeta[] = [];
+  walkNodeMeta(doc.nodes, flat);
   const out: JumpTargetOption[] = [];
-  for (const n of flat) {
+  for (const meta of flat) {
+    const n = meta.node;
     const id = nodeId(n);
     if (id === sourceNodeId) continue;
     if (!jumpAllowed(doc, sourceNodeId, id, parent)) continue;
-    out.push({ id, label: displayName(n) });
+    const label = displayName(n);
+    out.push({
+      id,
+      label,
+      path: meta.pathLabels.join(" / "),
+      searchTokens: [id, label, ...meta.pathLabels].map((x) => x.toLowerCase()),
+    });
   }
   return out;
 }

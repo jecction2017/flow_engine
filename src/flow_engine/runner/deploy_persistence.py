@@ -6,6 +6,7 @@ Observability blobs have been removed; details live in ``fe_run_span`` and
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -38,10 +39,38 @@ def flow_run_failure_message(result: "FlowRunResult") -> str:
 _FLOW_LOGS_MAX = 500
 
 
+def strip_runtime_jump_data(value: Any) -> Any:
+    """Remove runtime-only jump payloads from persisted snapshots."""
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "jump_record" and isinstance(item, dict):
+                jr = strip_runtime_jump_data(item)
+                if isinstance(jr, dict):
+                    jr.pop("data", None)
+                out[key] = jr
+                continue
+            if key == "jump_records" and isinstance(item, list):
+                cleaned: list[Any] = []
+                for entry in item:
+                    e = strip_runtime_jump_data(entry)
+                    if isinstance(e, dict):
+                        e.pop("data", None)
+                    cleaned.append(e)
+                out[key] = cleaned
+                continue
+            out[key] = strip_runtime_jump_data(item)
+        return out
+    if isinstance(value, list):
+        return [strip_runtime_jump_data(v) for v in value]
+    return value
+
+
 def _extract_global_ns(result: "FlowRunResult") -> dict[str, Any] | None:
     """Snapshot ``global_ns`` for run-detail APIs (strip internal dictionary)."""
-    gns = dict(getattr(result.context, "global_ns", {}) or {})
+    gns = copy.deepcopy(getattr(result.context, "global_ns", {}) or {})
     gns.pop("dictionary", None)
+    gns = strip_runtime_jump_data(gns)
     return gns or None
 
 

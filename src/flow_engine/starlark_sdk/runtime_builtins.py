@@ -10,6 +10,7 @@ from flow_engine.engine.exceptions import (
     ContinueInterrupt,
     JumpTarget,
     TerminateInterrupt,
+    starlark_to_python,
 )
 from flow_engine.starlark_sdk.builtin_registry import (
     ATTACH_CONTEXT,
@@ -33,14 +34,32 @@ def _cf_raise(exc: BaseException) -> None:
         starlark_name="flow_jump",
         category="flow",
         summary="跳转到同层兄弟节点（target 为节点 id）；未解析的目标在运行期记为 FAILED",
-        signature=(BuiltinArgSpec(name="target", type="str"),),
+        signature=(
+            BuiltinArgSpec(name="target", type="str"),
+            BuiltinArgSpec(name="reason", type="str", required=False),
+            BuiltinArgSpec(name="data", type="any", required=False),
+        ),
         returns="none",
         side_effects="none",
         attach_mode=ATTACH_FLOW_CONTROL,
     )
 )
-def flow_jump(target: str) -> None:
-    _cf_raise(JumpTarget(str(target)))
+def flow_jump(target: str, reason: Any | None = None, data: Any | None = None) -> None:
+    target_id = str(target).strip()
+    if not target_id:
+        raise ValueError("flow_jump target must be non-empty")
+
+    reason_text: str | None = None
+    if reason is not None:
+        reason_text = str(starlark_to_python(reason)).strip()
+        if not reason_text:
+            reason_text = None
+
+    payload: Any | None = None
+    if data is not None:
+        payload = starlark_to_python(data)
+
+    _cf_raise(JumpTarget(target_id, reason=reason_text, data=payload))
 
 
 @register_builtin(

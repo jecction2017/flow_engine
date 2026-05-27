@@ -26,17 +26,20 @@
         <label v-if="action === 'jump'" class="field field-span2">
           <span class="lbl-row">
             跳转目标 (target)<span class="req">*</span>
-            <InfoTip wide text="目标节点 id；须满足编译期 scope barrier（同层兄弟或祖先）。" />
+            <InfoTip
+              wide
+              text="按节点名称选择目标，保存时写入逻辑 ID；仍受编译期 scope barrier（同层兄弟或祖先）约束。"
+            />
           </span>
           <select
             v-model="target"
-            class="inp inp-sel mono"
+            class="inp inp-sel"
             :class="{ invalid: !!jumpWarn && !target }"
             @change="emitConfig"
           >
             <option value="">（选择目标节点）</option>
             <option v-for="t in jumpTargets" :key="t.id" :value="t.id">
-              {{ t.label }} ({{ t.id }})
+              {{ t.label }} · {{ t.id }}
             </option>
           </select>
           <span v-if="jumpWarn" class="hint-warn">{{ jumpWarn }}</span>
@@ -52,6 +55,7 @@
               v-model="script"
               :height="80"
               :registry="registry"
+              :jump-target-suggestions="jumpSuggestionsGetter"
               placeholder='log_info("err", error)'
               @update:model-value="emitConfig"
             />
@@ -123,6 +127,10 @@ const jumpWarn = computed(() => {
   }
   return "";
 });
+
+function jumpSuggestionsGetter(): readonly JumpTargetOption[] {
+  return props.jumpTargets;
+}
 
 function emitConfig() {
   if (!enabled.value) {

@@ -9,6 +9,7 @@ import {
 } from "@codemirror/autocomplete";
 import type { RegistryDoc, RegistryPythonFn } from "@/api/starlark";
 import { contextPathCompletionSource } from "@/codemirror/contextPathAutocomplete";
+import { type EditorSelection } from "@codemirror/state";
 
 function buildBuiltinCompletionInfo(f: RegistryPythonFn): string {
   const lines = [
@@ -83,12 +84,62 @@ function completionSource(registry: RegistryDoc) {
   };
 }
 
+export type FlowJumpTargetSuggestion = {
+  id: string;
+  label: string;
+  path?: string;
+  searchTokens?: string[];
+};
+
+function cursorPos(main: EditorSelection["main"]): number {
+  return main.from;
+}
+
+function flowJumpArgPrefix(context: CompletionContext): { from: number; prefix: string } | null {
+  const pos = cursorPos(context.state.selection.main);
+  const scanFrom = Math.max(0, pos - 240);
+  const before = context.state.doc.sliceString(scanFrom, pos);
+  const m = /flow_jump\(\s*["']([^"']*)$/.exec(before);
+  if (!m) return null;
+  return { from: pos - m[1].length, prefix: m[1] };
+}
+
+function flowJumpTargetSource(
+  getJumpTargets: () => readonly FlowJumpTargetSuggestion[],
+): CompletionSource {
+  return (context: CompletionContext) => {
+    const hit = flowJumpArgPrefix(context);
+    if (!hit) return null;
+    const q = hit.prefix.trim().toLowerCase();
+    const options: Completion[] = [];
+    for (const t of getJumpTargets()) {
+      const fallbackTokens = [t.id, t.label, t.path ?? ""].map((s) => s.toLowerCase());
+      const tokens = t.searchTokens?.length
+        ? t.searchTokens.map((s) => s.toLowerCase())
+        : fallbackTokens;
+      if (q && !tokens.some((tok) => tok.includes(q))) continue;
+      options.push({
+        label: t.label,
+        type: "variable",
+        detail: t.id,
+        apply: t.id,
+        info: t.path ? `${t.path}\n\n逻辑 ID: ${t.id}` : `逻辑 ID: ${t.id}`,
+      });
+    }
+    if (!options.length) return null;
+    options.sort((a, b) => a.label.localeCompare(b.label));
+    return { from: hit.from, options, filter: false };
+  };
+}
+
 /** CodeMirror extension：可选上下文路径（``$.``）+ registry + 词内补全。 */
 export function flowRegistryAutocompletion(
   registry: RegistryDoc | null,
   getPaths?: (() => readonly string[]) | null,
+  getJumpTargets?: (() => readonly FlowJumpTargetSuggestion[]) | null,
 ) {
   const sources: CompletionSource[] = [completeAnyWord];
+  if (getJumpTargets) sources.unshift(flowJumpTargetSource(getJumpTargets));
   if (registry) sources.unshift(completionSource(registry));
   if (getPaths) sources.unshift(contextPathCompletionSource(getPaths));
   return autocompletion({

@@ -307,9 +307,9 @@ log_debug("detail:", obj)
 | `flow_continue()` | 跳过当前迭代，继续循环 |
 | `flow_break()` | 跳出循环 |
 | `flow_terminate()` | 终止流程 |
-| `flow_jump(...)` | 跳转到指定目标 |
+| `flow_jump("node_id")` | 跳转到指定目标节点（参数必须是节点逻辑 ID） |
 
-与 `return` 一样，只能写在函数体内。调试时可能返回 `control_flow` 描述符。
+与 `return` 一样，只能写在函数体内。调试时可能返回 `control_flow` 描述符。前端编辑器可按节点名称选择目标，但保存后仍写入逻辑 ID。
 
 ---
 

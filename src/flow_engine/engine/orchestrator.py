@@ -727,6 +727,45 @@ class FlowRuntime:
                 result, outputs, ctx, node_id=node_id, node_name=node_name
             )
 
+    @staticmethod
+    def _build_jump_record(from_node_id: str, jump: JumpTarget) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "action": "jump",
+            "from_node": from_node_id,
+            "target_node": jump.target,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if jump.reason is not None:
+            record["reason"] = jump.reason
+        if jump.data is not None:
+            # Keep runtime context isolated from later in-place mutations.
+            record["data"] = copy.deepcopy(jump.data)
+        return record
+
+    def _record_jump_runtime_data(
+        self,
+        *,
+        ctx: ContextStack,
+        from_node_id: str,
+        jump: JumpTarget,
+    ) -> None:
+        record = self._build_jump_record(from_node_id, jump)
+        with ctx.lock:
+            existing = ctx.global_ns.get(from_node_id)
+            if isinstance(existing, dict):
+                bucket = existing
+            else:
+                bucket = {}
+                if existing is not None:
+                    bucket["_prev_value"] = existing
+                ctx.global_ns[from_node_id] = bucket
+            bucket["jump_record"] = record
+            hist = bucket.get("jump_records")
+            if isinstance(hist, list):
+                hist.append(copy.deepcopy(record))
+            else:
+                bucket["jump_records"] = [copy.deepcopy(record)]
+
     def _result(self, message: str | None) -> FlowRunResult:
         with self._runs_lock:
             runs = sorted(self._node_runs_list, key=lambda r: r.order)
@@ -908,6 +947,13 @@ class FlowRuntime:
                     m, ctx, tracker, parent_id=parent_id, parent_order=parent_order
                 )
             except JumpTarget as j:
+                if not j.recorded:
+                    self._record_jump_runtime_data(
+                        ctx=ctx,
+                        from_node_id=self._nid(m),
+                        jump=j,
+                    )
+                    j.recorded = True
                 idx = self._index_by_id(members, j.target)
                 if idx is not None:
                     jumps += 1

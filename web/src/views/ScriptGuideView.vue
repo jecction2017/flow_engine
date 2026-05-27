@@ -123,6 +123,9 @@
         <ul>
           <li>支持多行滚动；长脚本可上下滚动查看。</li>
           <li>支持自动补全：内置 Python 函数、internal 导出符号、当前脚本上文变量/函数。</li>
+          <li>
+            在 <code class="mono">flow_jump("...")</code> 参数位置会提示可跳转节点（按名称展示，插入逻辑 ID）。
+          </li>
           <li>只读区域（内置脚本源码）不可编辑。</li>
           <li>保存按钮仅在「用户脚本」分区显示。</li>
         </ul>
@@ -390,7 +393,7 @@ order_id = resolve("$.global.order.id")
 # 流程控制（LOOP / 同层跳转）
 # flow_continue()   # 跳过当前迭代
 # flow_break()      # 结束循环
-# flow_jump("next_node_id")
+# flow_jump("next_node_id")  # 运行时按节点逻辑 ID 解析
 # flow_terminate()  # 终止本任务（跳过重试）
 
 {"sum": n, "timeout": timeout, "order_id": order_id}`;

@@ -27,12 +27,15 @@ class CompilationError(FlowEngineError):
 
 
 class JumpInterrupt(FlowEngineError):
-    """Jump to a named node within allowed scope (upward or same level)."""
+    """Jump to a target node id within allowed scope (upward or same level)."""
 
 
 @dataclass
 class JumpTarget(JumpInterrupt):
-    target: str  # node id / name
+    target: str  # node id
+    reason: str | None = None
+    data: Any | None = None
+    recorded: bool = False
 
 
 class ContinueInterrupt(FlowEngineError):
@@ -56,7 +59,12 @@ def flow_control_descriptor(exc: BaseException) -> dict[str, Any] | None:
     if isinstance(exc, TerminateInterrupt):
         return {"action": "terminate"}
     if isinstance(exc, JumpTarget):
-        return {"action": "jump", "target": exc.target}
+        out: dict[str, Any] = {"action": "jump", "target": exc.target}
+        if exc.reason is not None:
+            out["reason"] = exc.reason
+        if exc.data is not None:
+            out["data"] = exc.data
+        return out
     return None
 
 
@@ -73,7 +81,10 @@ def raise_flow_control(descriptor: dict[str, Any]) -> None:
         target = descriptor.get("target")
         if not isinstance(target, str) or not target:
             raise FlowEngineError(f"Invalid jump control_flow descriptor: {descriptor!r}")
-        raise JumpTarget(target) from None
+        reason = descriptor.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            reason = str(reason)
+        raise JumpTarget(target, reason=reason, data=descriptor.get("data")) from None
     raise FlowEngineError(f"Unknown control_flow action: {action!r}")
 
 

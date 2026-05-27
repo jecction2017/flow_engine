@@ -306,6 +306,9 @@ async def _run_single_test_case(
                 logger.exception("obs drain failed for test run_id=%s", run_id)
         gns = dict(getattr(result.context, "global_ns", {}) or {})
         gns.pop("dictionary", None)
+        from flow_engine.runner.deploy_persistence import strip_runtime_jump_data
+
+        persisted_gns = strip_runtime_jump_data(copy.deepcopy(gns))
         from flow_engine.engine.models import FlowState as _FS
 
         status = "completed" if result.state == _FS.COMPLETED else ("terminated" if result.state == _FS.TERMINATED else "failed")
@@ -323,7 +326,7 @@ async def _run_single_test_case(
             error=err,
             failure_detail=result.failure_report,
             flow_logs=list(result.flow_logs),
-            global_ns=gns,
+            global_ns=persisted_gns,
         )
         rules = list(assertions or []) + assertions_mod.row_derived_assertion_rules(
             test_input

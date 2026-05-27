@@ -104,6 +104,25 @@ def is_match():
     assert any("app_type_02" in e.get("message", "") for e in logs)
 
 
+def test_debug_task_script_flow_jump_carries_reason_and_data() -> None:
+    script = """
+def route():
+    flow_jump("target_node", reason="invalid payload", data={"order_id": 42, "retry": False})
+    return {"ok": True}
+
+{"r": route()}
+""".strip()
+    result, logs, control_flow = debug_task_script(script, {})
+    assert result == {}
+    assert logs == []
+    assert control_flow == {
+        "action": "jump",
+        "target": "target_node",
+        "reason": "invalid payload",
+        "data": {"order_id": 42, "retry": False},
+    }
+
+
 def test_debug_task_script_normal_path_when_no_flow_continue() -> None:
     script = """
 def is_match():

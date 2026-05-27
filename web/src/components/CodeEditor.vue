@@ -27,7 +27,10 @@ import { EditorState, type Extension, type Text } from "@codemirror/state";
 import { EditorView, tooltips } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import type { RegistryDoc } from "@/api/starlark";
-import { flowRegistryAutocompletion } from "@/codemirror/flowRegistryAutocomplete";
+import {
+  flowRegistryAutocompletion,
+  type FlowJumpTargetSuggestion,
+} from "@/codemirror/flowRegistryAutocomplete";
 
 const props = withDefaults(
   defineProps<{
@@ -41,6 +44,8 @@ const props = withDefaults(
     registry?: RegistryDoc | null;
     /** 当为 python 时，为 ``$.`` 上下文路径提供补全（每次打开菜单时重新拉取路径列表）。 */
     pathSuggestions?: (() => readonly string[]) | null;
+    /** 当为 python 时，为 ``flow_jump("...")`` 参数提供目标节点补全（展示名称，插入逻辑 id）。 */
+    jumpTargetSuggestions?: (() => readonly FlowJumpTargetSuggestion[]) | null;
     /** 将换行符剥掉，适合单行表达式 / 路径输入。 */
     stripNewlines?: boolean;
     /** 覆盖默认占位提示（如单行路径、条件表达式）。 */
@@ -55,6 +60,7 @@ const props = withDefaults(
     language: "python",
     registry: null,
     pathSuggestions: null,
+    jumpTargetSuggestions: null,
     stripNewlines: false,
     placeholder: null,
     appearance: "default",
@@ -114,8 +120,13 @@ const extensions = computed<Extension[]>(() => {
   const lang =
     props.language === "yaml" ? yaml() : props.language === "json" ? json() : python();
   const mergedCm =
-    props.language === "python" && (props.registry || props.pathSuggestions)
-      ? flowRegistryAutocompletion(props.registry ?? null, props.pathSuggestions ?? null)
+    props.language === "python" &&
+    (props.registry || props.pathSuggestions || props.jumpTargetSuggestions)
+      ? flowRegistryAutocompletion(
+          props.registry ?? null,
+          props.pathSuggestions ?? null,
+          props.jumpTargetSuggestions ?? null,
+        )
       : null;
   const chrome: Extension =
     props.appearance === "code-dark" ? oneDark : theme;

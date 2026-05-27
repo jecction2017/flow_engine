@@ -571,9 +571,27 @@
       v-if="activeSegment === 'user' && canDebugUserScript"
       v-model:open="userDebugDrawerOpen"
       title="脚本调试"
+      drawer-width="min(1280px, calc(100vw - 20px))"
       :pending="userDebugPending"
       @run="runUserDebug"
     >
+      <template #script>
+        <div class="debug-script-pane">
+          <div class="debug-script-hd">
+            <span class="debug-script-hd-title">Starlark 脚本</span>
+            <InfoTip text="左侧编辑脚本，右侧配置 Profile 并查看调试结果；与主编辑区同步。" />
+          </div>
+          <div class="debug-script-body">
+            <CodeEditor
+              v-model="userScriptContent"
+              fill
+              appearance="code-dark"
+              language="python"
+              :registry="registry"
+            />
+          </div>
+        </div>
+      </template>
       <DebugPanel
         ref="userDebugPanelRef"
         :user-script-path="effectiveUserScriptPath"
@@ -590,6 +608,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import CodeEditor from "@/components/CodeEditor.vue";
 import DebugDrawer from "@/components/DebugDrawer.vue";
 import DebugPanel from "@/components/DebugPanel.vue";
+import InfoTip from "@/components/InfoTip.vue";
 import ModListTreeToolbar from "@/components/ModListTreeToolbar.vue";
 import {
   deleteUserModule,

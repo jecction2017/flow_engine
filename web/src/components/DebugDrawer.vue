@@ -29,15 +29,26 @@
           <button type="button" class="btn ghost sm" @click="close">关闭</button>
         </div>
       </div>
-      <div class="debug-drawer-body">
-        <slot />
+      <div class="debug-drawer-body" :class="{ 'debug-drawer-body--split': hasScriptPane }">
+        <div v-if="hasScriptPane" class="debug-drawer-split">
+          <aside class="debug-drawer-script" aria-label="脚本编辑">
+            <slot name="script" />
+          </aside>
+          <div class="debug-drawer-main">
+            <slot />
+          </div>
+        </div>
+        <slot v-else />
       </div>
     </aside>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, watch } from "vue";
+import { computed, onUnmounted, useSlots, watch } from "vue";
+
+const slots = useSlots();
+const hasScriptPane = computed(() => !!slots.script);
 
 const open = defineModel<boolean>("open", { default: false });
 
@@ -147,6 +158,82 @@ onUnmounted(() => {
   padding: 12px 14px 16px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
+}
+
+.debug-drawer-body--split {
+  overflow: hidden;
+  padding: 0;
+}
+
+.debug-drawer-split {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(340px, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.debug-drawer-script {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid color-mix(in srgb, #1e293b 40%, var(--border));
+  background: #0f172a;
+}
+
+.debug-drawer-main {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.debug-drawer-script :deep(.debug-script-pane) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.debug-drawer-script :deep(.debug-script-hd) {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid color-mix(in srgb, #334155 65%, transparent);
+}
+
+.debug-drawer-script :deep(.debug-script-hd-title) {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  letter-spacing: 0.01em;
+}
+
+.debug-drawer-script :deep(.debug-script-hd .info-tip) {
+  color: #94a3b8;
+}
+
+.debug-drawer-script :deep(.debug-script-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px 10px;
+}
+
+@media (max-width: 900px) {
+  .debug-drawer-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(200px, 38vh) 1fr;
+  }
+
+  .debug-drawer-script {
+    border-right: none;
+    border-bottom: 1px solid color-mix(in srgb, #1e293b 40%, var(--border));
+  }
 }
 
 .btn {

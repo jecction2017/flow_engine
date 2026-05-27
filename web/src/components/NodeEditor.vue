@@ -5,6 +5,17 @@
         <span class="hd-title">{{ title }}</span>
         <span class="chip" :data-type="node.type">{{ node.type }}</span>
         <span class="chip strategy-chip" :title="`并发策略：${node.strategy_ref}`">{{ node.strategy_ref }}</span>
+        <button
+          type="button"
+          class="id-badge"
+          :class="{ copied: copiedId }"
+          :title="copiedId ? 'ID 已复制' : '复制节点 ID'"
+          @click="copyNodeId"
+        >
+          <span class="id-label">ID</span>
+          <span class="mono id-value">{{ nodeLogicalId }}</span>
+          <span class="copy-icon" aria-hidden="true"></span>
+        </button>
       </div>
       <div class="hd-path mono" :title="path.join(' → ')">{{ path.join(" → ") }}</div>
     </header>
@@ -77,6 +88,7 @@
                   :height="conditionEditorHeight"
                   :registry="starlarkRegistry"
                   :path-suggestions="conditionPathSuggestionsGetter"
+                  :jump-target-suggestions="jumpTargetSuggestionsGetter"
                   placeholder="True"
                   @update:model-value="onConditionCodeUpdate"
                 />
@@ -90,7 +102,7 @@
             <span>参数映射</span>
             <InfoTip
               wide
-              text="声明本任务如何从流程上下文取数、如何把返回值写回上下文。左侧表：变量名 ← 上下文路径（注入 Starlark 的 inputs）；右侧表：返回字段 → 上下文路径（outputs）。空映射表示由脚本自行读写 $.global 等，可不填。"
+              text="声明本任务如何从流程上下文取数、如何把返回值写回上下文。上表：变量名 ← 上下文路径（注入 Starlark 的 inputs）；下表：返回字段 → 上下文路径（outputs）。空映射表示由脚本自行读写 $.global 等，可不填。"
             />
             <button type="button" class="mini ghost" @click="resetBoundaryMapping">重置</button>
           </div>
@@ -327,6 +339,7 @@
               fill
               appearance="code-dark"
               :registry="starlarkRegistry"
+              :jump-target-suggestions="jumpTargetSuggestionsGetter"
               @update:model-value="commit"
             />
           </div>
@@ -338,10 +351,28 @@
       v-if="node && node.type === 'task'"
       v-model:open="debugDrawerOpen"
       title="节点调试"
-      drawer-width="min(720px, calc(100vw - 16px))"
+      drawer-width="min(1280px, calc(100vw - 20px))"
       :pending="debugPending"
       @run="runNodeDebug"
     >
+      <template #script>
+        <div class="debug-script-pane">
+          <div class="debug-script-hd">
+            <span class="debug-script-hd-title">Starlark 脚本</span>
+            <InfoTip text="左侧编辑脚本，右侧配置上下文并查看调试结果；与主编辑区同步。" />
+          </div>
+          <div class="debug-script-body">
+            <CodeEditor
+              v-model="(node as TaskNode).script"
+              fill
+              appearance="code-dark"
+              :registry="starlarkRegistry"
+              :jump-target-suggestions="jumpTargetSuggestionsGetter"
+              @update:model-value="commit"
+            />
+          </div>
+        </div>
+      </template>
       <DebugPanel ref="debugPanelRef" :path="path" embedded hide-toolbar />
     </DebugDrawer>
   </div>
@@ -482,10 +513,11 @@ const conditionEditorHeight = computed(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 基础信息：name（用户可见）；id 由系统自动分配，不向用户展示
+// 基础信息：name（用户可见）；id 由系统自动分配，在标题区展示并支持复制
 // ---------------------------------------------------------------------------
 
 const nameText = ref("");
+const copiedId = ref(false);
 
 watch(
   () => `${props.path.join("/")}|${node.value?.type ?? ""}|${node.value?.name ?? ""}`,
@@ -506,6 +538,11 @@ const nameErrorNode = computed<string | null>(() => {
   return null;
 });
 
+const nodeLogicalId = computed(() => {
+  if (!node.value) return "";
+  return nodeId(node.value);
+});
+
 function onNameInput() {
   if (!node.value) return;
   const next = nameText.value;
@@ -513,6 +550,19 @@ function onNameInput() {
     node.value.name = next;
     commit();
   }
+}
+
+async function copyNodeId() {
+  if (!nodeLogicalId.value) return;
+  try {
+    await navigator.clipboard.writeText(nodeLogicalId.value);
+    copiedId.value = true;
+  } catch {
+    copiedId.value = false;
+  }
+  window.setTimeout(() => {
+    copiedId.value = false;
+  }, 1400);
 }
 
 const nodeDescriptionText = computed(() => {
@@ -547,6 +597,10 @@ function conditionPathSuggestionsGetter(): readonly string[] {
     extra.push(...Object.keys(b.inputs ?? {}), ...Object.values(b.outputs ?? {}));
   }
   return collectContextPathSuggestions(store.doc, extra);
+}
+
+function jumpTargetSuggestionsGetter() {
+  return jumpTargets.value;
 }
 
 function onBoundaryUpdate(b: Boundary) {
@@ -877,6 +931,77 @@ function commit() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.id-badge {
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  background: color-mix(in srgb, var(--surface) 82%, #f8fafc);
+  color: #334155;
+  border-radius: 999px;
+  padding: 2px 9px 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.id-badge:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+  transform: translateY(-0.5px);
+}
+
+.id-badge.copied {
+  border-color: color-mix(in srgb, #10b981 45%, transparent);
+  background: color-mix(in srgb, #10b981 12%, #ffffff);
+  color: #047857;
+}
+
+.id-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.id-value {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-icon {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+}
+
+.copy-icon::before,
+.copy-icon::after {
+  content: "";
+  position: absolute;
+  border: 1.2px solid currentColor;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.copy-icon::before {
+  width: 8px;
+  height: 8px;
+  left: 3px;
+  top: 0;
+}
+
+.copy-icon::after {
+  width: 8px;
+  height: 8px;
+  left: 0;
+  top: 3px;
 }
 
 .card {

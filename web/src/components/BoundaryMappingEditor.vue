@@ -10,8 +10,7 @@
               <span class="bmap-col-idx" />
               <span>注入变量</span>
               <span class="bmap-col-flow" />
-              <span>上下文路径</span>
-              <span class="bmap-col-act" />
+              <span class="bmap-path-hd">上下文路径</span>
             </div>
             <div class="bmap-rows" role="list">
             <div
@@ -37,83 +36,85 @@
                 @input="onRowInput"
               />
               <span class="bmap-flow" aria-hidden="true">←</span>
-              <div class="bmap-path-wrap">
-                <input
-                  v-model="row.right"
-                  class="bmap-inp mono bmap-path-inp"
-                  spellcheck="false"
-                  autocomplete="off"
-                  placeholder="$.global…"
-                  :aria-invalid="inputRowHasError(i)"
-                  aria-label="入参上下文路径"
-                  :aria-expanded="pathSuggestOpenFor('in', i)"
-                  :aria-controls="pathSuggestOpenFor('in', i) ? pathSuggestListId('in', i) : undefined"
-                  aria-autocomplete="list"
-                  @focus="onPathFocus('in', i)"
-                  @blur="onPathBlur"
-                  @keydown.escape.prevent="closePathSuggest"
-                  @input="onRowInput"
-                />
-                <div
-                  v-if="pathSuggestOpenFor('in', i)"
-                  :id="pathSuggestListId('in', i)"
-                  class="bmap-suggest"
-                  role="listbox"
-                  aria-label="路径补全建议"
-                  @mousedown.prevent
-                >
-                  <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
-                  <button
-                    v-for="opt in activePathSuggestions"
-                    :key="opt"
-                    type="button"
-                    class="bmap-suggest-item"
-                    role="option"
-                    @mousedown.prevent="applyPathSuggestion('in', i, opt)"
+              <div class="bmap-path-line">
+                <div class="bmap-path-wrap">
+                  <input
+                    v-model="row.right"
+                    class="bmap-inp mono bmap-path-inp"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="$.global…"
+                    :aria-invalid="inputRowHasError(i)"
+                    aria-label="入参上下文路径"
+                    :aria-expanded="pathSuggestOpenFor('in', i)"
+                    :aria-controls="pathSuggestOpenFor('in', i) ? pathSuggestListId('in', i) : undefined"
+                    aria-autocomplete="list"
+                    @focus="onPathFocus('in', i)"
+                    @blur="onPathBlur"
+                    @keydown.escape.prevent="closePathSuggest"
+                    @input="onRowInput"
+                  />
+                  <div
+                    v-if="pathSuggestOpenFor('in', i)"
+                    :id="pathSuggestListId('in', i)"
+                    class="bmap-suggest"
+                    role="listbox"
+                    aria-label="路径补全建议"
+                    @mousedown.prevent
                   >
-                    {{ opt }}
+                    <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
+                    <button
+                      v-for="opt in activePathSuggestions"
+                      :key="opt"
+                      type="button"
+                      class="bmap-suggest-item"
+                      role="option"
+                      @mousedown.prevent="applyPathSuggestion('in', i, opt)"
+                    >
+                      {{ opt }}
+                    </button>
+                  </div>
+                </div>
+                <div class="bmap-col-act">
+                  <button
+                    v-if="canRemoveInputRow(i)"
+                    type="button"
+                    class="bmap-ibtn bmap-ibtn--danger"
+                    title="删除本行"
+                    aria-label="删除入参行"
+                    @click.stop="removeInputRow(i)"
+                  >
+                    <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M5 5.5h6L10 13H6L5 5.5zM6.5 5.5V4h3v1.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+                    </svg>
+                  </button>
+                  <span v-else class="bmap-act-spacer" aria-hidden="true" />
+                  <button
+                    type="button"
+                    class="bmap-ibtn"
+                    title="在下方插入一行"
+                    aria-label="在下方插入入参行"
+                    @click.stop="addInputRowBelow(i)"
+                  >
+                    <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M8 3.5v9M3.5 8h9"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.35"
+                        stroke-linecap="round"
+                      />
+                    </svg>
                   </button>
                 </div>
-              </div>
-              <div class="bmap-col-act">
-                <button
-                  v-if="canRemoveInputRow(i)"
-                  type="button"
-                  class="bmap-ibtn bmap-ibtn--danger"
-                  title="删除本行"
-                  aria-label="删除入参行"
-                  @click.stop="removeInputRow(i)"
-                >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M5 5.5h6L10 13H6L5 5.5zM6.5 5.5V4h3v1.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                    <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
-                  </svg>
-                </button>
-                <span v-else class="bmap-act-spacer" aria-hidden="true" />
-                <button
-                  type="button"
-                  class="bmap-ibtn"
-                  title="在下方插入一行"
-                  aria-label="在下方插入入参行"
-                  @click.stop="addInputRowBelow(i)"
-                >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M8 3.5v9M3.5 8h9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.35"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                </button>
               </div>
             </div>
             </div>
@@ -129,8 +130,7 @@
               <span class="bmap-col-idx" />
               <span>返回字段</span>
               <span class="bmap-col-flow" />
-              <span>上下文路径</span>
-              <span class="bmap-col-act" />
+              <span class="bmap-path-hd">上下文路径</span>
             </div>
             <div class="bmap-rows" role="list">
             <div
@@ -156,83 +156,85 @@
                 @input="onRowInput"
               />
               <span class="bmap-flow" aria-hidden="true">→</span>
-              <div class="bmap-path-wrap">
-                <input
-                  v-model="row.right"
-                  class="bmap-inp mono bmap-path-inp"
-                  spellcheck="false"
-                  autocomplete="off"
-                  placeholder="$.global…"
-                  :aria-invalid="outputRowHasError(i)"
-                  aria-label="出参上下文路径"
-                  :aria-expanded="pathSuggestOpenFor('out', i)"
-                  :aria-controls="pathSuggestOpenFor('out', i) ? pathSuggestListId('out', i) : undefined"
-                  aria-autocomplete="list"
-                  @focus="onPathFocus('out', i)"
-                  @blur="onPathBlur"
-                  @keydown.escape.prevent="closePathSuggest"
-                  @input="onRowInput"
-                />
-                <div
-                  v-if="pathSuggestOpenFor('out', i)"
-                  :id="pathSuggestListId('out', i)"
-                  class="bmap-suggest"
-                  role="listbox"
-                  aria-label="路径补全建议"
-                  @mousedown.prevent
-                >
-                  <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
-                  <button
-                    v-for="opt in activePathSuggestions"
-                    :key="opt"
-                    type="button"
-                    class="bmap-suggest-item"
-                    role="option"
-                    @mousedown.prevent="applyPathSuggestion('out', i, opt)"
+              <div class="bmap-path-line">
+                <div class="bmap-path-wrap">
+                  <input
+                    v-model="row.right"
+                    class="bmap-inp mono bmap-path-inp"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="$.global…"
+                    :aria-invalid="outputRowHasError(i)"
+                    aria-label="出参上下文路径"
+                    :aria-expanded="pathSuggestOpenFor('out', i)"
+                    :aria-controls="pathSuggestOpenFor('out', i) ? pathSuggestListId('out', i) : undefined"
+                    aria-autocomplete="list"
+                    @focus="onPathFocus('out', i)"
+                    @blur="onPathBlur"
+                    @keydown.escape.prevent="closePathSuggest"
+                    @input="onRowInput"
+                  />
+                  <div
+                    v-if="pathSuggestOpenFor('out', i)"
+                    :id="pathSuggestListId('out', i)"
+                    class="bmap-suggest"
+                    role="listbox"
+                    aria-label="路径补全建议"
+                    @mousedown.prevent
                   >
-                    {{ opt }}
+                    <div class="bmap-suggest-cap">输入时可点选填入；仍支持完全手写路径</div>
+                    <button
+                      v-for="opt in activePathSuggestions"
+                      :key="opt"
+                      type="button"
+                      class="bmap-suggest-item"
+                      role="option"
+                      @mousedown.prevent="applyPathSuggestion('out', i, opt)"
+                    >
+                      {{ opt }}
+                    </button>
+                  </div>
+                </div>
+                <div class="bmap-col-act">
+                  <button
+                    v-if="canRemoveOutputRow(i)"
+                    type="button"
+                    class="bmap-ibtn bmap-ibtn--danger"
+                    title="删除本行"
+                    aria-label="删除出参行"
+                    @click.stop="removeOutputRow(i)"
+                  >
+                    <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M5 5.5h6L10 13H6L5 5.5zM6.5 5.5V4h3v1.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+                    </svg>
+                  </button>
+                  <span v-else class="bmap-act-spacer" aria-hidden="true" />
+                  <button
+                    type="button"
+                    class="bmap-ibtn"
+                    title="在下方插入一行"
+                    aria-label="在下方插入出参行"
+                    @click.stop="addOutputRowBelow(i)"
+                  >
+                    <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M8 3.5v9M3.5 8h9"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.35"
+                        stroke-linecap="round"
+                      />
+                    </svg>
                   </button>
                 </div>
-              </div>
-              <div class="bmap-col-act">
-                <button
-                  v-if="canRemoveOutputRow(i)"
-                  type="button"
-                  class="bmap-ibtn bmap-ibtn--danger"
-                  title="删除本行"
-                  aria-label="删除出参行"
-                  @click.stop="removeOutputRow(i)"
-                >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M5 5.5h6L10 13H6L5 5.5zM6.5 5.5V4h3v1.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                    <path d="M7 8v3.5M9 8v3.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
-                  </svg>
-                </button>
-                <span v-else class="bmap-act-spacer" aria-hidden="true" />
-                <button
-                  type="button"
-                  class="bmap-ibtn"
-                  title="在下方插入一行"
-                  aria-label="在下方插入出参行"
-                  @click.stop="addOutputRowBelow(i)"
-                >
-                  <svg class="bmap-ico" viewBox="0 0 16 16" aria-hidden="true">
-                    <path
-                      d="M8 3.5v9M3.5 8h9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.35"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                </button>
               </div>
             </div>
             </div>
@@ -562,22 +564,14 @@ const countBrief = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  container-type: inline-size;
-  container-name: bmap;
+  width: 100%;
+  min-width: 0;
 }
 
 .bmap-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-
-@container bmap (min-width: 480px) {
-  .bmap-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 8px 12px;
-    align-items: start;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .bmap-pane {
@@ -607,10 +601,9 @@ const countBrief = computed(() => {
 
 .bmap-cols {
   display: grid;
-  /* 变量名 / 返回字段列：足够 min 与 fr，避免长标识被挤得过窄；路径列仍略宽 */
-  grid-template-columns: 16px minmax(100px, 1.4fr) 14px minmax(72px, 1.9fr) 52px;
+  grid-template-columns: 22px minmax(9.5rem, 1fr) 16px minmax(0, 2.4fr);
   align-items: center;
-  column-gap: 6px;
+  column-gap: 8px;
 }
 
 .bmap-head {
@@ -624,20 +617,30 @@ const countBrief = computed(() => {
 }
 
 .bmap-col-idx {
-  width: 16px;
+  width: 22px;
 }
 
 .bmap-col-flow {
-  width: 14px;
+  width: 16px;
+}
+
+.bmap-path-hd {
+  min-width: 0;
+}
+
+.bmap-path-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
 }
 
 .bmap-col-act {
-  width: 52px;
   display: inline-flex;
-  justify-content: flex-end;
   align-items: center;
   gap: 1px;
   flex-shrink: 0;
+  padding-top: 1px;
 }
 
 .bmap-act-spacer {
@@ -695,7 +698,7 @@ const countBrief = computed(() => {
 
 .bmap-path-wrap {
   position: relative;
-  width: 100%;
+  flex: 1;
   min-width: 0;
 }
 
