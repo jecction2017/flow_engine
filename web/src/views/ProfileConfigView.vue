@@ -186,21 +186,21 @@
               <label class="field full">
                 <span class="json-card-title">debug</span>
                 <span class="json-card-sub muted small">调试 / 试运行 / 测试</span>
-                <textarea v-model="policyJsonDebug" class="ta mono" rows="10" spellcheck="false" />
+                <JsonEditor v-model="policyJsonDebug" :height="240" />
               </label>
             </div>
             <div class="json-card">
               <label class="field full">
                 <span class="json-card-title">shadow</span>
                 <span class="json-card-sub muted small">影子 / 预发</span>
-                <textarea v-model="policyJsonShadow" class="ta mono" rows="10" spellcheck="false" />
+                <JsonEditor v-model="policyJsonShadow" :height="240" />
               </label>
             </div>
             <div class="json-card">
               <label class="field full">
                 <span class="json-card-title">production</span>
                 <span class="json-card-sub muted small">生产</span>
-                <textarea v-model="policyJsonProduction" class="ta mono" rows="10" spellcheck="false" />
+                <JsonEditor v-model="policyJsonProduction" :height="240" />
               </label>
             </div>
           </div>
@@ -233,6 +233,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import InfoTip from "@/components/InfoTip.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import {
   createProfile,
   deleteProfile,

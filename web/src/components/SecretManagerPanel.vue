@@ -84,7 +84,7 @@
         </div>
 
         <div class="lbl block">密文数据（JSON）</div>
-        <CodeEditor v-model="editorDataJson" language="json" :height="200" />
+        <JsonEditor v-model="editorDataJson" :height="200" />
 
         <div class="crypto-box">
           <div class="lbl">加密工具</div>
@@ -106,7 +106,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import CodeEditor from "@/components/CodeEditor.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import {
   deleteSecret as apiDeleteSecret,
   encryptPlaintext,

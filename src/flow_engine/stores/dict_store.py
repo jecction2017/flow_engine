@@ -62,7 +62,22 @@ def _parse_yaml_mapping(text: str, *, label: str) -> dict[str, Any]:
     if not text.strip():
         data: Any = {}
     else:
-        data = yaml.safe_load(text)
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            problem = (getattr(exc, "problem", None) or str(exc)).strip()
+            if mark is not None:
+                line_no = int(mark.line) + 1
+                col_no = int(mark.column) + 1
+                raise DataDictError(
+                    f"{label} YAML syntax error at line {line_no}, column {col_no}: "
+                    f"{problem}. Hint: YAML indentation must use spaces, not tabs (\\t)."
+                ) from exc
+            raise DataDictError(
+                f"{label} YAML syntax error: {problem}. "
+                "Hint: YAML indentation must use spaces, not tabs (\\t)."
+            ) from exc
     if data is None:
         data = {}
     if not isinstance(data, dict):

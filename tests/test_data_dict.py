@@ -56,6 +56,11 @@ def test_invalid_root_raises() -> None:
         data_dict.store().write_module("base", "app", "- one\n- two\n")
 
 
+def test_yaml_tab_indentation_error_is_human_friendly() -> None:
+    with pytest.raises(DataDictError, match="spaces, not tabs"):
+        data_dict.store().write_module("base", "app", "app:\n\tname: demo\n")
+
+
 def test_default_profile_exists_automatically() -> None:
     """The 'default' profile is auto-created by GlobalProfileStore.__init__."""
     profiles = profile_store().list_profiles()

@@ -237,7 +237,7 @@
               <button type="button" class="btn sm ghost" @click="capabilityPolicyText = '[]'">全部允许</button>
               <button type="button" class="btn sm ghost" @click="applySuppressWrites">压制写操作</button>
             </div>
-            <textarea v-model="capabilityPolicyText" rows="5" class="form-area mono" spellcheck="false" />
+            <JsonEditor v-model="capabilityPolicyText" :height="140" />
             </details>
 
             <details
@@ -292,6 +292,7 @@
 import { computed, reactive, ref, watch } from "vue";
 import FormFieldLabel from "@/components/FormFieldLabel.vue";
 import InfoTip from "@/components/InfoTip.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import SubscriptionDeploymentSection from "@/components/SubscriptionDeploymentSection.vue";
 import {
   createDeployment,

@@ -97,11 +97,10 @@
                             <button type="button" class="mini mini-strong" @click="clearCtx">清空</button>
                           </div>
                         </div>
-                        <textarea
+                        <JsonEditor
                           v-model="ctxText"
-                          class="area mono area-ctx area-ctx--trial-run"
-                          :class="{ invalid: !ctxJsonValid }"
-                          spellcheck="false"
+                          :height="220"
+                          :invalid="!ctxJsonValid"
                           placeholder="{}"
                         />
                         <div class="ctx-hint-footer">
@@ -348,6 +347,7 @@ import { fetchProfileConfig } from "@/api/profiles";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import ExecutionLinkTree, { type ExecutionLinkRow } from "@/components/ExecutionLinkTree.vue";
 import InfoTip from "@/components/InfoTip.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import type { CapabilityRule } from "@/types/flow";
 
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;

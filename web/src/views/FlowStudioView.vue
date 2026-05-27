@@ -322,7 +322,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { parse as parseYaml } from "yaml";
 import { useFlowStudioStore } from "@/stores/flowStudio";
-import { allocateUniqueFlowDisplayName, flowListItemLabel, type FlowDocument, type FlowNode } from "@/types/flow";
+import {
+  allocateUniqueFlowDisplayName,
+  flowListItemLabel,
+  type FlowDocument,
+  type FlowNode,
+  type Selection,
+} from "@/types/flow";
 import { validateFlowDefinition } from "@/api/flowDefinition";
 import LeftPanel from "@/components/LeftPanel.vue";
 import RightPanel from "@/components/RightPanel.vue";
@@ -339,6 +345,7 @@ import {
 } from "@/api/flowVersions";
 
 const LAST_FLOW_STORAGE_KEY = "flowEngine:flowStudio:lastFlowId";
+const LAST_STUDIO_SESSION_KEY = "flowEngine:flowStudio:lastSession";
 const UNSAVED_SENTINEL = "__unsaved_new__";
 
 const store = useFlowStudioStore();
@@ -447,6 +454,100 @@ type SaveMsg = { type: "ok" | "err"; text: string };
 const saveMsg = ref<SaveMsg | null>(null);
 let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
 
+type PersistedStudioSession = {
+  flowId: string;
+  versionChannel: string;
+  selection: Selection | null;
+};
+
+function normalizeSelection(raw: unknown): Selection | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (obj.kind === "flow") return { kind: "flow" };
+  if (obj.kind === "strategy" && typeof obj.key === "string" && obj.key.trim()) {
+    return { kind: "strategy", key: obj.key };
+  }
+  if (obj.kind === "node" && Array.isArray(obj.path)) {
+    const nums = obj.path.map((x) => Number(x));
+    if (nums.length > 0 && nums.every((x) => Number.isInteger(x) && x >= 0)) {
+      return { kind: "node", path: nums };
+    }
+  }
+  return null;
+}
+
+function readStoredStudioSession(): PersistedStudioSession | null {
+  try {
+    const raw = localStorage.getItem(LAST_STUDIO_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const flowId = typeof parsed.flowId === "string" ? parsed.flowId.trim() : "";
+    if (!flowId) return null;
+    const versionChannel =
+      typeof parsed.versionChannel === "string" && parsed.versionChannel.trim()
+        ? parsed.versionChannel.trim()
+        : "draft";
+    const selection = normalizeSelection(parsed.selection);
+    return { flowId, versionChannel, selection };
+  } catch {
+    return null;
+  }
+}
+
+function persistStudioSession() {
+  try {
+    const fid = store.activeFlowId;
+    if (!fid) {
+      localStorage.removeItem(LAST_STUDIO_SESSION_KEY);
+      return;
+    }
+    const channel = selectedVersion.value.trim() || "draft";
+    localStorage.setItem(
+      LAST_STUDIO_SESSION_KEY,
+      JSON.stringify({
+        flowId: fid,
+        versionChannel: channel,
+        selection: store.selection,
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearStudioSession() {
+  try {
+    localStorage.removeItem(LAST_STUDIO_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function restoreWorkspaceSelection(sel: Selection | null | undefined) {
+  if (!sel) return;
+  if (sel.kind === "flow") {
+    store.select({ kind: "flow" });
+    return;
+  }
+  if (sel.kind === "strategy") {
+    const key = sel.key.trim();
+    if (key && Object.prototype.hasOwnProperty.call(store.doc.strategies, key)) {
+      store.select({ kind: "strategy", key });
+    } else {
+      store.select({ kind: "flow" });
+    }
+    return;
+  }
+  if (sel.kind === "node") {
+    const path = sel.path.filter((x) => Number.isInteger(x) && x >= 0);
+    if (path.length > 0 && store.getNode(path)) {
+      store.select({ kind: "node", path });
+    } else {
+      store.select({ kind: "flow" });
+    }
+  }
+}
+
 function persistLastFlowId(id: string) {
   try {
     localStorage.setItem(LAST_FLOW_STORAGE_KEY, id);
@@ -504,6 +605,7 @@ async function confirmDeleteFlow() {
     showMsg("ok", "流程已删除");
     try {
       localStorage.removeItem(LAST_FLOW_STORAGE_KEY);
+      clearStudioSession();
     } catch {
       /* ignore */
     }
@@ -777,18 +879,50 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => [store.activeFlowId, selectedVersion.value, store.selection] as const,
+  () => {
+    persistStudioSession();
+  },
+  { deep: true },
+);
+
 onMounted(async () => {
   window.addEventListener("mousedown", onWindowMouseDown);
   window.addEventListener("keydown", onWindowKeydown);
   await store.refreshFlowList();
   try {
+    const session = readStoredStudioSession();
     let last: string | null = null;
     try {
       last = localStorage.getItem(LAST_FLOW_STORAGE_KEY);
     } catch {
       last = null;
     }
-    if (last && store.flowList.some((f) => (f as { id: string }).id === last)) {
+    if (session?.flowId && store.flowList.some((f) => (f as { id: string }).id === session.flowId)) {
+      await loadFlowWithVersions(session.flowId, {
+        preferredVersion: session.versionChannel,
+        preferredSelection: session.selection,
+      });
+    } else if (session?.flowId) {
+      // 索引里缺失时仍尝试直连（例如列表延迟同步）；失败后回退到旧逻辑。
+      try {
+        await loadFlowWithVersions(session.flowId, {
+          preferredVersion: session.versionChannel,
+          preferredSelection: session.selection,
+        });
+        await store.refreshFlowList();
+      } catch {
+        clearStudioSession();
+        if (last && store.flowList.some((f) => (f as { id: string }).id === last)) {
+          await loadFlowWithVersions(last);
+        } else if (store.flowList.some((f) => (f as { id: string }).id === "demo_flow")) {
+          await loadFlowWithVersions("demo_flow");
+        } else if (store.flowList.length > 0) {
+          await loadFlowWithVersions((store.flowList[0] as { id: string }).id);
+        }
+      }
+    } else if (last && store.flowList.some((f) => (f as { id: string }).id === last)) {
       await loadFlowWithVersions(last);
     } else if (last) {
       // localStorage 有上次 id 但列表索引未命中时仍尝试直连加载（成功后补刷列表，避免下拉空白）
@@ -861,18 +995,30 @@ async function refreshVersionList(flowId: string) {
   }
 }
 
-async function loadFlowWithVersions(flowId: string) {
+function resolvePreferredVersionChannel(preferredVersion: string | null | undefined): string {
+  const preferred = (preferredVersion ?? "").trim();
+  if (preferred === "draft") {
+    return hasDraft.value ? "draft" : latestVersion.value > 0 ? String(latestVersion.value) : "draft";
+  }
+  if (/^\d+$/.test(preferred) && versionList.value.some((v) => String(v.version) === preferred)) {
+    return preferred;
+  }
+  if (hasDraft.value) return "draft";
+  if (latestVersion.value > 0) return String(latestVersion.value);
+  return "draft";
+}
+
+async function loadFlowWithVersions(
+  flowId: string,
+  opts?: { preferredVersion?: string | null; preferredSelection?: Selection | null },
+) {
   await store.loadFlowFromServer(flowId);
   await refreshVersionList(flowId);
   persistLastFlowId(flowId);
-  // Show draft if it exists, otherwise latest version
-  if (hasDraft.value) {
-    selectedVersion.value = "draft";
-  } else if (latestVersion.value > 0) {
-    selectedVersion.value = String(latestVersion.value);
-  } else {
-    selectedVersion.value = "draft";
-  }
+  selectedVersion.value = resolvePreferredVersionChannel(opts?.preferredVersion);
+  await onSelectVersion();
+  restoreWorkspaceSelection(opts?.preferredSelection);
+  persistStudioSession();
 }
 
 async function onFlowSelectChange(ev: Event) {
@@ -916,6 +1062,7 @@ async function saveDraft() {
   const fid = store.activeFlowId ?? store.pendingNewFlowId;
   if (!fid) return;
   if (!flowNameOk()) return;
+  const selectionBeforeSave = store.selection;
   flushActiveInput();
   store.flushNodeDraftsToDocument();
   saving.value = "draft";
@@ -928,6 +1075,8 @@ async function saveDraft() {
     await refreshVersionList(fid);
     selectedVersion.value = "draft";
     await onSelectVersion();
+    restoreWorkspaceSelection(selectionBeforeSave);
+    persistStudioSession();
     persistLastFlowId(fid);
     showMsg("ok", wasUnpersistedNew ? "流程已创建，草稿已保存" : "草稿已保存");
   } catch (e) {
@@ -948,6 +1097,7 @@ async function confirmSaveNewVersion() {
   const fid = store.activeFlowId;
   if (!fid) return;
   if (!flowNameOk()) return;
+  const selectionBeforeSave = store.selection;
   closeVersionConfirm();
   flushActiveInput();
   store.flushNodeDraftsToDocument();
@@ -959,6 +1109,8 @@ async function confirmSaveNewVersion() {
     await refreshVersionList(fid);
     selectedVersion.value = String(res.version);
     await onSelectVersion();
+    restoreWorkspaceSelection(selectionBeforeSave);
+    persistStudioSession();
     persistLastFlowId(fid);
     showMsg("ok", `已保存为新版本 V${res.version}`);
   } catch (e) {

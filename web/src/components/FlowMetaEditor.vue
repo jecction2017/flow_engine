@@ -30,7 +30,7 @@
             上下文内容 (JSON)
             <InfoTip wide text="流程启动前注入的全局上下文。顶层字段会被写入 $.global，可在节点 Starlark 中直接读写。" />
           </span>
-          <textarea v-model="ctx" class="form-area mono" rows="6" spellcheck="false" />
+          <JsonEditor v-model="ctx" :height="180" />
         </label>
       </div>
     </section>
@@ -200,6 +200,7 @@ import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
 import HooksEditor, { type HookSlotDef } from "./HooksEditor.vue";
 import InfoTip from "./InfoTip.vue";
+import JsonEditor from "./JsonEditor.vue";
 
 const store = useFlowStudioStore();
 const { registry: starlarkRegistry, ensureRegistry } = useStarlarkRegistryCache();

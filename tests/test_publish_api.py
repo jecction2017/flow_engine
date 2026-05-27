@@ -284,6 +284,18 @@ def test_run_uses_profile_and_runtime_patch_for_dict_get(client: TestClient) -> 
     assert body["global_ns"]["snapshot"] == 30
 
 
+def test_put_dict_module_returns_actionable_yaml_error_for_tab_indent(client: TestClient) -> None:
+    r = client.put(
+        "/api/dict/module?layer=base&module_id=app",
+        json={"yaml": "http:\n\t timeout_sec: 10\n"},
+    )
+    assert r.status_code == 400
+    detail = str(r.json().get("detail", ""))
+    assert "line" in detail.lower()
+    assert "column" in detail.lower()
+    assert "spaces, not tabs" in detail
+
+
 def test_run_uses_global_default_profile_when_request_omitted(client: TestClient) -> None:
     _create_flow(client, "foo")
     r = client.post("/api/profiles", json={"profile": "dev"})

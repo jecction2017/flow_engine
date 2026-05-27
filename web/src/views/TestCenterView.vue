@@ -166,13 +166,11 @@
                     placeholder="Starlark script returning the mock result"
                     spellcheck="false"
                   />
-                  <textarea
+                  <JsonEditor
                     v-else-if="item.cfg.mode === 'fixed'"
                     v-model="item.resultText"
-                    class="ta mono"
-                    rows="4"
+                    :height="120"
                     placeholder='{"output": "..."}'
-                    spellcheck="false"
                   />
                   <div v-else-if="item.cfg.mode === 'record_replay'" class="rr-grid">
                     <label class="field">
@@ -203,7 +201,7 @@
                     </label>
                     <label class="field full">
                       <span>fault_params (JSON)</span>
-                      <textarea v-model="item.faultParamsText" class="ta mono" rows="3" spellcheck="false" />
+                      <JsonEditor v-model="item.faultParamsText" :height="96" />
                     </label>
                   </div>
                 </div>
@@ -225,7 +223,7 @@
                 align-end
               />
             </summary>
-            <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
+            <JsonEditor v-model="planForm.assertionsText" :height="200" />
           </details>
 
           <details class="advanced">
@@ -380,13 +378,11 @@
                   placeholder="Starlark script returning the mock result"
                   spellcheck="false"
                 />
-                <textarea
+                <JsonEditor
                   v-else-if="item.cfg.mode === 'fixed'"
                   v-model="item.resultText"
-                  class="ta mono"
-                  rows="4"
+                  :height="120"
                   placeholder='{"output": "..."}'
-                  spellcheck="false"
                 />
                 <div v-else-if="item.cfg.mode === 'record_replay'" class="rr-grid">
                   <label class="field">
@@ -417,7 +413,7 @@
                   </label>
                   <label class="field full">
                     <span>fault_params (JSON)</span>
-                    <textarea v-model="item.faultParamsText" class="ta mono" rows="3" spellcheck="false" />
+                    <JsonEditor v-model="item.faultParamsText" :height="96" />
                   </label>
                 </div>
               </div>
@@ -439,7 +435,7 @@
                 align-end
               />
             </summary>
-            <textarea v-model="planForm.assertionsText" class="ta mono" rows="8" spellcheck="false" />
+            <JsonEditor v-model="planForm.assertionsText" :height="200" />
           </details>
 
           <details class="advanced">
@@ -545,13 +541,11 @@
                   placeholder="Starlark script returning the mock result"
                   spellcheck="false"
                 />
-                <textarea
+                <JsonEditor
                   v-else-if="item.cfg.mode === 'fixed'"
                   v-model="item.resultText"
-                  class="ta mono"
-                  rows="4"
+                  :height="120"
                   placeholder='{"output": "..."}'
-                  spellcheck="false"
                 />
                 <div v-else-if="item.cfg.mode === 'record_replay'" class="rr-grid">
                   <label class="field">
@@ -582,7 +576,7 @@
                   </label>
                   <label class="field full">
                     <span>fault_params (JSON)</span>
-                    <textarea v-model="item.faultParamsText" class="ta mono" rows="3" spellcheck="false" />
+                    <JsonEditor v-model="item.faultParamsText" :height="96" />
                   </label>
                 </div>
               </div>
@@ -805,6 +799,7 @@ import { fetchDraft, fetchVersion, fetchVersionList, sortFlowVersionsDesc, type 
 import { fetchProfileConfig } from "@/api/profiles";
 import { fetchLookupList } from "@/api/lookups";
 import InfoTip from "@/components/InfoTip.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import RunDetailDrawer from "@/components/RunDetailDrawer.vue";
 import CapabilityRulesEditor from "@/components/CapabilityRulesEditor.vue";
 import type { CapabilityRule, FlowDocument, FlowNode } from "@/types/flow";

@@ -58,14 +58,12 @@
         </div>
         <div v-if="rule.action === 'redirect'" class="redirect-row">
           <span class="lbl">redirect_params (JSON)</span>
-          <textarea
-            :value="redirectText(rule)"
-            class="area mono"
-            rows="2"
-            spellcheck="false"
+          <JsonEditor
+            :model-value="redirectText(rule)"
+            :height="84"
+            :invalid="Boolean(redirectErrors[idx])"
             placeholder='{"url": "https://sandbox.example.com/api"}'
-            :class="{ invalid: redirectErrors[idx] }"
-            @input="onRedirectInput(idx, ($event.target as HTMLTextAreaElement).value)"
+            @update:model-value="onRedirectInput(idx, $event)"
           />
           <span v-if="redirectErrors[idx]" class="err">{{ redirectErrors[idx] }}</span>
         </div>
@@ -80,6 +78,7 @@ import { computed, ref, watch } from "vue";
 import type { CapabilityRule } from "@/types/flow";
 import { fetchStarlarkRegistry, type RegistryPythonFn } from "@/api/starlark";
 import InfoTip from "./InfoTip.vue";
+import JsonEditor from "./JsonEditor.vue";
 
 const props = defineProps<{
   modelValue: CapabilityRule[] | null | undefined;

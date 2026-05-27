@@ -233,6 +233,41 @@ function moduleYamlForEditor(yaml: string | undefined | null): string {
   return raw.endsWith("\n") ? raw : `${raw}\n`;
 }
 
+type YamlIndentTabIssue = {
+  line: number;
+  column: number;
+  snippet: string;
+};
+
+function findYamlIndentTabIssue(yaml: string): YamlIndentTabIssue | null {
+  const lines = yaml.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    if (!line.trim()) continue;
+    const firstContentIdx = line.search(/[^\t ]/);
+    if (firstContentIdx <= 0) continue;
+    const indent = line.slice(0, firstContentIdx);
+    const tabIdx = indent.indexOf("\t");
+    if (tabIdx >= 0) {
+      return {
+        line: i + 1,
+        column: tabIdx + 1,
+        snippet: line.replace(/\t/g, "→\t"),
+      };
+    }
+  }
+  return null;
+}
+
+function formatYamlTabIssueMessage(issue: YamlIndentTabIssue): string {
+  return [
+    "保存失败：检测到 YAML 使用了 Tab 缩进。",
+    `位置：第 ${issue.line} 行，第 ${issue.column} 列`,
+    `内容：${issue.snippet}`,
+    "修复方式：请把该行前导 Tab（\\t）替换为空格（建议 2 个空格缩进）。",
+  ].join("\n");
+}
+
 const activeTab = ref<"modules" | "secrets">("modules");
 const dictDir = ref("");
 const profiles = ref<string[]>(["default"]);
@@ -476,6 +511,11 @@ async function saveModule() {
   saving.value = true;
   error.value = "";
   try {
+    const tabIssue = findYamlIndentTabIssue(editorYaml.value);
+    if (tabIssue) {
+      error.value = formatYamlTabIssueMessage(tabIssue);
+      return;
+    }
     await saveDictModule(
       layer,
       moduleId,
@@ -693,6 +733,7 @@ void reload();
   margin: 0;
   padding: 8px 16px;
   font-size: 12px;
+  white-space: pre-wrap;
   color: #b91c1c;
   background: color-mix(in srgb, #fecaca 35%, transparent);
   border-bottom: 1px solid color-mix(in srgb, #f87171 30%, transparent);

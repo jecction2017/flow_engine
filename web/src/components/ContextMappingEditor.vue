@@ -72,11 +72,11 @@
     <template v-if="showSamplePreview && mapping.mode !== 'script'">
       <label class="ctx-map-field full">
         <span class="ctx-map-lbl">{{ sampleCaption }}</span>
-        <textarea v-model="sampleText" class="ctx-map-area mono" rows="4" spellcheck="false" />
+        <JsonEditor v-model="sampleText" :height="120" />
       </label>
       <label class="ctx-map-field full">
         <span class="ctx-map-lbl">{{ previewCaption }}</span>
-        <textarea :value="previewText" class="ctx-map-area mono ctx-map-preview" rows="5" readonly spellcheck="false" />
+        <JsonEditor :model-value="previewText" :height="140" read-only />
       </label>
     </template>
   </div>
@@ -85,6 +85,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import FormFieldLabel from "@/components/FormFieldLabel.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import { previewContextMapping } from "@/testCenter/mappingPreview";
 import {
   MAPPING_MODE_OPTIONS,

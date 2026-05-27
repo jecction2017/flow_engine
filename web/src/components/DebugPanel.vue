@@ -41,12 +41,10 @@
                 <button type="button" class="mini mini-strong" @click="clearCtx">清空</button>
               </div>
             </div>
-            <textarea
+            <JsonEditor
               v-model="ctxText"
-              class="area mono area-ctx"
-              :class="{ invalid: !ctxValid }"
-              rows="9"
-              spellcheck="false"
+              :height="220"
+              :invalid="!ctxValid"
               placeholder="{}"
             />
             <div v-if="ctxValid" class="ctx-hint-line">
@@ -174,6 +172,7 @@ import {
 } from "@/composables/userScriptDebugSession";
 import CapabilityRulesEditor from "./CapabilityRulesEditor.vue";
 import InfoTip from "./InfoTip.vue";
+import JsonEditor from "./JsonEditor.vue";
 import { fetchProfileConfig } from "@/api/profiles";
 
 const props = withDefaults(

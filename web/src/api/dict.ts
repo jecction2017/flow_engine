@@ -49,9 +49,23 @@ export type DictModuleResponse = {
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
+async function readApiError(response: Response, fallback: string): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown; message?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) return parsed.detail;
+    if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message;
+    if (parsed.detail !== undefined) return JSON.stringify(parsed.detail);
+  } catch {
+    // Non-JSON error body; keep the original text.
+  }
+  return text;
+}
+
 export async function fetchDictSummary(): Promise<DictSummaryResponse> {
   const r = await fetch("/api/dict");
-  if (!r.ok) throw new Error(`dict: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `dict: ${r.status}`));
   return r.json() as Promise<DictSummaryResponse>;
 }
 
@@ -60,13 +74,13 @@ export async function fetchDictResolved(profile?: string): Promise<DictResolveRe
   const pid = profile?.trim();
   if (pid) q.set("profile", pid);
   const r = await fetch(`/api/dict/resolve${q.toString() ? `?${q}` : ""}`);
-  if (!r.ok) throw new Error(`dict resolve: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `dict resolve: ${r.status}`));
   return r.json() as Promise<DictResolveResponse>;
 }
 
 export async function fetchDictProfiles(): Promise<DictProfilesResponse> {
   const r = await fetch("/api/profiles");
-  if (!r.ok) throw new Error(`dict profiles: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `dict profiles: ${r.status}`));
   return r.json() as Promise<DictProfilesResponse>;
 }
 
@@ -77,8 +91,7 @@ export async function createDictProfile(profile: string): Promise<void> {
     body: JSON.stringify({ profile }),
   });
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || `create profile: ${r.status}`);
+    throw new Error(await readApiError(r, `create profile: ${r.status}`));
   }
 }
 
@@ -87,7 +100,7 @@ export async function fetchDictModules(layer: DictLayer, profile?: string): Prom
   q.set("layer", layer);
   if (profile) q.set("profile", profile);
   const r = await fetch(`/api/dict/modules?${q.toString()}`);
-  if (!r.ok) throw new Error(`dict modules: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `dict modules: ${r.status}`));
   return r.json() as Promise<DictModulesResponse>;
 }
 
@@ -97,7 +110,7 @@ export async function fetchDictModule(layer: DictLayer, moduleId: string, profil
   q.set("module_id", moduleId);
   if (profile) q.set("profile", profile);
   const r = await fetch(`/api/dict/module?${q.toString()}`);
-  if (!r.ok) throw new Error(`dict module: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `dict module: ${r.status}`));
   return r.json() as Promise<DictModuleResponse>;
 }
 
@@ -117,8 +130,7 @@ export async function saveDictModule(
     body: JSON.stringify({ yaml }),
   });
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || `save module: ${r.status}`);
+    throw new Error(await readApiError(r, `save module: ${r.status}`));
   }
 }
 
@@ -128,5 +140,5 @@ export async function deleteDictModule(layer: DictLayer, moduleId: string, profi
   q.set("module_id", moduleId);
   if (profile) q.set("profile", profile);
   const r = await fetch(`/api/dict/module?${q.toString()}`, { method: "DELETE" });
-  if (!r.ok) throw new Error(`delete module: ${r.status}`);
+  if (!r.ok) throw new Error(await readApiError(r, `delete module: ${r.status}`));
 }

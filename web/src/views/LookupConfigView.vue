@@ -208,13 +208,13 @@
             <div class="new-option-card">
               <h4>1. 定义 JSON Schema (可选)</h4>
               <p class="muted" style="font-size: 11px; margin-bottom: 8px;">定义数据结构，支持标准的 JSON Schema 格式。</p>
-              <CodeEditor v-model="newSchemaJson" language="json" :height="200" />
+              <JsonEditor v-model="newSchemaJson" :height="200" />
             </div>
             
             <div class="new-option-card">
               <h4>2. 初始数据 (可选)</h4>
               <p class="muted" style="font-size: 11px; margin-bottom: 8px;">粘贴包含对象数组的 JSON 文本。</p>
-              <CodeEditor v-model="newRowsJson" language="json" :height="200" />
+              <JsonEditor v-model="newRowsJson" :height="200" />
             </div>
           </div>
 
@@ -256,7 +256,7 @@
                 {{ saving ? "保存中..." : "保存结构定义" }}
               </button>
             </div>
-            <CodeEditor v-model="editorSchemaJson" language="json" :height="500" />
+            <JsonEditor v-model="editorSchemaJson" :height="500" />
           </div>
 
           <div v-if="activeTab === 'content'" class="tab-pane">
@@ -379,7 +379,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import CodeEditor from "@/components/CodeEditor.vue";
+import JsonEditor from "@/components/JsonEditor.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import {
   deleteLookupRows,
