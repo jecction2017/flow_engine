@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from flow_engine.db.models import FeDeployRun, FeFlowDeployment
+from flow_engine.runner.deploy_persistence import _allocate_deploy_run_no
 from flow_engine.db.session import db_session
 from flow_engine.time_utils import utc_isoformat
 
@@ -215,7 +216,7 @@ def enqueue_cron_run_if_due(
         now = datetime.now(timezone.utc)
     now = truncate_to_utc_second(now)
     with db_session() as s:
-        tmpl = s.get(FeFlowDeployment, int(deployment_id))
+        tmpl = s.get(FeFlowDeployment, int(deployment_id), with_for_update=True)
         if tmpl is None or tmpl.deleted_at is not None:
             return None
         if str(tmpl.schedule_type or "") != "cron":
@@ -260,8 +261,10 @@ def enqueue_cron_run_if_due(
             next_run_at=next_after,
         )
 
+        run_no = _allocate_deploy_run_no(s, int(tmpl.id))
         row = FeDeployRun(
             deployment_id=int(tmpl.id),
+            run_no=run_no,
             worker_id=worker_id,
             flow_code=tmpl.flow_code,
             ver_no=int(tmpl.ver_no),

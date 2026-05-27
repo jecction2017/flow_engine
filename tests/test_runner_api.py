@@ -570,6 +570,7 @@ def test_recent_failed_deploy_runs_dedup_per_deployment(client: TestClient) -> N
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=1,
                 worker_id="w1",
                 flow_code="fail_run_flow",
                 ver_no=ver,
@@ -585,6 +586,7 @@ def test_recent_failed_deploy_runs_dedup_per_deployment(client: TestClient) -> N
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=2,
                 worker_id="w1",
                 flow_code="fail_run_flow",
                 ver_no=ver,
@@ -634,6 +636,7 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=1,
                 worker_id="w1",
                 flow_code="ov_run_flow",
                 ver_no=ver,
@@ -648,6 +651,7 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=2,
                 worker_id="w1",
                 flow_code="ov_run_flow",
                 ver_no=ver,
@@ -662,6 +666,7 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=3,
                 worker_id="w1",
                 flow_code="ov_run_flow",
                 ver_no=ver,
@@ -681,6 +686,47 @@ def test_recent_overview_deploy_runs_excludes_failed(client: TestClient) -> None
     assert body["total"] == 1
     assert body["runs"][0]["deployment_id"] == dep_id
     assert body["runs"][0]["status"] == "terminated"
+
+
+def test_deploy_run_no_per_deployment(client: TestClient) -> None:
+    from flow_engine.runner import deploy_persistence
+    from flow_engine.runner.models import RunMode
+
+    ver = _commit_flow(client, "run_no_flow")
+    r = client.post(
+        "/api/deployments",
+        json={
+            "flow_code": "run_no_flow",
+            "ver_no": ver,
+            "mode": "production",
+            "schedule_type": "once",
+            "schedule_config": {},
+            "worker_policy": {"type": "single_active", "target_workers": 1},
+            "capability_policy": [],
+            "env_profile_code": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    dep_id = int(r.json()["id"])
+
+    for _ in range(2):
+        deploy_persistence.create_deploy_run(
+            deployment_id=dep_id,
+            worker_id="w1",
+            flow_code="run_no_flow",
+            ver_no=ver,
+            mode=RunMode.PRODUCTION,
+            schedule_type="once",
+            trigger_type="manual",
+            trigger_context=None,
+        )
+
+    r = client.get("/api/deploy-runs", params={"deployment_id": dep_id, "limit": 10})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    run_nos = sorted(int(x["run_no"]) for x in body["runs"])
+    assert run_nos == [1, 2]
+    assert all("run_no" in x for x in body["runs"])
 
 
 def test_api_rejects_legacy_min_workers(client: TestClient) -> None:

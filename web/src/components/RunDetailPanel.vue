@@ -2,7 +2,7 @@
   <div class="run-detail">
     <header class="rd-head">
       <div class="rd-title">
-        <span class="rd-id mono">#{{ detail.id }}</span>
+        <span class="rd-id mono">{{ runDisplayLabel }}</span>
         <span class="rd-flow">{{ flowLabelById(detail.flow_code) }}</span>
         <span class="rd-ver">v{{ detail.ver_no }}</span>
         <span class="badge mode">{{ detail.mode }}</span>
@@ -140,6 +140,7 @@ import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
 import SpansExplorer from "@/components/SpansExplorer.vue";
+import { formatDeployRunNo } from "@/utils/deployRunDisplay";
 
 type TabId = "overview" | "spans" | "result" | "evaluation" | "context" | "flow_logs";
 
@@ -152,6 +153,10 @@ onMounted(() => {
 });
 
 const isDeployRun = computed(() => props.detail.deployment_id != null);
+
+const runDisplayLabel = computed(() =>
+  isDeployRun.value ? formatDeployRunNo(props.detail) : `#${props.detail.id}`,
+);
 const isTestRun = computed(() => props.detail.test_batch_id != null);
 const scheduleLabel = computed(() => props.detail.schedule_type || "deployment");
 

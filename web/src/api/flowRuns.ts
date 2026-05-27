@@ -60,6 +60,8 @@ export type RunEvaluation = {
 
 export type FlowRunSummary = {
   id: number;
+  /** 部署内运行序号（从 1 递增）；列表/详情展示用，API 路由仍用 ``id``。 */
+  run_no?: number | null;
   deployment_id: number | null;
   test_batch_id: number | null;
   /** run origin (derived server-side). */
@@ -104,6 +106,7 @@ export type FlowRunsListResponse = {
  */
 export type FlowRunDetail = {
   id: number;
+  run_no?: number | null;
   deployment_id: number | null;
   test_batch_id: number | null;
   source?: "deployment" | "test_batch" | "adhoc" | string;

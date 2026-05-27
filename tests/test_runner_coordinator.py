@@ -525,6 +525,7 @@ def test_dead_worker_cron_leader_goes_pending_without_workers() -> None:
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=1,
                 worker_id=None,
                 flow_code="cron_no_worker",
                 ver_no=1,
@@ -595,6 +596,7 @@ def test_reap_orphaned_queued_cron_run_without_assignment() -> None:
         s.add(
             FeDeployRun(
                 deployment_id=dep_id,
+                run_no=1,
                 worker_id=None,
                 flow_code="dep_flow",
                 ver_no=1,
@@ -936,6 +938,7 @@ def test_reaper_fails_running_run_when_worker_dead() -> None:
     with db_session() as s:
         row = FeDeployRun(
             deployment_id=dep_id,
+            run_no=1,
             worker_id="dead_w",
             flow_code="dep_flow",
             ver_no=1,
@@ -981,6 +984,7 @@ def test_cron_pin_offline_fails_queued_runs() -> None:
         s.add(
             FeDeployRun(
                 deployment_id=did,
+                run_no=1,
                 worker_id=None,
                 flow_code="cron_pin_offline",
                 ver_no=1,
@@ -1015,6 +1019,7 @@ def test_claim_queued_deploy_run_fifo() -> None:
             s.add(
                 FeDeployRun(
                     deployment_id=dep_id,
+                    run_no=i + 1,
                     worker_id=None,
                     flow_code="dep_flow",
                     ver_no=1,

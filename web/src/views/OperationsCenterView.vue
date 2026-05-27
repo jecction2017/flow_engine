@@ -215,7 +215,7 @@
                           class="clickable"
                           @click="openRunFromCenterOverview(r.id)"
                         >
-                          <td class="mono">#{{ r.id }}</td>
+                          <td class="mono" :title="`部署 #${r.deployment_id}`">{{ formatDeployRunNo(r) }}</td>
                           <td class="ov-cell-ellipsis" :title="`${flowLabelById(r.flow_code)} v${r.ver_no}`">{{ flowLabelById(r.flow_code) }} · v{{ r.ver_no }}</td>
                           <td><span class="tag" :class="runStatusTag(r.status)">{{ runStatusLabel(r.status) }}</span></td>
                           <td class="mono small">{{ runElapsed(r) }}</td>
@@ -262,7 +262,7 @@
                           @click="openRunFromCenterOverview(r.id)"
                         >
                           <td class="mono small ov-cell-ellipsis" :title="deploymentOverviewFlowLabel(r.deployment_id)">{{ deploymentOverviewFlowLabel(r.deployment_id) }}</td>
-                          <td class="mono">#{{ r.id }}</td>
+                          <td class="mono">{{ formatDeployRunNo(r) }}</td>
                           <td class="ov-cell-ellipsis" :title="`${flowLabelById(r.flow_code)} v${r.ver_no}`">{{ flowLabelById(r.flow_code) }} · v{{ r.ver_no }}</td>
                           <td class="ov-cell-ellipsis bad" :title="r.error || undefined">{{ truncateText(r.error, 80) }}</td>
                           <td class="mono small ov-cell-ellipsis">{{ formatTs(r.finished_at || r.started_at) }}</td>
@@ -476,7 +476,7 @@
             <section v-else-if="depDetailTab === 'messages'" class="panel-body">
               <div class="run-embed-toolbar">
                 <span class="muted small">
-                  消息账本 · 共 {{ subMessagesResp?.total ?? 0 }} 条 · 第 {{ Math.floor((subMessagesResp?.offset ?? 0) / depMessagesPageSize) + 1 }} 页
+                  消息记录 · 共 {{ subMessagesResp?.total ?? 0 }} 条 · 第 {{ Math.floor((subMessagesResp?.offset ?? 0) / depMessagesPageSize) + 1 }} 页
                 </span>
                 <span class="muted small">· 状态</span>
                 <button
@@ -534,7 +534,7 @@
                         type="button"
                         class="linkish"
                         @click="openSubscriptionRun(m.deploy_run_id)"
-                      >#{{ m.deploy_run_id }}</button>
+                      >{{ subscriptionRunLabel(m) }}</button>
                       <span v-else class="muted">—</span>
                     </td>
                     <td class="small err-cell">{{ truncateText(m.error, 200) }}</td>
@@ -555,7 +555,7 @@
                   失败 {{ subSummary.messages.by_status.failed ?? 0 }}
                 </span>
                 <span class="mono small">运行 {{ subSummary.runs.total }}</span>
-                <button type="button" class="btn small ghost" @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()">消息账本</button>
+                <button type="button" class="btn small ghost" @click="depDetailTab = 'messages'; depMessagesOffset = 0; loadSubscriptionMessages()">消息记录</button>
                 <button type="button" class="btn small ghost" @click="loadSubscriptionSummary()">刷新统计</button>
               </div>
               <div class="run-embed-toolbar">
@@ -625,8 +625,8 @@
                     @click="selectEmbeddedDepRun(r.id)"
                   >
                     <td class="mono">
-                      #{{ r.id }}
-                      <button type="button" class="icon-btn" title="复制 run_id" @click.stop="copyText(String(r.id))">⧉</button>
+                      {{ formatDeployRunNo(r) }}
+                      <button type="button" class="icon-btn" title="复制运行序号" @click.stop="copyText(String(deployRunNo(r)))">⧉</button>
                     </td>
                     <td><span class="tag" :class="runStatusTag(r.status)">{{ runStatusLabel(r.status) }}</span></td>
                     <td><span class="tag mode">{{ runModeLabel(r.mode) }}</span></td>
@@ -715,7 +715,7 @@
       <table class="grid-table">
         <thead>
           <tr>
-            <th style="width:80px">run_id</th>
+            <th style="width:80px">运行</th>
             <th>flow</th>
             <th style="width:90px">来源</th>
             <th style="width:80px">mode</th>
@@ -740,7 +740,7 @@
             :class="{ active: selectedRunId === r.id }"
             @click="selectRun(r.id)"
           >
-            <td class="mono">#{{ r.id }}</td>
+            <td class="mono">{{ formatDeployRunNo(r) }}</td>
             <td>
               <div>{{ flowLabelById(r.flow_code) }}</div>
               <div class="muted small">v{{ r.ver_no }}</div>
@@ -847,6 +847,7 @@ import {
   scheduleTypeLabel,
   workerStatusLabel,
 } from "@/utils/deploymentOverview";
+import { deployRunNo, formatDeployRunNo } from "@/utils/deployRunDisplay";
 
 type TabId = "overview" | "deployments" | "runs" | "workers";
 type DepDetailTabId = "overview" | "messages" | "runs";
@@ -1363,7 +1364,14 @@ function subMessagesNextPage() {
   void loadSubscriptionMessages();
 }
 
-function openSubscriptionMessage(m: { status: string; deploy_run_id: number | null }) {
+function subscriptionRunLabel(m: SubscriptionMessageRow): string {
+  const n = m.deploy_run_no;
+  if (typeof n === "number" && n > 0) return `#${n}`;
+  if (m.deploy_run_id) return `#${m.deploy_run_id}`;
+  return "—";
+}
+
+function openSubscriptionMessage(m: SubscriptionMessageRow) {
   depMessagesStatusFilter.value = m.status;
   depMessagesOffset.value = 0;
   depDetailTab.value = "messages";

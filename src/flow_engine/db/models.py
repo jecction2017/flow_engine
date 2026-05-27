@@ -819,6 +819,11 @@ class FeDeployRun(_AuditCols, Base):
 
     __tablename__ = "fe_deploy_run"
     __table_args__ = (
+        UniqueConstraint(
+            "deployment_id",
+            "run_no",
+            name="uk_fe_deploy_run_dep_run_no",
+        ),
         Index("idx_fe_deploy_run_deployment_id", "deployment_id"),
         Index("idx_fe_deploy_run_deployment_id_status", "deployment_id", "status"),
         Index("idx_fe_deploy_run_flow_code_started_at", "flow_code", "started_at"),
@@ -836,6 +841,11 @@ class FeDeployRun(_AuditCols, Base):
         BIGINT(unsigned=True),
         nullable=False,
         comment="关联 fe_flow_deployment.id",
+    )
+    run_no: Mapped[int] = mapped_column(
+        INTEGER(unsigned=True),
+        nullable=False,
+        comment="部署内运行序号，从 1 开始递增（展示用，与全局 id 无关）",
     )
     worker_id: Mapped[str | None] = mapped_column(
         String(64),

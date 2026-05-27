@@ -216,6 +216,41 @@ function formatOffsetsForForm(offsets: Record<string, unknown> | Record<number, 
   return parts.join(", ");
 }
 
+const START_POSITION_SIMPLE_LABELS: Record<string, string> = {
+  default: "默认",
+  earliest: "从最早可读",
+  latest: "仅新消息",
+};
+
+/** Human-readable label for subscription.start_position (overview / config panels). */
+export function formatSubscriptionStartPosition(
+  start: unknown,
+  formatTimestamp?: (epochMs: number) => string,
+): string | null {
+  if (start == null) return null;
+  if (typeof start === "string") {
+    const key = start.trim();
+    if (!key) return null;
+    return START_POSITION_SIMPLE_LABELS[key] ?? key;
+  }
+  if (typeof start === "object") {
+    const sp = start as Record<string, unknown>;
+    const mode = String(sp.mode ?? "").trim();
+    if (mode === "offset" && sp.offsets && typeof sp.offsets === "object") {
+      const text = formatOffsetsForForm(sp.offsets as Record<string, unknown>);
+      return text || "指定位点";
+    }
+    if (mode === "timestamp") {
+      const ts = Number(sp.timestamp_ms);
+      if (Number.isFinite(ts) && ts > 0) {
+        return formatTimestamp ? formatTimestamp(ts) : new Date(ts).toLocaleString();
+      }
+      return "按时间";
+    }
+  }
+  return null;
+}
+
 /** Reverse ``buildSubscriptionScheduleConfig`` for edit forms. */
 export function hydrateSubscriptionFromScheduleConfig(
   config: Record<string, unknown>,

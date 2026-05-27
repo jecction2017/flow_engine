@@ -46,6 +46,7 @@
                 'sched-kv--highlight': chip.highlight,
                 'sched-kv--muted': chip.muted,
                 'sched-kv--wide': chip.layout === 'wide',
+                'sched-kv--position': chip.layout === 'position',
                 'sched-kv--compact': chip.layout === 'compact',
               }"
             >
@@ -162,7 +163,7 @@
                   class="clickable"
                   @click="emit('open-run', r.id)"
                 >
-                  <td class="mono">#{{ r.id }}</td>
+                  <td class="mono">{{ formatDeployRunNo(r) }}</td>
                   <td>
                     <span class="tag small" :class="runStatusTagClass(r.status)">{{ runStatusLabel(r.status) }}</span>
                   </td>
@@ -180,11 +181,11 @@
     </section>
 
     <!-- 4. 消息账本 + 最近失败（仅消息触发） -->
-    <section v-if="isSubscription" class="ov-section" aria-label="消息账本">
+    <section v-if="isSubscription" class="ov-section" aria-label="消费记录">
       <div class="ov-two-col">
         <article class="ov-panel">
           <header class="ov-panel-head">
-            <h4 class="ov-panel-title">消息账本</h4>
+            <h4 class="ov-panel-title">消费记录</h4>
             <span v-if="loadingSubSummary" class="muted small">加载中…</span>
           </header>
           <template v-if="subSummary">
@@ -276,9 +277,9 @@
         <div v-for="sec in configSections" :key="sec.title" class="config-group">
           <div class="config-group-label">{{ sec.title }}</div>
           <dl class="config-rows">
-            <div v-for="row in sec.rows" :key="row.label" class="config-row">
+            <div v-for="(row, ri) in sec.rows" :key="`${sec.title}-${ri}`" class="config-row">
               <dt>{{ row.label }}</dt>
-              <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+              <dd :class="{ mono: row.mono, 'config-row-dd--pre': row.multiline }">{{ row.value }}</dd>
             </div>
           </dl>
         </div>
@@ -312,6 +313,7 @@ import {
   type OverviewAlertItem,
   type WorkerChipView,
 } from "@/utils/deploymentOverview";
+import { formatDeployRunNo } from "@/utils/deployRunDisplay";
 
 const props = defineProps<{
   deployment: DeploymentDetail;
@@ -378,9 +380,14 @@ const alerts = computed(() =>
   buildDeploymentOverviewAlerts(props.deployment, props.subSummary, props.runsPreview),
 );
 
+function formatEpochMs(ms: number): string {
+  return props.formatTs(new Date(ms).toISOString());
+}
+
 const subFields = computed(() =>
   subscriptionFieldsFromScheduleConfig(
     props.deployment.schedule_config as Record<string, unknown> | undefined,
+    formatEpochMs,
   ),
 );
 
@@ -410,6 +417,7 @@ const scheduleOverview = computed(() =>
     cronNextIso: cronNextRunIso.value,
     formatTs: props.formatTs,
     consumerId: consumerId.value,
+    startPositionLabel: subFields.value.start_position_label,
     maxInFlight: subFields.value.max_in_flight,
     workersCatalogReady: props.workersCatalogReady ?? false,
   }),
@@ -594,11 +602,20 @@ function messageStatusTagClass(status: string): string {
   grid-template-columns: 1fr;
 }
 
-.sched-trigger-grid:has(> .sched-kv--wide):has(> .sched-kv--compact) {
+.sched-trigger-grid:has(> .sched-kv--wide):has(> .sched-kv--compact):not(:has(> .sched-kv--position)) {
   grid-template-columns: minmax(0, 1fr) minmax(72px, 88px);
 }
 
-.sched-kv--wide {
+.sched-trigger-grid:has(> .sched-kv--wide):has(> .sched-kv--position):has(> .sched-kv--compact) {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.95fr) minmax(72px, 88px);
+}
+
+.sched-trigger-grid:has(> .sched-kv--wide):has(> .sched-kv--position):not(:has(> .sched-kv--compact)) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.sched-kv--wide,
+.sched-kv--position {
   min-width: 0;
 }
 
@@ -1025,6 +1042,11 @@ function messageStatusTagClass(status: string): string {
   font-weight: 600;
   min-width: 0;
   word-break: break-word;
+}
+
+.config-row-dd--pre {
+  white-space: pre-wrap;
+  font-weight: 500;
 }
 
 /* —— 表格 —— */

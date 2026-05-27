@@ -17,6 +17,8 @@ export type SubscriptionMessageRow = {
   offset: number;
   status: string;
   deploy_run_id: number | null;
+  /** 关联运行的部署内序号（与 deploy_run_id 成对出现）。 */
+  deploy_run_no?: number | null;
   error: string | null;
   created_at?: string | null;
   updated_at: string | null;

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
-from flow_engine.db.models import FeDeployRun
+from flow_engine.db.models import FeDeployRun, FeFlowDeployment
 from flow_engine.db.session import db_session
 from flow_engine.time_utils import utc_isoformat
 
@@ -68,6 +68,56 @@ def _normalize_flow_logs(logs: list[dict[str, Any]] | None) -> list[dict[str, An
 # ---------------------------------------------------------------------------
 
 
+def _allocate_deploy_run_no(session, deployment_id: int) -> int:
+    """Next per-deployment run sequence (1-based). Caller must be in a transaction."""
+    mx = session.execute(
+        select(func.coalesce(func.max(FeDeployRun.run_no), 0)).where(
+            FeDeployRun.deployment_id == int(deployment_id)
+        )
+    ).scalar_one()
+    return int(mx) + 1
+
+
+def deploy_run_no_map(session, run_ids: set[int]) -> dict[int, int]:
+    """Map global deploy run id → per-deployment ``run_no``."""
+    if not run_ids:
+        return {}
+    rows = session.execute(
+        select(FeDeployRun.id, FeDeployRun.run_no).where(
+            FeDeployRun.id.in_(run_ids),
+            FeDeployRun.deleted_at.is_(None),
+        )
+    ).all()
+    return {int(rid): int(rno) for rid, rno in rows}
+
+
+def backfill_deploy_run_numbers() -> int:
+    """Assign ``run_no`` by ``id`` order within each deployment. Returns rows updated."""
+    updated = 0
+    with db_session() as s:
+        dep_ids = list(
+            s.execute(
+                select(FeDeployRun.deployment_id)
+                .where(FeDeployRun.deleted_at.is_(None))
+                .distinct()
+            ).scalars().all()
+        )
+        for dep_id in dep_ids:
+            rows = list(
+                s.execute(
+                    select(FeDeployRun)
+                    .where(FeDeployRun.deployment_id == int(dep_id))
+                    .where(FeDeployRun.deleted_at.is_(None))
+                    .order_by(FeDeployRun.id.asc())
+                ).scalars().all()
+            )
+            for i, row in enumerate(rows, start=1):
+                if int(row.run_no) != i:
+                    row.run_no = i
+                    updated += 1
+    return updated
+
+
 def create_deploy_run(
     *,
     deployment_id: int,
@@ -82,8 +132,13 @@ def create_deploy_run(
     """Insert ``FeDeployRun(status='running')`` and return the new run id."""
     now = datetime.now(timezone.utc)
     with db_session() as s:
+        dep = s.get(FeFlowDeployment, int(deployment_id), with_for_update=True)
+        if dep is None or dep.deleted_at is not None:
+            raise ValueError(f"deployment {deployment_id} not found")
+        run_no = _allocate_deploy_run_no(s, deployment_id)
         row = FeDeployRun(
             deployment_id=int(deployment_id),
+            run_no=run_no,
             worker_id=worker_id,
             flow_code=flow_code,
             ver_no=int(ver_no),
@@ -214,6 +269,7 @@ def list_deploy_runs(
 def _serialize_deploy_run_summary(row: FeDeployRun) -> dict[str, Any]:
     return {
         "id": int(row.id),
+        "run_no": int(row.run_no),
         "deployment_id": int(row.deployment_id),
         "flow_code": row.flow_code,
         "ver_no": int(row.ver_no),
@@ -338,6 +394,7 @@ def get_deploy_run_detail(run_id: int) -> dict[str, Any] | None:
             return None
         return {
             "id": int(row.id),
+            "run_no": int(row.run_no),
             "deployment_id": int(row.deployment_id),
             "worker_id": row.worker_id,
             "flow_code": row.flow_code,

@@ -9,6 +9,14 @@ import {
   failurePreviewText,
   hasFailureDetail,
 } from "@/utils/formatFailureReport";
+import {
+  MAPPING_MODE_OPTIONS,
+  type ContextMappingState,
+} from "@/operations/contextMappingConfig";
+import {
+  formatSubscriptionStartPosition,
+  ingressMaxRetryWaitSeconds,
+} from "@/operations/subscriptionScheduleConfig";
 
 export function deploymentStatusLabel(status: string): string {
   const map: Record<string, string> = {
@@ -503,7 +511,12 @@ export function groupAssignmentsByRole(assignments: Assignment[] | undefined): A
 
 export function subscriptionFieldsFromScheduleConfig(
   config: Record<string, unknown> | undefined | null,
-): { consumer_id: string | null; max_in_flight: number | null } {
+  formatTimestamp?: (epochMs: number) => string,
+): {
+  consumer_id: string | null;
+  max_in_flight: number | null;
+  start_position_label: string | null;
+} {
   const c = config ?? {};
   const sub = (c.subscription ?? {}) as Record<string, unknown>;
   const dispatch = (c.dispatch ?? {}) as Record<string, unknown>;
@@ -511,7 +524,11 @@ export function subscriptionFieldsFromScheduleConfig(
   const raw = dispatch.max_in_flight;
   const max_in_flight =
     typeof raw === "number" && Number.isFinite(raw) ? Math.max(1, Math.floor(raw)) : null;
-  return { consumer_id, max_in_flight };
+  const start_position_label = formatSubscriptionStartPosition(
+    sub.start_position,
+    formatTimestamp,
+  );
+  return { consumer_id, max_in_flight, start_position_label };
 }
 
 /** Cron template is actively scheduled (Coordinator only fires when status is running). */
@@ -572,8 +589,8 @@ export type ScheduleTriggerChip = {
   mono?: boolean;
   highlight?: boolean;
   muted?: boolean;
-  /** 订阅等场景：消费者占宽、并发上限占窄 */
-  layout?: "wide" | "compact";
+  /** 订阅等场景：消费者占宽、消费位置居中、并发上限占窄 */
+  layout?: "wide" | "position" | "compact";
 };
 
 export type RoleBlockKey = "leader" | "standby" | "replica";
@@ -768,6 +785,7 @@ export function buildScheduleNodeOverview(
     cronNextIso: string | null;
     formatTs: (iso: string | null) => string;
     consumerId: string | null;
+    startPositionLabel: string | null;
     maxInFlight: number | null;
     /** True after the workers catalog has been fetched at least once for this session. */
     workersCatalogReady?: boolean;
@@ -802,9 +820,15 @@ export function buildScheduleNodeOverview(
       mono: true,
       layout: "wide",
     });
+    triggerChips.push({
+      label: "消费位置",
+      value: opts.startPositionLabel || "—",
+      mono: Boolean(opts.startPositionLabel),
+      layout: "position",
+    });
     if (opts.maxInFlight != null) {
       triggerChips.push({
-        label: "并发上限",
+        label: "并发上限（单节点）",
         value: String(opts.maxInFlight),
         mono: true,
         layout: "compact",
@@ -1016,6 +1040,7 @@ export function deploymentScheduleSubline(
     cronNextIso: string | null;
     formatTs: (iso: string | null) => string;
     consumerId: string | null;
+    startPositionLabel: string | null;
     maxInFlight: number | null;
   },
 ): string {
@@ -1034,8 +1059,9 @@ export function deploymentScheduleSubline(
 
   if (d.schedule_type === "subscription") {
     const cid = opts.consumerId || "—";
+    const pos = opts.startPositionLabel ? `消费位置 ${opts.startPositionLabel}` : "";
     const conc = opts.maxInFlight != null ? `并发上限 ${opts.maxInFlight}` : "";
-    return [cid, conc, ...extras].filter(Boolean).join(" · ");
+    return [cid, pos, conc, ...extras].filter(Boolean).join(" · ");
   }
 
   return extras.join(" · ");
@@ -1077,13 +1103,251 @@ export function formatAssignmentSummary(
   return roleBits.length ? `${head}：${roleBits.join(" · ")}` : head;
 }
 
-export type ConfigRow = { label: string; value: string; mono?: boolean };
+export type ConfigRow = {
+  label: string;
+  value: string;
+  mono?: boolean;
+  /** Preserve line breaks (e.g. Starlark script). */
+  multiline?: boolean;
+};
 export type ConfigSection = { title: string; rows: ConfigRow[] };
 
-function formatCapabilityRuleBrief(rule: Deployment["capability_policy"][number]): string {
-  const cat = rule.builtin_category ?? "*";
-  const name = rule.builtin_name ?? "*";
-  return `${cat}/${name} → ${rule.action}`;
+function capabilityActionLabel(action: string): string {
+  const map: Record<string, string> = {
+    allow: "放行（allow）",
+    suppress: "抑制（suppress）",
+    redirect: "重定向（redirect）",
+  };
+  return map[action] ?? action;
+}
+
+function formatCapabilityRuleDisplay(rule: Deployment["capability_policy"][number]): string {
+  const cat = (rule.builtin_category ?? "").trim() || "*";
+  const name = (rule.builtin_name ?? "").trim() || "*";
+  let text = `${cat} / ${name} → ${capabilityActionLabel(String(rule.action))}`;
+  if (
+    rule.action === "redirect" &&
+    rule.redirect_params &&
+    Object.keys(rule.redirect_params).length > 0
+  ) {
+    text += ` · ${JSON.stringify(rule.redirect_params)}`;
+  }
+  return text;
+}
+
+function commitPolicyLabel(policy: string): string {
+  if (policy === "on_success") return "成功后提交（on_success）";
+  return policy;
+}
+
+function contextMappingConfigRows(parse: Record<string, unknown>): ConfigRow[] {
+  const rows: ConfigRow[] = [];
+  const codec = String(parse.codec ?? "json").trim() || "json";
+  rows.push({ label: "编解码", value: codec, mono: true });
+
+  const transform = String(parse.transform ?? "mapping");
+  if (transform === "script") {
+    rows.push({ label: "映射模式", value: "自定义映射（Starlark）" });
+    const script = String(parse.script ?? "").trim();
+    rows.push({
+      label: "脚本",
+      value: script || "—",
+      mono: true,
+      multiline: Boolean(script),
+    });
+    return rows;
+  }
+
+  const rawMapping = parse.mapping;
+  if (!rawMapping || typeof rawMapping !== "object" || Array.isArray(rawMapping)) {
+    rows.push({
+      label: "映射模式",
+      value: "默认（整包写入 payload）",
+    });
+    return rows;
+  }
+
+  const mapping = rawMapping as ContextMappingState;
+  const mode = String(mapping.mode ?? "");
+  const modeLabel =
+    MAPPING_MODE_OPTIONS.find((o) => o.value === mode)?.label ?? (mode || "—");
+  rows.push({ label: "映射模式", value: modeLabel });
+
+  if (mapping.mode === "wrap") {
+    rows.push({
+      label: "变量名",
+      value: String(mapping.wrap_key ?? "payload").trim() || "payload",
+      mono: true,
+    });
+    rows.push({
+      label: "列表包装",
+      value: mapping.wrap_as_list ? "是" : "否",
+    });
+  } else if (mapping.mode === "rules") {
+    const rules = mapping.rules ?? [];
+    if (!rules.length) {
+      rows.push({ label: "字段规则", value: "（无）" });
+    } else {
+      for (let i = 0; i < rules.length; i += 1) {
+        const r = rules[i];
+        rows.push({
+          label: `规则 ${i + 1}`,
+          value: `${r.source} → ${r.target}`,
+          mono: true,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+function subscriptionDeploymentConfigSections(
+  cfg: Record<string, unknown>,
+  formatEpochMs: (ms: number) => string,
+): ConfigSection[] {
+  const sections: ConfigSection[] = [];
+  const subFields = subscriptionFieldsFromScheduleConfig(cfg, formatEpochMs);
+  const subscription = (cfg.subscription ?? {}) as Record<string, unknown>;
+  const consumption = (cfg.consumption ?? {}) as Record<string, unknown>;
+  const dispatch = (cfg.dispatch ?? {}) as Record<string, unknown>;
+  const ingress = (cfg.ingress_policy ?? {}) as Record<string, unknown>;
+  const parse = (cfg.parse ?? {}) as Record<string, unknown>;
+
+  const triggerRows: ConfigRow[] = [
+    { label: "消费者", value: subFields.consumer_id || "—", mono: true },
+    {
+      label: "并发上限",
+      value: subFields.max_in_flight != null ? String(subFields.max_in_flight) : "—",
+      mono: true,
+    },
+  ];
+  const runTimeout = Number(dispatch.run_timeout_s);
+  if (Number.isFinite(runTimeout) && runTimeout > 0) {
+    triggerRows.push({ label: "单条超时", value: `${Math.floor(runTimeout)} 秒`, mono: true });
+  }
+  sections.push({ title: "消息触发", rows: triggerRows });
+
+  const consumeRows: ConfigRow[] = [
+    {
+      label: "消费位置",
+      value: subFields.start_position_label || "—",
+      mono: Boolean(subFields.start_position_label),
+    },
+  ];
+  const partitions = subscription.partitions;
+  if (Array.isArray(partitions) && partitions.length > 0) {
+    consumeRows.push({
+      label: "监听分区",
+      value: partitions.map((p) => String(p)).join(", "),
+      mono: true,
+    });
+  } else {
+    consumeRows.push({ label: "监听分区", value: "全部" });
+  }
+  if (consumption.batch_max_records != null) {
+    consumeRows.push({
+      label: "单次拉取上限",
+      value: String(consumption.batch_max_records),
+      mono: true,
+    });
+  }
+  if (consumption.poll_timeout_ms != null) {
+    consumeRows.push({
+      label: "拉取等待",
+      value: `${consumption.poll_timeout_ms} ms`,
+      mono: true,
+    });
+  }
+  const commitPolicy = String(consumption.commit_policy ?? "on_success");
+  consumeRows.push({ label: "提交策略", value: commitPolicyLabel(commitPolicy) });
+  sections.push({ title: "消费参数", rows: consumeRows });
+
+  sections.push({ title: "上下文映射", rows: contextMappingConfigRows(parse) });
+
+  const faultRows: ConfigRow[] = [];
+  const dlq = consumption.dlq as Record<string, unknown> | undefined;
+  const dlqProducer = dlq?.producer_id ? String(dlq.producer_id).trim() : "";
+  faultRows.push({
+    label: "失败队列",
+    value: dlqProducer || "未配置",
+    mono: Boolean(dlqProducer),
+  });
+  const idem = consumption.idempotency as Record<string, unknown> | undefined;
+  if (idem && typeof idem === "object" && Object.keys(idem).length > 0) {
+    faultRows.push({ label: "幂等", value: "开启" });
+    if (idem.window_s != null) {
+      faultRows.push({
+        label: "去重窗口",
+        value: `${idem.window_s} 秒`,
+        mono: true,
+      });
+    }
+  } else {
+    faultRows.push({ label: "幂等", value: "关闭" });
+  }
+  const maxRestarts = ingress.max_restarts;
+  const backoff = ingress.restart_backoff_s;
+  if (maxRestarts != null) {
+    faultRows.push({
+      label: "接入最多重试",
+      value: `${maxRestarts} 次`,
+      mono: true,
+    });
+  }
+  if (backoff != null) {
+    faultRows.push({
+      label: "重试退避基数",
+      value: `${backoff} 秒`,
+      mono: true,
+    });
+  }
+  if (maxRestarts != null && backoff != null) {
+    const worstSec = ingressMaxRetryWaitSeconds(
+      Number(maxRestarts),
+      Number(backoff),
+    );
+    faultRows.push({
+      label: "最坏等待",
+      value: worstSec < 60 ? `约 ${worstSec} 秒` : `约 ${Math.round(worstSec / 60)} 分钟`,
+    });
+  }
+  sections.push({ title: "吞吐、失败与容错", rows: faultRows });
+
+  return sections;
+}
+
+function workerConfigRows(d: DeploymentDetail): ConfigRow[] {
+  const rows: ConfigRow[] = [
+    { label: "策略", value: workerPolicyConfigLabel(d.worker_policy, String(d.schedule_type)) },
+    { label: "定向", value: workerTargetingLabel(d.worker_targeting) },
+  ];
+  const wp = d.worker_policy ?? {};
+  if (wp.max_restarts != null) {
+    rows.push({ label: "进程最多重启", value: String(wp.max_restarts), mono: true });
+  }
+  if (wp.restart_backoff_s != null) {
+    rows.push({ label: "进程退避", value: `${wp.restart_backoff_s} 秒`, mono: true });
+  }
+  return rows;
+}
+
+function capabilityConfigSection(d: DeploymentDetail): ConfigSection {
+  const rules = d.capability_policy ?? [];
+  if (!rules.length) {
+    return {
+      title: "能力策略",
+      rows: [{ label: "规则", value: "全部允许（未配置规则）" }],
+    };
+  }
+  return {
+    title: "能力策略",
+    rows: rules.map((r, i) => ({
+      label: `规则 ${i + 1}`,
+      value: formatCapabilityRuleDisplay(r),
+      mono: true,
+    })),
+  };
 }
 
 export function buildDeploymentConfigSections(
@@ -1091,11 +1355,8 @@ export function buildDeploymentConfigSections(
   formatTs: (iso: string | null) => string,
 ): ConfigSection[] {
   const sections: ConfigSection[] = [];
-  const sub = subscriptionFieldsFromScheduleConfig(
-    d.schedule_config as Record<string, unknown> | undefined,
-  );
   const cfg = (d.schedule_config ?? {}) as Record<string, unknown>;
-  const ingress = (cfg.ingress_policy ?? {}) as Record<string, unknown>;
+  const formatEpochMs = (ms: number) => formatTs(new Date(ms).toISOString());
 
   sections.push({
     title: "标识",
@@ -1109,51 +1370,33 @@ export function buildDeploymentConfigSections(
     ],
   });
 
-  const schedRows: ConfigRow[] = [{ label: "类型", value: scheduleTypeLabel(String(d.schedule_type)) }];
-  if (d.schedule_type === "cron") {
-    const expr = String(d.schedule_config?.cron_expr ?? "").trim();
+  const schedRows: ConfigRow[] = [
+    { label: "类型", value: scheduleTypeLabel(String(d.schedule_type)) },
+  ];
+  const st = String(d.schedule_type);
+  if (st === "once") {
+    schedRows.push({ label: "触发", value: "手动启动后执行一次" });
+  } else if (st === "cron") {
+    const expr = String(cfg.cron_expr ?? "").trim();
     if (expr) schedRows.push({ label: "Cron", value: expr, mono: true });
-  } else if (d.schedule_type === "subscription") {
-    if (sub.consumer_id) schedRows.push({ label: "消费者", value: sub.consumer_id, mono: true });
-    if (sub.max_in_flight != null) {
-      schedRows.push({ label: "并发上限", value: String(sub.max_in_flight), mono: true });
-    }
-    const consumption = (cfg.consumption ?? {}) as Record<string, unknown>;
-    if (consumption.batch_max_records != null) {
-      schedRows.push({
-        label: "批大小",
-        value: String(consumption.batch_max_records),
-        mono: true,
-      });
-    }
-    if (ingress.max_restarts != null || ingress.restart_backoff_s != null) {
-      schedRows.push({
-        label: "接入重试",
-        value: `最多 ${ingress.max_restarts ?? "—"} 次 · 退避 ${ingress.restart_backoff_s ?? "—"}s`,
-      });
+    const lastRun = String(cfg.last_run_at ?? "").trim();
+    if (lastRun) schedRows.push({ label: "上次运行", value: formatTs(lastRun), mono: true });
+    const nextRun = String(cfg.next_run_at ?? "").trim();
+    if (nextRun) schedRows.push({ label: "下次运行", value: formatTs(nextRun), mono: true });
+  } else if (st === "subscription") {
+    const schemaVersion = cfg.schema_version;
+    if (schemaVersion != null) {
+      schedRows.push({ label: "配置版本", value: String(schemaVersion), mono: true });
     }
   }
   sections.push({ title: "调度", rows: schedRows });
 
-  sections.push({
-    title: "Worker",
-    rows: [
-      { label: "策略", value: workerPolicyConfigLabel(d.worker_policy, String(d.schedule_type)) },
-      { label: "定向", value: workerTargetingLabel(d.worker_targeting) },
-    ],
-  });
-
-  const rules = d.capability_policy ?? [];
-  if (rules.length) {
-    sections.push({
-      title: "能力策略",
-      rows: rules.map((r, i) => ({
-        label: `#${i + 1}`,
-        value: formatCapabilityRuleBrief(r),
-        mono: true,
-      })),
-    });
+  if (st === "subscription") {
+    sections.push(...subscriptionDeploymentConfigSections(cfg, formatEpochMs));
   }
+
+  sections.push({ title: "Worker", rows: workerConfigRows(d) });
+  sections.push(capabilityConfigSection(d));
 
   return sections;
 }

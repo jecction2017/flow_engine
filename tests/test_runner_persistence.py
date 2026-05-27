@@ -24,10 +24,31 @@ from flow_engine.engine.models import FlowDefinition, FlowState, NodeState
 from flow_engine.engine.observability import RunRef
 from flow_engine.engine.orchestrator import FlowRunResult, FlowRuntime
 from flow_engine.engine.starlark_glue import apply_outputs
+from flow_engine.db.models import FeFlowDeployment
+from flow_engine.db.session import db_session
 from flow_engine.runner import deploy_persistence, span_persistence
 from flow_engine.runner.models import RunMode, RunOptions
 from flow_engine.runner.obs_backend import AsyncBufferedDBBackend, ObsRuntimeConfig
 from flow_engine.stores.version_store import FlowVersionRegistry
+
+
+def _seed_deployment(*, flow_code: str = "f") -> int:
+    with db_session() as s:
+        row = FeFlowDeployment(
+            flow_code=flow_code,
+            ver_no=1,
+            mode="production",
+            schedule_type="once",
+            schedule_config={},
+            worker_policy={"type": "single_active", "target_workers": 1},
+            capability_policy=[],
+            worker_targeting={"mode": "any"},
+            status="running",
+            env_profile_code="default",
+        )
+        s.add(row)
+        s.flush()
+        return int(row.id)
 
 
 def _flow(y: str) -> FlowDefinition:
@@ -52,8 +73,9 @@ async def test_deploy_run_lifecycle_writes_spans() -> None:
         """
     )
 
+    dep_id = _seed_deployment()
     run_id = deploy_persistence.create_deploy_run(
-        deployment_id=10,
+        deployment_id=dep_id,
         worker_id="w1",
         flow_code="f",
         ver_no=1,
@@ -128,8 +150,9 @@ async def test_deploy_run_failed_stores_actionable_error() -> None:
         """
     )
 
+    dep_id = _seed_deployment()
     run_id = deploy_persistence.create_deploy_run(
-        deployment_id=11,
+        deployment_id=dep_id,
         worker_id="w1",
         flow_code="f",
         ver_no=1,

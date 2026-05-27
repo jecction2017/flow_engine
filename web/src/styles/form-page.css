@@ -200,14 +200,17 @@
 }
 
 .form-page {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 12px 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 1000px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }

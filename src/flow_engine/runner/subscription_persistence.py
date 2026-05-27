@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from flow_engine.db.models import FeDeployRun, FeFlowDeployment, FeSubscriptionDedup
+from flow_engine.runner.deploy_persistence import deploy_run_no_map
 from flow_engine.db.session import db_session
 from flow_engine.time_utils import utc_isoformat
 
@@ -16,6 +17,31 @@ _RUN_STATUSES = ("queued", "running", "completed", "failed", "terminated")
 
 # Aligns with Run Center overview tables (OperationsCenterView CENTER_OVERVIEW_LOOKBACK_HOURS).
 SUBSCRIPTION_ALERT_LOOKBACK_HOURS = 24
+
+
+def _subscription_message_payload(
+    row: FeSubscriptionDedup,
+    *,
+    run_no_by_id: dict[int, int] | None = None,
+) -> dict[str, Any]:
+    deploy_run_id = int(row.deploy_run_id) if row.deploy_run_id is not None else None
+    deploy_run_no: int | None = None
+    if deploy_run_id is not None and run_no_by_id is not None:
+        deploy_run_no = run_no_by_id.get(deploy_run_id)
+    return {
+        "id": int(row.id),
+        "deployment_id": int(row.deployment_id),
+        "position_key": row.position_key,
+        "topic": row.topic,
+        "partition": int(row.partition),
+        "offset": int(row.offset),
+        "status": row.status,
+        "deploy_run_id": deploy_run_id,
+        "deploy_run_no": deploy_run_no,
+        "error": row.error,
+        "created_at": utc_isoformat(row.created_at),
+        "updated_at": utc_isoformat(row.updated_at),
+    }
 
 
 def _assert_subscription_deployment(deployment_id: int) -> None:
@@ -143,18 +169,14 @@ def get_subscription_summary(deployment_id: int) -> dict[str, Any]:
             last_msg=last_msg,
         )
         last_updated_at = utc_isoformat(last_msg.updated_at) if last_msg else None
+        run_ids = {
+            int(r.deploy_run_id)
+            for r in recent_failed
+            if r.deploy_run_id is not None
+        }
+        run_no_by_id = deploy_run_no_map(s, run_ids)
         recent_failed_payload = [
-            {
-                "id": int(r.id),
-                "position_key": r.position_key,
-                "topic": r.topic,
-                "partition": int(r.partition),
-                "offset": int(r.offset),
-                "status": r.status,
-                "deploy_run_id": int(r.deploy_run_id) if r.deploy_run_id is not None else None,
-                "error": r.error,
-                "updated_at": utc_isoformat(r.updated_at),
-            }
+            _subscription_message_payload(r, run_no_by_id=run_no_by_id)
             for r in recent_failed
         ]
 
@@ -207,21 +229,10 @@ def list_subscription_messages(
                 .limit(limit)
             ).scalars().all()
         )
+        run_ids = {int(r.deploy_run_id) for r in rows if r.deploy_run_id is not None}
+        run_no_by_id = deploy_run_no_map(s, run_ids)
         messages = [
-            {
-                "id": int(r.id),
-                "deployment_id": int(r.deployment_id),
-                "position_key": r.position_key,
-                "topic": r.topic,
-                "partition": int(r.partition),
-                "offset": int(r.offset),
-                "status": r.status,
-                "deploy_run_id": int(r.deploy_run_id) if r.deploy_run_id is not None else None,
-                "error": r.error,
-                "created_at": utc_isoformat(r.created_at),
-                "updated_at": utc_isoformat(r.updated_at),
-            }
-            for r in rows
+            _subscription_message_payload(r, run_no_by_id=run_no_by_id) for r in rows
         ]
 
     return {
@@ -233,20 +244,12 @@ def list_subscription_messages(
     }
 
 
-def _serialize_subscription_message(row: FeSubscriptionDedup) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "deployment_id": int(row.deployment_id),
-        "position_key": row.position_key,
-        "topic": row.topic,
-        "partition": int(row.partition),
-        "offset": int(row.offset),
-        "status": row.status,
-        "deploy_run_id": int(row.deploy_run_id) if row.deploy_run_id is not None else None,
-        "error": row.error,
-        "created_at": utc_isoformat(row.created_at),
-        "updated_at": utc_isoformat(row.updated_at),
-    }
+def _serialize_subscription_message(
+    row: FeSubscriptionDedup,
+    *,
+    run_no_by_id: dict[int, int] | None = None,
+) -> dict[str, Any]:
+    return _subscription_message_payload(row, run_no_by_id=run_no_by_id)
 
 
 def list_recent_failed_subscription_messages(
@@ -280,12 +283,16 @@ def list_recent_failed_subscription_messages(
                 )
             ).scalars().all()
         )
+        run_ids = {int(r.deploy_run_id) for r in rows if r.deploy_run_id is not None}
+        run_no_by_id = deploy_run_no_map(s, run_ids)
         for row in rows:
             dep_id = int(row.deployment_id)
             if dep_id in seen:
                 continue
             seen.add(dep_id)
-            deduped.append(_serialize_subscription_message(row))
+            deduped.append(
+                _serialize_subscription_message(row, run_no_by_id=run_no_by_id)
+            )
 
     return {
         "since": utc_isoformat(since),
