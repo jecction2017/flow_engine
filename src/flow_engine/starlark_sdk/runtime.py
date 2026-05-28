@@ -68,6 +68,11 @@ def _parse_cached(label: str, script: str) -> Any:
     return ast
 
 
+def validate_script_syntax(label: str, script: str) -> None:
+    """Validate Starlark syntax by parsing only (no execution)."""
+    sl.parse(label, script, dialect=dialect_with_load())
+
+
 class _ExecBudget:
     def __init__(self) -> None:
         self.max_python_calls = max(1, int(os.environ.get("FLOW_ENGINE_STARLARK_MAX_PY_CALLS", "1000")))

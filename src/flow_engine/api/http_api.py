@@ -10,6 +10,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 
+import starlark as sl
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -47,7 +48,7 @@ from flow_engine.lookup.lookup_service import (
 from flow_engine.lookup.lookup_store import LookupStoreError, get_lookup_store, validate_lookup_namespace
 from flow_engine.starlark_sdk.python_builtin_impl import user_script_list
 from flow_engine.starlark_sdk.registry_data import load_registry
-from flow_engine.starlark_sdk.runtime import runtime_stats, warmup_runtime
+from flow_engine.starlark_sdk.runtime import runtime_stats, validate_script_syntax, warmup_runtime
 from flow_engine.starlark_sdk.uri_resolve import resolve_internal_script_file
 from flow_engine.starlark_sdk.user_script_store import get_user_script_store
 from flow_engine.secrets.errors import SecretError
@@ -1319,6 +1320,11 @@ def create_app() -> FastAPI:
 
     @app.put("/api/starlark/user/{tenant}/{path:path}")
     def put_user_script(tenant: str, path: str, body: PutUserScriptBody) -> dict[str, Any]:
+        label = f"user://{tenant}/{path}"
+        try:
+            validate_script_syntax(label, body.content)
+        except sl.StarlarkError as e:
+            raise HTTPException(status_code=400, detail=f"Starlark 语法错误（{label}）: {e}") from e
         try:
             get_user_script_store().put_script(
                 tenant,
