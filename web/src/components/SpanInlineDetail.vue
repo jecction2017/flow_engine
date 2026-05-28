@@ -116,8 +116,9 @@ function formatAttrVal(v: unknown): string {
 
 <style scoped>
 .sid-inline {
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 10px;
+  line-height: 1.42;
+  color: color-mix(in srgb, var(--text, #0f172a) 92%, #334155);
 }
 
 .sid-err {
@@ -126,6 +127,7 @@ function formatAttrVal(v: unknown): string {
   border-radius: 6px;
   background: color-mix(in srgb, #fecaca 35%, transparent);
   color: #b91c1c;
+  font-size: 10px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -141,12 +143,17 @@ function formatAttrVal(v: unknown): string {
   border: 1px solid color-mix(in srgb, #f59e0b 28%, transparent);
   background: color-mix(in srgb, #f59e0b 10%, transparent);
   color: #7c2d12;
+  font-size: 10px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .sid-block {
   margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, #ffffff 88%, #f8fafc 12%);
+  padding: 6px 7px;
 }
 
 .sid-block:last-child {
@@ -160,8 +167,10 @@ function formatAttrVal(v: unknown): string {
   justify-content: space-between;
   gap: 6px;
   font-weight: 600;
-  margin-bottom: 4px;
-  color: var(--text, #0f172a);
+  margin-bottom: 5px;
+  color: color-mix(in srgb, var(--text, #0f172a) 88%, #334155);
+  font-size: 10px;
+  letter-spacing: 0.01em;
 }
 
 .lvl-toolbar {
@@ -219,6 +228,7 @@ function formatAttrVal(v: unknown): string {
   padding: 3px 6px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   align-items: baseline;
+  font-size: 10px;
 }
 
 .sid-log:last-child {
@@ -234,7 +244,7 @@ function formatAttrVal(v: unknown): string {
 .sid-lvl {
   text-transform: uppercase;
   font-weight: 700;
-  font-size: 9px;
+  font-size: 8px;
   padding: 0 4px;
   border-radius: 3px;
   background: #e2e8f0;
@@ -264,7 +274,7 @@ function formatAttrVal(v: unknown): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .sid-msg {
@@ -286,6 +296,7 @@ function formatAttrVal(v: unknown): string {
   padding: 3px 6px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   vertical-align: top;
+  font-size: 10px;
 }
 
 .sid-kv tr:last-child td {
@@ -295,11 +306,11 @@ function formatAttrVal(v: unknown): string {
 .sid-k {
   width: 34%;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .sid-v {
-  font-size: 10px;
+  font-size: 9px;
   word-break: break-all;
 }
 
@@ -308,7 +319,7 @@ function formatAttrVal(v: unknown): string {
 }
 
 .small {
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .link {
@@ -317,7 +328,7 @@ function formatAttrVal(v: unknown): string {
   color: var(--accent);
   cursor: pointer;
   padding: 0;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .link:hover {

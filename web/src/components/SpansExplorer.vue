@@ -798,7 +798,7 @@ onUnmounted(() => {
   border-radius: 6px;
   background: color-mix(in srgb, #fecaca 35%, transparent);
   color: #b91c1c;
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .tree-state {
@@ -811,6 +811,10 @@ onUnmounted(() => {
 
 .pad {
   padding: 6px 0;
+}
+
+.rt-inline-detail {
+  font-size: 10px;
 }
 
 /* ---- Utility classes consumed by content rendered into the
