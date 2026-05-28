@@ -201,4 +201,45 @@ const extensions = computed<Extension[]>(() => {
   line-height: 1.45;
   font-size: 12px;
 }
+
+/* 补全列表：统一弹窗底色 + 文本层级，避免选中/非选中对比反直觉。 */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+}
+
+.cm-tooltip-autocomplete ul li {
+  color: #334155;
+}
+
+.cm-tooltip-autocomplete ul li .cm-completionLabel {
+  color: #1e293b;
+}
+
+.cm-tooltip-autocomplete ul li .cm-completionDetail {
+  color: #64748b;
+}
+
+.cm-tooltip-autocomplete ul li .cm-completionMatchedText {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px #1d4ed8;
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionLabel {
+  color: #ffffff;
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionDetail,
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionMatchedText {
+  color: #dbeafe;
+}
 </style>
