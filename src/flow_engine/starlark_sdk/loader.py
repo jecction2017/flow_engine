@@ -69,6 +69,10 @@ class ModuleLoaderCache:
         inner = sl.Module()
         ast = sl.parse(display_path, content, dialect=dialect_with_load())
         glb = _globals_for_loaded_module()
+        
+        from flow_engine.starlark_sdk.runtime import _attach_sdk_python
+        _attach_sdk_python(inner)
+        
         sl.eval(inner, ast, glb, file_loader=self._loader)
         frozen = inner.freeze()
         with self._lock:

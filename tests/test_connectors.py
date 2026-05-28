@@ -32,7 +32,7 @@ def test_elasticsearch_config_parse() -> None:
 
 def test_auth_basic() -> None:
     kw = build_client_auth(AuthSpec(type="basic", username="u", password="p"))
-    assert kw["basic_auth"] == ("u", "p")
+    assert kw["http_auth"] == ("u", "p")
 
 
 def test_circuit_breaker_opens() -> None:

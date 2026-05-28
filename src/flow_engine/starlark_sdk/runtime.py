@@ -71,7 +71,7 @@ def _parse_cached(label: str, script: str) -> Any:
 class _ExecBudget:
     def __init__(self) -> None:
         self.max_python_calls = max(1, int(os.environ.get("FLOW_ENGINE_STARLARK_MAX_PY_CALLS", "1000")))
-        self.max_exec_ms = max(10, int(os.environ.get("FLOW_ENGINE_STARLARK_MAX_EXEC_MS", "5000")))
+        self.max_exec_ms = max(10, int(os.environ.get("FLOW_ENGINE_STARLARK_MAX_EXEC_MS", "30000")))
         self._deadline = 0.0
         self._py_calls = 0
 

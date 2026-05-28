@@ -34,7 +34,7 @@ def _build_basic(auth: AuthSpec) -> dict[str, Any]:
     if not auth.username:
         raise ConnectorError("basic auth requires username", code="AUTH_INVALID")
     return {
-        "basic_auth": (auth.username, auth.password or ""),
+        "http_auth": (auth.username, auth.password or ""),
     }
 
 
