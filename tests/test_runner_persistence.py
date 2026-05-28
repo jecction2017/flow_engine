@@ -186,7 +186,6 @@ async def test_deploy_run_global_ns_strips_runtime_jump_data() -> None:
     persisted = detail["global_ns"]["jumper"]["jump_record"]
     assert persisted.get("reason") == "skip-by-rule"
     assert "data" not in persisted
-    assert "data" not in detail["global_ns"]["jumper"]["jump_records"][0]
 
 
 @pytest.mark.asyncio

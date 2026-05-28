@@ -283,24 +283,20 @@ async def test_flow_jump_reason_data_written_to_runtime_context() -> None:
             strategy_ref: default_sync
             script: |
               rec = resolve("$.global.route.jump_record")
-              recs = resolve("$.global.route.jump_records")
               {
                 "reason": rec["reason"],
                 "ticket": rec["data"]["ticket"],
-                "history_len": len(recs),
               }
             boundary:
               outputs:
                 reason: "$.global.jump_reason"
                 ticket: "$.global.jump_ticket"
-                history_len: "$.global.jump_history_len"
         """
     )
     res = await FlowRuntime(flow).run()
     assert res.state == FlowState.COMPLETED
     assert res.context.global_ns["jump_reason"] == "manual-skip"
     assert res.context.global_ns["jump_ticket"] == "T-001"
-    assert res.context.global_ns["jump_history_len"] == 1
     assert "should_not_exist" not in res.context.global_ns
 
 

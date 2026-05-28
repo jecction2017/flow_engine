@@ -760,11 +760,6 @@ class FlowRuntime:
                     bucket["_prev_value"] = existing
                 ctx.global_ns[from_node_id] = bucket
             bucket["jump_record"] = record
-            hist = bucket.get("jump_records")
-            if isinstance(hist, list):
-                hist.append(copy.deepcopy(record))
-            else:
-                bucket["jump_records"] = [copy.deepcopy(record)]
 
     def _result(self, message: str | None) -> FlowRunResult:
         with self._runs_lock:
