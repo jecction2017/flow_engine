@@ -724,6 +724,7 @@ class AsyncBufferedDBBackend(ObservabilityBackend):
                     test_run_id=run_ref.test_run_id,
                     flow_code=rec.flow_code,
                     node_id=rec.node_id,
+                    node_name=rec.node_name,
                     node_type=rec.node_type,
                     span_seq=int(rec.span_seq),
                     parent_span_id=cross_batch_parent_id,

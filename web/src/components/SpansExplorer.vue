@@ -37,10 +37,10 @@
         <button v-if="hasFilters" type="button" class="link small" @click="resetFilters">重置</button>
         <span class="muted small">
           <template v-if="hasFilters">
-            命中 {{ resp?.total_matched ?? 0 }} · 共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 span
+            命中 {{ resp?.total_matched ?? 0 }} · 共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 Span
           </template>
           <template v-else>
-            共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 span
+            共 {{ resp?.total_roots ?? 0 }} 棵子树 · 本页 {{ items.length }} 个 Span
           </template>
         </span>
         <InfoTip
@@ -65,9 +65,11 @@
         <!-- col 2: dot spacer -->
         <span class="rt-filters-spacer" aria-hidden="true" />
         <!-- col 3: node_id -->
-        <select v-model="filters.node_id" class="rt-finp" :title="filters.node_id || '全部节点'">
+        <select v-model="filters.node_id" class="rt-finp" :title="selectedNodeOptionLabel || '全部节点'">
           <option value="">全部节点</option>
-          <option v-for="nid in nodeOptions" :key="nid" :value="nid">{{ nid }}</option>
+          <option v-for="opt in nodeOptions" :key="opt.node_id" :value="opt.node_id">
+            {{ opt.node_name }}
+          </option>
         </select>
         <!-- col 4: 类型 (no filter) -->
         <span class="rt-filters-spacer" aria-hidden="true" />
@@ -176,10 +178,10 @@
           :title="filters.status ? `状态：${filters.status}` : '全部状态'"
         >
           <option value="">全部状态</option>
-          <option value="success">success</option>
-          <option value="failed">failed</option>
-          <option value="skipped">skipped</option>
-          <option value="running">running</option>
+          <option value="success">成功</option>
+          <option value="failed">失败</option>
+          <option value="skipped">跳过</option>
+          <option value="running">运行中</option>
         </select>
         <!-- col 9 + col 10 span: log level chips -->
         <span class="rt-finp-chips rt-log-chips">
@@ -287,7 +289,23 @@ const detailLoading = ref(false);
 const detailErr = ref("");
 
 const items = computed(() => loadedItems.value);
-const nodeOptions = computed(() => resp.value?.node_ids ?? []);
+const nodeOptions = computed(() => {
+  const opts = resp.value?.node_options;
+  if (Array.isArray(opts) && opts.length > 0) {
+    return opts.map((it) => ({
+      node_id: it.node_id,
+      node_name: it.node_name || it.node_id,
+    }));
+  }
+  const ids = resp.value?.node_ids ?? [];
+  return ids.map((nid) => ({ node_id: nid, node_name: nid }));
+});
+const selectedNodeOptionLabel = computed(() => {
+  const selected = filters.node_id?.trim();
+  if (!selected) return "";
+  const hit = nodeOptions.value.find((x) => x.node_id === selected);
+  return hit?.node_name || selected;
+});
 
 const hasNext = computed(() => {
   // Pagination is by root subtree. The next page starts at offset =
@@ -510,6 +528,7 @@ const linkRows = computed<ExecutionLinkRow[]>(() => {
       isLast: r.isLast,
       guides: r.guides,
       nodeId: r.node_id,
+      nodeName: r.node_name ?? "",
       nodeType: String(r.node_type),
       scopeKey: r.scope_key || "",
       startedDisplay: formatSpanStarted(r.started_at),

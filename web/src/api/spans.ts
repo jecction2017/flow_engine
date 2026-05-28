@@ -34,6 +34,7 @@ export type SpanLogEntry = {
 /** Direct-child summary projected onto the parent span. */
 export type SpanChildSummary = {
   node_id: string;
+  node_name?: string | null;
   duration_ms: number | null;
   status: SpanStatus;
 };
@@ -44,6 +45,7 @@ export type SpanSummary = {
   test_run_id: number | null;
   flow_code: string;
   node_id: string;
+  node_name?: string | null;
   node_type: SpanNodeType;
   span_seq: number;
   parent_span_id: number | null;
@@ -101,6 +103,8 @@ export type SpansListResponse = {
   truncated: SpansTruncated;
   /** Distinct node_ids of the run — populates the filter dropdown. */
   node_ids: string[];
+  /** Node filter options carrying both id (value) and display name (label). */
+  node_options?: Array<{ node_id: string; node_name: string }>;
   /** Echo of the request flag, so the UI can keep its toggle in sync. */
   include_descendants: boolean;
 };

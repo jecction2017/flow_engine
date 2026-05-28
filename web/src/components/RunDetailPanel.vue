@@ -5,28 +5,32 @@
         <span class="rd-id mono">{{ runDisplayLabel }}</span>
         <span class="rd-flow">{{ flowLabelById(detail.flow_code) }}</span>
         <span class="rd-ver">v{{ detail.ver_no }}</span>
-        <span class="badge mode">{{ detail.mode }}</span>
-        <span v-if="detail.schedule_type" class="badge sched">{{ detail.schedule_type }}</span>
-        <span class="badge" :class="statusBadgeClass(detail.status)">{{ detail.status }}</span>
+        <span class="badge mode" :title="detail.mode">{{ modeLabel(detail.mode) }}</span>
+        <span v-if="detail.schedule_type" class="badge sched" :title="detail.schedule_type">
+          {{ scheduleTypeLabel(detail.schedule_type) }}
+        </span>
+        <span class="badge" :class="statusBadgeClass(detail.status)" :title="detail.status">
+          {{ runStatusLabel(detail.status) }}
+        </span>
         <span v-if="elapsedText" class="muted">· {{ elapsedText }}</span>
       </div>
       <div class="rd-meta">
-        <span v-if="detail.deployment_id" class="muted">deployment #{{ detail.deployment_id }}</span>
-        <span v-if="detail.test_batch_id" class="muted">batch #{{ detail.test_batch_id }}</span>
-        <span v-if="detail.worker_id" class="muted">worker {{ detail.worker_id }}</span>
-        <span v-if="detail.started_at" class="muted" :title="detail.started_at">started {{ formatTs(detail.started_at) }}</span>
-        <span v-if="detail.finished_at" class="muted" :title="detail.finished_at">finished {{ formatTs(detail.finished_at) }}</span>
+        <span v-if="detail.deployment_id" class="muted">部署 #{{ detail.deployment_id }}</span>
+        <span v-if="detail.test_batch_id" class="muted">批次 #{{ detail.test_batch_id }}</span>
+        <span v-if="detail.worker_id" class="muted">工作进程 {{ detail.worker_id }}</span>
+        <span v-if="detail.started_at" class="muted" :title="detail.started_at">开始 {{ formatTs(detail.started_at) }}</span>
+        <span v-if="detail.finished_at" class="muted" :title="detail.finished_at">结束 {{ formatTs(detail.finished_at) }}</span>
       </div>
       <div v-if="hasCounters" class="rd-counters">
         <div class="counter" :title="`累计触发 ${detail.span_count ?? 0} 次 Span（含未采样）`">
-          <span class="counter-lbl">span_count</span>
+          <span class="counter-lbl">Span 总数</span>
           <span class="counter-val mono">{{ formatNum(detail.span_count) }}</span>
         </div>
         <div
           class="counter"
           :title="`实际写库 ${detail.sampled_span_count ?? 0} 条；采样率 ${sampleRatePct}`"
         >
-          <span class="counter-lbl">sampled</span>
+          <span class="counter-lbl">已采样</span>
           <span class="counter-val mono">{{ formatNum(detail.sampled_span_count) }}</span>
           <span v-if="sampleRatePct" class="counter-rate">({{ sampleRatePct }})</span>
         </div>
@@ -59,8 +63,8 @@
 
     <section v-if="activeTab === 'overview' && isDeployRun" class="rd-section">
       <div class="rd-section-head">
-        <span>节点聚合统计（{{ scheduleLabel }}）</span>
-        <span class="muted small">实时窗口聚合，5min 桶滚动写入</span>
+        <span>节点聚合统计（{{ scheduleTypeLabel(scheduleLabel) }}）</span>
+        <span class="muted small">实时窗口聚合，按 5 分钟桶滚动写入</span>
       </div>
       <MetricsSummary
         :deploy-run-id="detail.id"
@@ -75,22 +79,22 @@
         :key="`deploy-${detail.id}-${drillNodeKey}`"
         :page-size="50"
         :initial-node-id="drillNodeId"
-        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与 attributes，与试运行时间线一致"
+        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与属性（attributes），与试运行时间线一致"
       />
       <SpansExplorer
         v-else
         :test-run-id="detail.id"
         :key="`test-${detail.id}`"
         :page-size="50"
-        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与 attributes，与试运行时间线一致"
+        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与属性（attributes），与试运行时间线一致"
       />
     </template>
 
     <section v-if="evaluationBlock && activeTab === 'evaluation'" class="rd-section">
       <div class="rd-section-head">
-        <span>评估结果（assertions）</span>
+        <span>评估结果（断言）</span>
         <span class="badge" :class="evaluationBlock.verdict === 'pass' ? 'ok' : 'bad'">
-          {{ evaluationBlock.verdict }}
+          {{ verdictLabel(evaluationBlock.verdict) }}
         </span>
       </div>
       <p v-if="evaluationBlock.reason" class="muted small pad">{{ evaluationBlock.reason }}</p>
@@ -102,7 +106,7 @@
           :class="{ ok: rule.pass, bad: !rule.pass }"
         >
           <span class="mono">{{ rule.id }}</span>
-          <span>{{ rule.pass ? "pass" : "fail" }}</span>
+          <span>{{ rule.pass ? "通过" : "失败" }}</span>
           <span v-if="rule.message" class="muted">{{ rule.message }}</span>
         </li>
       </ul>
@@ -111,7 +115,7 @@
     <section v-if="activeTab === 'result' && hasGlobalNs" class="rd-section">
       <div class="rd-section-head">
         <span>运行结果上下文（global_ns）</span>
-        <InfoTip text="流程运行结束时的全局命名空间快照（已剔除 dictionary），与试运行结果中的 global_ns 一致。" />
+        <InfoTip text="流程运行结束时的全局命名空间快照（已剔除字典 dictionary），与试运行结果中的 global_ns 一致。" />
       </div>
       <ReadonlyJsonEditor :model-value="globalNsText" :default-height="240" :min-height="120" />
     </section>
@@ -259,6 +263,44 @@ function statusBadgeClass(st: string): string {
   if (st === "terminated") return "warn";
   if (st === "running") return "running";
   return "info";
+}
+
+function runStatusLabel(st: string | null | undefined): string {
+  const s = (st ?? "").trim().toLowerCase();
+  if (!s) return "—";
+  if (s === "completed") return "已完成";
+  if (s === "failed") return "失败";
+  if (s === "terminated") return "已终止";
+  if (s === "running") return "运行中";
+  if (s === "queued") return "排队中";
+  return st ?? "—";
+}
+
+function modeLabel(mode: string | null | undefined): string {
+  const s = (mode ?? "").trim().toUpperCase();
+  if (!s) return "—";
+  if (s === "DEBUG") return "调试";
+  if (s === "PROD" || s === "PRODUCTION") return "生产";
+  if (s === "TEST") return "测试";
+  return mode ?? "—";
+}
+
+function scheduleTypeLabel(v: string | null | undefined): string {
+  const s = (v ?? "").trim().toLowerCase();
+  if (!s) return "—";
+  if (s === "deployment") return "部署";
+  if (s === "once") return "单次";
+  if (s === "manual") return "手动";
+  if (s === "cron") return "定时";
+  return v ?? "—";
+}
+
+function verdictLabel(v: string | null | undefined): string {
+  const s = (v ?? "").trim().toLowerCase();
+  if (!s) return "—";
+  if (s === "pass") return "通过";
+  if (s === "fail") return "失败";
+  return v ?? "—";
 }
 
 function formatNum(n: number | null | undefined): string {

@@ -130,6 +130,7 @@ export type LogEntry = {
 
 export type NodeRunInfo = {
   node_id: string;
+  node_name?: string | null;
   order: number;
   first_seen_ms: number;
   started_ms: number | null;

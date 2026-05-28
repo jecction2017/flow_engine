@@ -60,7 +60,7 @@
               {{ collapsed.has(row.key) ? "▶" : "▼" }}
             </button>
             <span v-else class="rt-caret-spacer" />
-            <span class="rt-id" :title="row.nodeId">{{ row.nodeId }}</span>
+            <span class="rt-id" :title="nodeTitle(row)">{{ nodeDisplayText(row) }}</span>
             <span
               v-for="(b, bi) in row.metaBadges ?? []"
               :key="bi"
@@ -120,6 +120,7 @@ export type ExecutionLinkRow = {
   isLast: boolean;
   guides: boolean[];
   nodeId: string;
+  nodeName?: string;
   nodeType: string;
   scopeKey: string;
   startedDisplay: string;
@@ -204,8 +205,10 @@ function onRowClick(row: ExecutionLinkRow): void {
 }
 
 function rowTitle(row: ExecutionLinkRow): string {
+  const nodeDisplay = nodeDisplayText(row);
+  const nodeLabel = nodeDisplay === row.nodeId ? nodeDisplay : `${nodeDisplay} (${row.nodeId})`;
   const parts = [
-    `${row.orderDisplay}  ${row.nodeId}`,
+    `${row.orderDisplay}  ${nodeLabel}`,
     `开始: ${row.startedDisplay}`,
     `耗时: ${row.durationDisplay}`,
     `状态: ${row.statusLabel}`,
@@ -215,6 +218,16 @@ function rowTitle(row: ExecutionLinkRow): string {
   }
   if (row.logCount > 0) parts.push(`日志: ${row.logCount}`);
   return parts.join("\n");
+}
+
+function nodeDisplayText(row: ExecutionLinkRow): string {
+  const name = row.nodeName?.trim();
+  return name && name.length > 0 ? name : row.nodeId;
+}
+
+function nodeTitle(row: ExecutionLinkRow): string {
+  const name = row.nodeName?.trim();
+  return name && name.length > 0 ? `${name} (${row.nodeId})` : row.nodeId;
 }
 </script>
 

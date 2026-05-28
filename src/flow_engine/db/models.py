@@ -1459,6 +1459,12 @@ class FeRunSpan(_AuditCols, Base):
         server_default=text("''"),
         comment="产生 Span 的节点 id（历史 flow_root 行用 '__flow_root__'，已废弃）",
     )
+    node_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        server_default=text("''"),
+        comment="节点展示名称（冗余快照，便于执行链路直接展示）",
+    )
     node_type: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

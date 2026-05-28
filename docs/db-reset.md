@@ -45,6 +45,16 @@ ALTER TABLE fe_deploy_run
   (`on_start` / `on_complete` / `on_failure`). After pulling model changes, run `flow-db apply`
   on an existing DB only if your MySQL user can `ALTER TABLE`; otherwise use drop & recreate below.
 
+- `fe_run_span.node_name` (VARCHAR(255)): node display-name snapshot for execution-link rendering.
+  Existing DBs need manual DDL:
+
+```sql
+ALTER TABLE fe_run_span
+  ADD COLUMN node_name VARCHAR(255) NOT NULL DEFAULT ''
+  COMMENT '节点展示名称（冗余快照，便于执行链路直接展示）'
+  AFTER node_id;
+```
+
 ### Drop & recreate schema (recommended)
 
 Option A (fastest): drop the whole database and recreate it.

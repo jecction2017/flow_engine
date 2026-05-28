@@ -35,6 +35,7 @@ def _insert_span(
     *,
     deploy_run_id: int,
     node_id: str,
+    node_name: str | None = None,
     node_type: str = "task",
     parent_span_id: int | None = None,
     span_seq: int = 0,
@@ -48,6 +49,7 @@ def _insert_span(
         deploy_run_id=deploy_run_id,
         flow_code="t",
         node_id=node_id,
+        node_name=node_name if node_name is not None else node_id,
         node_type=node_type,
         span_seq=span_seq,
         parent_span_id=parent_span_id,
@@ -324,3 +326,25 @@ def test_matched_cap_surfaces_truncated_flag(monkeypatch) -> None:
     # then pulled in by ancestor expansion → 4 spans total on this page.
     assert page["total_matched"] == 3
     assert len(page["items"]) == 4
+
+
+def test_node_options_include_display_names() -> None:
+    run_id = 1006
+    root = _insert_span(
+        deploy_run_id=run_id,
+        node_id="root_task",
+        node_name="根节点",
+    )
+    _insert_span(
+        deploy_run_id=run_id,
+        node_id="child_task",
+        node_name="子节点",
+        parent_span_id=root,
+        span_seq=1,
+    )
+
+    page = span_persistence.list_spans_forest(deploy_run_id=run_id, limit=50)
+    options = page.get("node_options") or []
+    by_id = {it["node_id"]: it["node_name"] for it in options}
+    assert by_id["root_task"] == "根节点"
+    assert by_id["child_task"] == "子节点"

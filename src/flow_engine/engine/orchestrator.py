@@ -132,6 +132,7 @@ class NodeRunInfo:
     """
 
     node_id: str
+    node_name: str
     order: int
     first_seen_ms: int
     started_ms: int | None = None
@@ -190,6 +191,7 @@ class NodeRunInfo:
     def to_dict(self) -> dict[str, Any]:
         return {
             "node_id": self.node_id,
+            "node_name": self.node_name,
             "order": self.order,
             "first_seen_ms": self.first_seen_ms,
             "started_ms": self.started_ms,
@@ -265,6 +267,25 @@ class FlowRuntime:
         self.obs: ObservabilityBackend = obs or NullBackend()
         self.flow_code: str = flow_code or ""
         self._primary_failure: FailureReport | None = None
+        self._node_name_by_id: dict[str, str] = self._build_node_name_map(flow)
+
+    @staticmethod
+    def _build_node_name_map(flow: FlowDefinition) -> dict[str, str]:
+        out: dict[str, str] = {}
+
+        def walk(members: list[FlowMember]) -> None:
+            for m in members:
+                nid = getattr(m, "id", "")
+                if not isinstance(nid, str) or not nid:
+                    continue
+                name = getattr(m, "name", "") or ""
+                node_name = name.strip() if isinstance(name, str) and name.strip() else nid
+                out[nid] = node_name
+                if isinstance(m, (LoopNode, SubflowNode)):
+                    walk(m.children)
+
+        walk(flow.nodes)
+        return out
 
     def _nid(self, m: FlowMember) -> str:
         # id 是节点唯一逻辑主键；模型层已保证非空，此处无需回落 name。
@@ -318,6 +339,7 @@ class FlowRuntime:
         nid: str,
         st: NodeState,
         *,
+        node_name: str | None = None,
         parent_id: str | None = None,
         parent_order: int | None = None,
         force_new: bool = False,
@@ -347,8 +369,14 @@ class FlowRuntime:
             ):
                 start_new = True
             if start_new:
+                resolved_name = (
+                    node_name.strip()
+                    if isinstance(node_name, str) and node_name.strip()
+                    else self._node_name_by_id.get(nid, nid)
+                )
                 info = NodeRunInfo(
                     node_id=nid,
+                    node_name=resolved_name,
                     order=len(self._node_runs_list),
                     first_seen_ms=t,
                     final_state=st,
@@ -452,6 +480,7 @@ class FlowRuntime:
     def _open_span(
         self,
         node_id: str,
+        node_name: str,
         node_type: str,
         *,
         scope_key: str = "",
@@ -476,6 +505,7 @@ class FlowRuntime:
             run_ref=ref,
             flow_code=self.flow_code,
             node_id=node_id,
+            node_name=node_name,
             node_type=node_type,
             started_at=datetime.now(timezone.utc),
             scope_key=scope_key,
@@ -666,6 +696,7 @@ class FlowRuntime:
                 out.append(
                     {
                         "node_id": cid,
+                        "node_name": info.node_name,
                         "duration_ms": dur,
                         "status": final,
                     }
@@ -1227,7 +1258,7 @@ class FlowRuntime:
         st = self._strategy_for(node)
 
         if await_result:
-            task_span = self._open_span(nid, "task")
+            task_span = self._open_span(nid, self._node_name(node), "task")
             span_token = (
                 self._push_span(task_span) if task_span != SPAN_UNSAMPLED else None
             )
@@ -1293,7 +1324,7 @@ class FlowRuntime:
 
         async def bg() -> None:
             self._mark(nid, NodeState.RUNNING)
-            task_span = self._open_span(nid, "task")
+            task_span = self._open_span(nid, self._node_name(node), "task")
             span_token = (
                 self._push_span(task_span) if task_span != SPAN_UNSAMPLED else None
             )
@@ -1927,7 +1958,9 @@ class FlowRuntime:
 
             iter_ctx_for_extract = ctx if isolation != "fork" else None
             scope_key = self._extract_scope_key(nid, it, ctx, iter_ctx_for_extract)
-            iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
+            iter_span = self._open_span(
+                nid, self._node_name(node), "loop_iter", scope_key=scope_key
+            )
             iter_span_token = (
                 self._push_span(iter_span) if iter_span != SPAN_UNSAMPLED else None
             )
@@ -2140,7 +2173,9 @@ class FlowRuntime:
                         lp_row.iterations = total_iters
                 iter_ctx = ctx.fork(clone_global=(isolation == "fork"))
                 scope_key = self._extract_scope_key(nid, raw_item, ctx, iter_ctx)
-                iter_span = self._open_span(nid, "loop_iter", scope_key=scope_key)
+                iter_span = self._open_span(
+                    nid, self._node_name(node), "loop_iter", scope_key=scope_key
+                )
                 iter_span_token = (
                     self._push_span(iter_span) if iter_span != SPAN_UNSAMPLED else None
                 )
@@ -2259,7 +2294,7 @@ class FlowRuntime:
                 nid, run_hook_script(hooks.pre_exec, ctx, source="pre_exec")
             )
 
-        sub_span = self._open_span(nid, "subflow")
+        sub_span = self._open_span(nid, self._node_name(node), "subflow")
         span_token = (
             self._push_span(sub_span) if sub_span != SPAN_UNSAMPLED else None
         )

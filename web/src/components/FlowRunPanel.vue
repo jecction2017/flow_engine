@@ -250,7 +250,7 @@
                     <template #secondary="{ row }">
                       <div class="rt-logs-drawer">
                         <div class="rt-logs-head">
-                          <span>{{ row.nodeId }} 日志</span>
+                          <span>{{ row.nodeName || row.nodeId }} 日志</span>
                           <span class="muted">
                             共 {{ logCountsByRunOrder.get(row.key) ?? 0 }} 条
                             <template v-if="levelFilter.size > 0">· 已过滤 {{ filteredLogsFor(row.key).length }} 条</template>
@@ -793,6 +793,7 @@ const trialLinkRows = computed<ExecutionLinkRow[]>(() => {
       isLast: tr.isLast,
       guides: tr.guides,
       nodeId: tr.node_id,
+      nodeName: tr.node_name ?? "",
       nodeType: "",
       scopeKey: "",
       startedDisplay: tr.started_ms != null ? formatOffset(tr.started_ms) : "—",

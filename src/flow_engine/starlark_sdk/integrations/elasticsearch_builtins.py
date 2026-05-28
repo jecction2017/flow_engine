@@ -19,7 +19,7 @@ _ES_SUPPRESSED: dict[str, Any] = {
     PythonBuiltinSpec(
         id="python://elasticsearch/search",
         starlark_name="es_search",
-        category="integration",
+        category="db_read",
         summary="Elasticsearch search（只读）",
         signature=(
             BuiltinArgSpec(name="instance", type="str"),
@@ -62,7 +62,7 @@ def es_search(
     PythonBuiltinSpec(
         id="python://elasticsearch/mget",
         starlark_name="es_mget",
-        category="integration",
+        category="db_read",
         summary="Elasticsearch mget（只读）",
         signature=(
             BuiltinArgSpec(name="instance", type="str"),
@@ -83,7 +83,7 @@ def es_mget(instance: str, index: str, ids: list[Any]) -> dict[str, Any]:
     PythonBuiltinSpec(
         id="python://elasticsearch/count",
         starlark_name="es_count",
-        category="integration",
+        category="db_read",
         summary="Elasticsearch count（只读）",
         signature=(
             BuiltinArgSpec(name="instance", type="str"),
@@ -109,7 +109,7 @@ def es_count(
     PythonBuiltinSpec(
         id="python://elasticsearch/scroll",
         starlark_name="es_scroll",
-        category="integration",
+        category="db_read",
         summary="Elasticsearch scroll 查询（只读，受 max_scroll_pages 限制）",
         signature=(
             BuiltinArgSpec(name="instance", type="str"),

@@ -40,6 +40,7 @@ def batch_insert_spans(spans: Iterable[dict[str, Any]]) -> int:
                 test_run_id=spec.get("test_run_id"),
                 flow_code=spec.get("flow_code", "") or "",
                 node_id=spec.get("node_id", "") or "",
+                node_name=spec.get("node_name", "") or "",
                 node_type=spec.get("node_type", "task") or "task",
                 span_seq=int(spec.get("span_seq", 0) or 0),
                 parent_span_id=spec.get("parent_span_id"),
@@ -108,6 +109,7 @@ def _row_to_summary(r: FeRunSpan) -> dict[str, Any]:
         "test_run_id": int(r.test_run_id) if r.test_run_id is not None else None,
         "flow_code": r.flow_code,
         "node_id": r.node_id,
+        "node_name": r.node_name or "",
         "node_type": r.node_type,
         "span_seq": int(r.span_seq or 0),
         "parent_span_id": int(r.parent_span_id) if r.parent_span_id is not None else None,
@@ -521,20 +523,34 @@ def list_spans_forest(
             )
         )
 
-        # Step G: distinct node_ids of the run (drives the filter dropdown).
-        # Use unfiltered run scope so the dropdown surfaces ALL node_ids the
-        # user could pick, not just those currently matching.
-        node_ids_stmt = (
-            select(FeRunSpan.node_id).distinct()
-        )
-        node_ids_stmt = _apply_run_scope(
-            node_ids_stmt,
+        # Step G: node filter options of the run (node_id + display name).
+        # Keep values keyed by node_id for API filtering semantics while
+        # surfacing node_name for dropdown labels.
+        node_rows_stmt = select(FeRunSpan.node_id, FeRunSpan.node_name)
+        node_rows_stmt = _apply_run_scope(
+            node_rows_stmt,
             deploy_run_id=deploy_run_id,
             test_run_id=test_run_id,
         )
-        node_ids = sorted(
-            {str(x) for x in s.execute(node_ids_stmt).scalars().all() if x}
-        )
+        node_name_by_id: dict[str, str] = {}
+        for raw_id, raw_name in s.execute(node_rows_stmt).all():
+            nid = str(raw_id or "").strip()
+            if not nid:
+                continue
+            nname = str(raw_name or "").strip()
+            existing = node_name_by_id.get(nid, "")
+            if nname and (not existing or existing == nid):
+                node_name_by_id[nid] = nname
+            elif nid not in node_name_by_id:
+                node_name_by_id[nid] = nid
+        node_ids = sorted(node_name_by_id.keys())
+        node_options = [
+            {
+                "node_id": nid,
+                "node_name": node_name_by_id.get(nid, nid),
+            }
+            for nid in node_ids
+        ]
 
         # Serialize rows while the session is still open. ``_row_to_summary``
         # touches mapped attributes; once the session closes, detached
@@ -558,6 +574,7 @@ def list_spans_forest(
         "total": legacy_total,
         "truncated": truncated,
         "node_ids": node_ids,
+        "node_options": node_options,
         "include_descendants": bool(include_descendants),
     }
 

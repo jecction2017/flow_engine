@@ -81,6 +81,7 @@ class SpanRecord:
     run_ref: RunRef
     flow_code: str
     node_id: str
+    node_name: str
     node_type: str                       # task | loop_iter | subflow
     started_at: datetime
     span_seq: int = 0                    # filled by backend

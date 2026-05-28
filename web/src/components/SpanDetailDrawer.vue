@@ -12,7 +12,7 @@
       </div>
       <div class="sd-meta">
         <span v-if="span.scope_key" class="muted" :title="`scope_key=${span.scope_key}`">
-          scope <code class="mono">{{ span.scope_key }}</code>
+          业务键 <code class="mono">{{ span.scope_key }}</code>
         </span>
         <span v-if="span.started_at" class="muted" :title="span.started_at">
           开始 {{ formatTs(span.started_at) }}
@@ -22,7 +22,7 @@
         </span>
         <span v-if="span.duration_ms != null" class="muted">耗时 {{ formatDuration(span.duration_ms) }}</span>
         <span v-if="!span.sampled" class="badge warn" title="未达到采样阈值，但因失败被强制留存">
-          unsampled
+          未采样
         </span>
       </div>
       <div v-if="parentSpanId != null" class="sd-parent">
@@ -123,7 +123,7 @@
 
     <section v-if="hasAttrs" class="sd-section">
       <div class="sd-section-head">
-        <span>attributes</span>
+        <span>属性（attributes）</span>
       </div>
       <div class="sd-json-wrap">
         <ReadonlyJsonEditor :model-value="attributesText" :default-height="220" :min-height="120" />
