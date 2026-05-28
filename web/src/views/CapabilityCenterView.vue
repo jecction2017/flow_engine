@@ -414,10 +414,17 @@
                     <span class="name-suffix mono">.star</span>
                   </div>
                   <span v-if="effectiveUserModule" class="chip chip-mod">{{ effectiveUserModule }}</span>
-                  <span class="user-ws-load-wrap" :title="userLoadRefDisplay">
+                  <button
+                    type="button"
+                    class="user-ws-load-wrap user-ws-load-badge"
+                    :class="{ copied: copiedUserLoadRef }"
+                    :title="copiedUserLoadRef ? '引入语句已复制' : '复制引入语句'"
+                    @click="copyUserLoadRef"
+                  >
                     <span class="user-ws-load-lbl">引入：</span>
                     <span class="user-ws-load-ref mono">{{ userLoadRefDisplay }}</span>
-                  </span>
+                    <span class="copy-icon" aria-hidden="true"></span>
+                  </button>
                 </div>
                 <p
                   v-if="scriptNameValidationMessage"
@@ -432,10 +439,17 @@
                 <div class="user-ws-title-row">
                   <h2 class="detail-title mono">{{ displayScriptFileName }}</h2>
                   <span v-if="effectiveUserModule" class="chip chip-mod">{{ effectiveUserModule }}</span>
-                  <span class="user-ws-load-wrap" :title="userLoadRefDisplay">
+                  <button
+                    type="button"
+                    class="user-ws-load-wrap user-ws-load-badge"
+                    :class="{ copied: copiedUserLoadRef }"
+                    :title="copiedUserLoadRef ? '引入语句已复制' : '复制引入语句'"
+                    @click="copyUserLoadRef"
+                  >
                     <span class="user-ws-load-lbl">引入：</span>
                     <span class="user-ws-load-ref mono">{{ userLoadRefDisplay }}</span>
-                  </span>
+                    <span class="copy-icon" aria-hidden="true"></span>
+                  </button>
                 </div>
               </div>
               <div class="user-ws-toolbar-actions">
@@ -715,7 +729,9 @@ const saving = ref(false);
 const creatingModule = ref(false);
 const error = ref("");
 const saveMsg = ref<SaveMsg | null>(null);
+const copiedUserLoadRef = ref(false);
 let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
+let copiedUserLoadRefTimer: ReturnType<typeof setTimeout> | null = null;
 
 function showSaveMsg(type: "ok" | "err", text: string) {
   saveMsg.value = { type, text };
@@ -1314,6 +1330,22 @@ async function copyInternalLoad() {
   }
 }
 
+async function copyUserLoadRef() {
+  const text = userLoadRefDisplay.value.trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedUserLoadRef.value = true;
+    if (copiedUserLoadRefTimer) clearTimeout(copiedUserLoadRefTimer);
+    copiedUserLoadRefTimer = setTimeout(() => {
+      copiedUserLoadRef.value = false;
+      copiedUserLoadRefTimer = null;
+    }, 1200);
+  } catch {
+    copiedUserLoadRef.value = false;
+  }
+}
+
 watch(filteredPythonGroups, (groups) => {
   syncExpandedModules(expandedModules, groups.map((g) => g.module));
   const sel = selectedPythonFn.value;
@@ -1513,6 +1545,10 @@ onUnmounted(() => {
   if (saveMsgTimer) {
     clearTimeout(saveMsgTimer);
     saveMsgTimer = null;
+  }
+  if (copiedUserLoadRefTimer) {
+    clearTimeout(copiedUserLoadRefTimer);
+    copiedUserLoadRefTimer = null;
   }
 });
 </script>
@@ -2462,6 +2498,28 @@ onUnmounted(() => {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 }
 
+.user-ws-load-badge {
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.user-ws-load-badge:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+  transform: translateY(-0.5px);
+}
+
+.user-ws-load-badge.copied {
+  border-color: color-mix(in srgb, #10b981 45%, transparent);
+  background: color-mix(in srgb, #10b981 12%, #ffffff);
+  color: #047857;
+}
+
+.user-ws-load-badge:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 1px;
+}
+
 .user-ws-load-lbl {
   flex-shrink: 0;
   font-size: 9px;
@@ -2477,6 +2535,37 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.copy-icon {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin-left: 6px;
+}
+
+.copy-icon::before,
+.copy-icon::after {
+  content: "";
+  position: absolute;
+  border: 1.2px solid currentColor;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.copy-icon::before {
+  width: 8px;
+  height: 8px;
+  left: 3px;
+  top: 0;
+}
+
+.copy-icon::after {
+  width: 8px;
+  height: 8px;
+  left: 0;
+  top: 3px;
 }
 
 .user-ws-head--new .user-ws-load-wrap {
