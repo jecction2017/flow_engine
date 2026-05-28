@@ -58,6 +58,13 @@ def is_module_placeholder_rel(rel_path: str) -> bool:
     return rel_path == MODULE_PLACEHOLDER_REL
 
 
+def _invalidate_loader_cache_for_user_script(tenant: str, rel_path: str | None = None) -> None:
+    # Delayed import avoids loader -> store circular imports.
+    from flow_engine.starlark_sdk.loader import invalidate_user_script_cache
+
+    invalidate_user_script_cache(tenant, rel_path)
+
+
 class UserScriptStore:
     """MySQL-backed user Starlark script store (fe_user_script)."""
 
@@ -178,6 +185,7 @@ class UserScriptStore:
                 row.content = content
                 row.description = desc
                 row.export_functions = exports
+        _invalidate_loader_cache_for_user_script(tenant, rel_path)
         if not is_module_placeholder_rel(rel_path) and self.exists(tenant, MODULE_PLACEHOLDER_REL):
             self.delete_script(tenant, MODULE_PLACEHOLDER_REL)
 
@@ -197,7 +205,8 @@ class UserScriptStore:
             if row is None:
                 return False
             row.deleted_at = now
-            return True
+        _invalidate_loader_cache_for_user_script(tenant, rel_path)
+        return True
 
     def delete_module(self, tenant: str) -> int:
         """Soft-delete all scripts in a module (tenant). Returns count deleted."""
@@ -212,7 +221,10 @@ class UserScriptStore:
             rows = s.execute(stmt).scalars().all()
             for row in rows:
                 row.deleted_at = now
-            return len(rows)
+            deleted = len(rows)
+        if deleted:
+            _invalidate_loader_cache_for_user_script(tenant)
+        return deleted
 
 
 def _record_from_row(row: FeUserScript) -> dict[str, Any]:

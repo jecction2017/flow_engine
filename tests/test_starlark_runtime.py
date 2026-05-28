@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from flow_engine.engine.context import ContextStack
+from flow_engine.starlark_sdk.loader import clear_loader_cache
 from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import (
     debug_task_script,
@@ -10,6 +11,7 @@ from flow_engine.starlark_sdk.runtime import (
     runtime_stats,
     warmup_runtime,
 )
+from flow_engine.starlark_sdk.user_script_store import UserScriptStore
 
 
 def test_registry_includes_declarative_python_builtins() -> None:
@@ -139,3 +141,21 @@ def is_match():
     assert control_flow is None
     assert result == {"feature": {"is_match": True}}
     assert logs == []
+
+
+def test_user_script_update_invalidates_loader_cache_immediately() -> None:
+    clear_loader_cache()
+    store = UserScriptStore()
+    tenant = "cache_fix"
+    rel_path = "demo/cache_test.star"
+    uri = f"user://{tenant}/{rel_path}"
+    script = f'load("{uri}", "value")\n{{"v": value()}}\n'
+
+    store.put_script(tenant, rel_path, "def value():\n    return 1\n")
+    first, _ = eval_task_script(script, ContextStack(), {})
+    assert first == {"v": 1}
+
+    # Updating the same user module should take effect on the very next eval.
+    store.put_script(tenant, rel_path, "def value():\n    return 2\n")
+    second, _ = eval_task_script(script, ContextStack(), {})
+    assert second == {"v": 2}

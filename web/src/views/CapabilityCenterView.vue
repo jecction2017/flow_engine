@@ -40,6 +40,9 @@
     </header>
 
     <p v-if="error" class="err">{{ error }}</p>
+    <p v-if="saveMsg" class="save-msg" :class="saveMsg.type" role="status" aria-live="polite">
+      {{ saveMsg.text }}
+    </p>
 
     <div v-if="deleteDialog" class="confirm-mask" @click.self="closeDeleteDialog">
       <div
@@ -657,6 +660,8 @@ type DeleteDialog =
   | { type: "module"; module: string; scriptCount: number }
   | { type: "script"; path: string };
 
+type SaveMsg = { type: "ok" | "err"; text: string };
+
 const activeSegment = ref<Segment>("user");
 const registry = ref<RegistryDoc | null>(null);
 const scripts = ref<string[]>([]);
@@ -709,6 +714,17 @@ const userDebugPanelRef = shallowRef<InstanceType<typeof DebugPanel> | null>(nul
 const saving = ref(false);
 const creatingModule = ref(false);
 const error = ref("");
+const saveMsg = ref<SaveMsg | null>(null);
+let saveMsgTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showSaveMsg(type: "ok" | "err", text: string) {
+  saveMsg.value = { type, text };
+  if (saveMsgTimer) clearTimeout(saveMsgTimer);
+  saveMsgTimer = setTimeout(() => {
+    saveMsg.value = null;
+    saveMsgTimer = null;
+  }, 2600);
+}
 
 const scriptPathValid = computed(() => USER_SCRIPT_PATH_RE.test(scriptPath.value.trim()));
 
@@ -1471,8 +1487,10 @@ async function save() {
     editScriptBase.value = userScriptBaseName(target);
     selectedUserModule.value = userScriptModuleKey(target);
     resetUserDescEditing();
+    showSaveMsg("ok", !isNew && target !== current ? `脚本已保存并重命名为 ${target}` : "脚本已保存");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    showSaveMsg("err", "保存失败，请查看错误信息");
   } finally {
     saving.value = false;
   }
@@ -1492,6 +1510,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("pointerdown", onDocPointerDown, true);
+  if (saveMsgTimer) {
+    clearTimeout(saveMsgTimer);
+    saveMsgTimer = null;
+  }
 });
 </script>
 
@@ -1652,6 +1674,25 @@ onUnmounted(() => {
   color: #b91c1c;
   background: color-mix(in srgb, #fecaca 35%, transparent);
   border-bottom: 1px solid color-mix(in srgb, #f87171 30%, transparent);
+}
+
+.save-msg {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid transparent;
+}
+
+.save-msg.ok {
+  color: #166534;
+  background: color-mix(in srgb, #bbf7d0 32%, transparent);
+  border-bottom-color: color-mix(in srgb, #4ade80 30%, transparent);
+}
+
+.save-msg.err {
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 35%, transparent);
+  border-bottom-color: color-mix(in srgb, #f87171 30%, transparent);
 }
 
 .body {

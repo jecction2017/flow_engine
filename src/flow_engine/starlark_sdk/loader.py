@@ -100,6 +100,21 @@ class ModuleLoaderCache:
             self._hits = 0
             self._misses = 0
 
+    def invalidate(self, module_id: str) -> bool:
+        with self._lock:
+            return self._cache.pop(module_id, None) is not None
+
+    def invalidate_user_module(self, tenant: str, rel_path: str | None = None) -> int:
+        prefix = f"user://{tenant.strip('/')}/"
+        with self._lock:
+            if rel_path is not None:
+                target = prefix + rel_path.lstrip("/")
+                return 1 if self._cache.pop(target, None) is not None else 0
+            targets = [k for k in self._cache if k.startswith(prefix)]
+            for key in targets:
+                self._cache.pop(key, None)
+            return len(targets)
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             total = self._hits + self._misses
@@ -129,6 +144,14 @@ def loader_stats() -> dict[str, Any]:
 
 def clear_loader_cache() -> None:
     _LOADER_CACHE.clear()
+
+
+def invalidate_module_cache(module_id: str) -> bool:
+    return _LOADER_CACHE.invalidate(module_id)
+
+
+def invalidate_user_script_cache(tenant: str, rel_path: str | None = None) -> int:
+    return _LOADER_CACHE.invalidate_user_module(tenant, rel_path)
 
 
 def dialect_with_load() -> sl.Dialect:
