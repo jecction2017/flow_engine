@@ -14,6 +14,7 @@ def load_registry() -> dict[str, Any]:
     from flow_engine.starlark_sdk import python_builtin_impl as _python_builtin_impl  # noqa: F401
     from flow_engine.starlark_sdk import runtime_builtins as _runtime_builtins  # noqa: F401
     from flow_engine.starlark_sdk import integrations as _integrations  # noqa: F401
+    from flow_engine.starlark_sdk import builtins as _builtins  # noqa: F401
 
     internal_modules: list[dict[str, Any]] = []
     version = "0"

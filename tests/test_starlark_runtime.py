@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import starlark as sl
 
 from flow_engine.engine.context import ContextStack
 from flow_engine.starlark_sdk.loader import clear_loader_cache
@@ -23,10 +24,22 @@ def test_registry_includes_declarative_python_builtins() -> None:
         assert flow_name in names
     assert "regex_match" in names
     assert "resolve" in names
+    for time_name in (
+        "time_now",
+        "time_now_ts",
+        "time_format",
+        "time_parse",
+        "time_convert_tz",
+        "time_add",
+        "time_diff",
+    ):
+        assert time_name in names
 
     by_name = {f["starlark_name"]: f for f in reg["python_functions"]}
     assert by_name["flow_jump"]["attach_mode"] == "flow_control"
     assert by_name["resolve"]["attach_mode"] == "context"
+    assert by_name["time_now"]["id"].startswith("python://time/")
+    assert by_name["time_now"]["category"] == "time"
 
 
 def test_runtime_warmup_and_eval() -> None:
@@ -141,6 +154,52 @@ def is_match():
     assert control_flow is None
     assert result == {"feature": {"is_match": True}}
     assert logs == []
+
+
+def test_time_builtins_eval_happy_path() -> None:
+    script = """
+base_ts = time_parse("2026-05-28 10:00:00")
+fmt = time_format(base_ts, "%Y-%m-%d %H:%M:%S", "UTC")
+tokyo = time_convert_tz("2026-05-28 10:00:00", "UTC", "+09:00")
+added = time_add(base_ts, hours=1)
+diff_s = time_diff(base_ts, added)
+diff_h = time_diff(base_ts, added, out="hours")
+now_s = time_now()
+now_ts = time_now_ts(unit="s")
+{
+    "fmt": fmt,
+    "tokyo": tokyo,
+    "added": added,
+    "diff_s": diff_s,
+    "diff_h": diff_h,
+    "now_has_z": now_s.endswith("Z"),
+    "now_ts_type": type(now_ts),
+}
+""".strip()
+    result, logs = eval_task_script(script, ContextStack(), {})
+    assert result["fmt"] == "2026-05-28 10:00:00"
+    assert result["tokyo"] == "2026-05-28 19:00:00"
+    assert result["added"] > 0
+    assert result["diff_s"] == 3600
+    assert result["diff_h"] == 1
+    assert result["now_has_z"] is True
+    assert result["now_ts_type"] == "int"
+    assert logs == []
+
+
+def test_time_builtins_invalid_inputs_raise_errors() -> None:
+    with pytest.raises(sl.StarlarkError, match="invalid timezone"):
+        eval_task_script('{"v": time_parse("2026-05-28 10:00:00", tz="Bad/Zone")}', ContextStack(), {})
+
+    with pytest.raises(sl.StarlarkError, match="unsupported time unit"):
+        eval_task_script('{"v": time_now_ts(unit="minute")}', ContextStack(), {})
+
+    with pytest.raises(sl.StarlarkError, match="does not match format"):
+        eval_task_script(
+            '{"v": time_parse("2026/05/28 10:00:00", layout="%Y-%m-%d %H:%M:%S")}',
+            ContextStack(),
+            {},
+        )
 
 
 def test_user_script_update_invalidates_loader_cache_immediately() -> None:

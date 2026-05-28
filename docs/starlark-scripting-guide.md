@@ -300,7 +300,46 @@ log_debug("detail:", obj)
 
 ---
 
-## 10. 流程控制 builtin（写在 `def` 内）
+## 10. 时间 builtin（默认 UTC）
+
+Starlark 本身没有 `time` / `datetime` 模块，flow_engine 通过 Python builtin 暴露常用时间能力。
+
+### 10.1 函数清单
+
+| 函数 | 说明 |
+|------|------|
+| `time_now()` | 当前 UTC 时间，ISO8601 字符串（毫秒精度，`Z` 后缀） |
+| `time_now_ts(unit="ms")` | 当前 UTC 时间戳（`unit` 仅支持 `s` / `ms`） |
+| `time_format(ts, layout="%Y-%m-%d %H:%M:%S", tz="UTC", unit="ms")` | 时间戳转字符串 |
+| `time_parse(text, layout="%Y-%m-%d %H:%M:%S", tz="UTC", unit="ms")` | 字符串转 UTC 时间戳 |
+| `time_convert_tz(text, from_tz="UTC", to_tz="UTC", in_layout=..., out_layout=...)` | 时区转换 |
+| `time_add(ts, days=0, hours=0, minutes=0, seconds=0, unit="ms")` | 时间戳偏移 |
+| `time_diff(start_ts, end_ts, unit="ms", out="seconds")` | 差值计算（`out`: `ms/seconds/minutes/hours/days`） |
+
+### 10.2 使用示例
+
+```python
+def build():
+    base = time_parse("2026-05-28 10:00:00")  # 默认按 UTC 解析，返回 ms 时间戳
+    local = time_convert_tz("2026-05-28 10:00:00", "UTC", "+09:00")
+    plus_2h = time_add(base, hours=2)
+    delta_min = time_diff(base, plus_2h, out="minutes")
+    text = time_format(plus_2h, "%Y-%m-%dT%H:%M:%SZ", "UTC")
+    return {"local": local, "delta_min": delta_min, "text": text}
+
+build()
+```
+
+### 10.3 推荐实践
+
+- 脚本内统一使用 UTC（默认值已是 `UTC`），避免跨环境歧义。
+- 仅在展示层做本地化时区转换。
+- 明确传入 `unit`（`s` 或 `ms`），不要依赖隐式猜测。
+- 时区优先使用 IANA 名称（如 `Asia/Shanghai`）；若运行环境缺少时区库，可用 `+08:00` 这类偏移格式。
+
+---
+
+## 11. 流程控制 builtin（写在 `def` 内）
 
 | 函数 | 作用 |
 |------|------|
@@ -313,7 +352,7 @@ log_debug("detail:", obj)
 
 ---
 
-## 11. 完整任务脚本示例
+## 12. 完整任务脚本示例
 
 ```python
 load("internal://lib/helpers.star", "normalize_id")
@@ -343,7 +382,7 @@ build()
 
 ---
 
-## 12. 编写自查清单
+## 13. 编写自查清单
 
 在提交或发布脚本前，可逐项核对：
 
@@ -354,11 +393,12 @@ build()
 5. [ ] 是否在 `for` 循环里修改了正在遍历的同一个 list？
 6. [ ] `when` / `iterable` 是否只有**一行表达式**？
 7. [ ] 任务脚本**最后一行**是否得到 `dict`？
-8. [ ] 修改规则或示例后是否跑过 `pytest tests/test_starlark_dialect_syntax.py -q`？
+8. [ ] 时间函数是否明确了 `unit` 与时区（默认 UTC，展示再本地化）？
+9. [ ] 修改规则或示例后是否跑过 `pytest tests/test_starlark_dialect_syntax.py -q`？
 
 ---
 
-## 13. 相关资源
+## 14. 相关资源
 
 | 资源 | 说明 |
 |------|------|
