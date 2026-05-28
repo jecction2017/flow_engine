@@ -154,6 +154,8 @@ class NodeRunInfo:
     # carries ``source`` to tell them apart; retry attempts get an extra
     # ``attempt`` key (omitted on first run for brevity).
     logs: list[dict[str, Any]] = field(default_factory=list)
+    #: Optional human-readable reason when the row ends in ``SKIPPED``.
+    skip_reason: str | None = None
 
     @property
     def duration_ms(self) -> int | None:
@@ -204,6 +206,7 @@ class NodeRunInfo:
             "execution_count": self.execution_count,
             "transitions": list(self.transitions),
             "logs": list(self.logs),
+            "skip_reason": self.skip_reason,
         }
 
 
@@ -343,6 +346,7 @@ class FlowRuntime:
         parent_id: str | None = None,
         parent_order: int | None = None,
         force_new: bool = False,
+        skip_reason: str | None = None,
     ) -> int:
         """Update or create the latest ``NodeRunInfo`` for ``nid``; return its ``order``.
 
@@ -388,6 +392,12 @@ class FlowRuntime:
                 info = last
                 assert info is not None
             info.final_state = st
+            if st == NodeState.SKIPPED:
+                info.skip_reason = (
+                    skip_reason.strip() if isinstance(skip_reason, str) and skip_reason.strip() else None
+                )
+            elif st in (NodeState.SUCCESS, NodeState.FAILED):
+                info.skip_reason = None
             info.transitions.append({"state": st.value, "t_ms": t})
             if info.started_ms is None and st in (
                 NodeState.STAGING,
@@ -399,7 +409,9 @@ class FlowRuntime:
                 info.finished_ms = t
             return info.order
 
-    def _mark_order(self, order_key: int, st: NodeState) -> None:
+    def _mark_order(
+        self, order_key: int, st: NodeState, *, skip_reason: str | None = None
+    ) -> None:
         """Apply ``st`` to the ``NodeRunInfo`` row identified by ``order_key``."""
         t = self._now_ms()
         terminal_close = (NodeState.SUCCESS, NodeState.FAILED, NodeState.SKIPPED)
@@ -409,6 +421,14 @@ class FlowRuntime:
                     continue
                 self.node_state[info.node_id] = st
                 info.final_state = st
+                if st == NodeState.SKIPPED:
+                    info.skip_reason = (
+                        skip_reason.strip()
+                        if isinstance(skip_reason, str) and skip_reason.strip()
+                        else None
+                    )
+                elif st in terminal_close:
+                    info.skip_reason = None
                 info.transitions.append({"state": st.value, "t_ms": t})
                 if st in terminal_close:
                     info.finished_ms = t
@@ -1016,7 +1036,19 @@ class FlowRuntime:
             await tracker.wait_all()
 
         if not eval_condition(m.condition, ctx):
-            self._mark(nid, NodeState.SKIPPED, parent_id=parent_id, parent_order=parent_order)
+            expr = (m.condition or "").strip()
+            reason = (
+                f"condition not met: {expr}"
+                if expr
+                else "condition not met"
+            )
+            self._mark(
+                nid,
+                NodeState.SKIPPED,
+                parent_id=parent_id,
+                parent_order=parent_order,
+                skip_reason=reason,
+            )
             return
 
         st = self._strategy_for(m)
@@ -1270,17 +1302,39 @@ class FlowRuntime:
             try:
                 try:
                     result = await self._run_with_retries(node, ctx, st)
-                except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
-                    # A sync-mode task that invokes a flow-control builtin
-                    # (flow_continue / flow_break / flow_terminate / flow_jump)
-                    # intentionally opts out of producing output. Without this
-                    # handler the node would stay RUNNING because `_mark(RUNNING)`
-                    # was already written on entry and no terminal transition
-                    # follows. Mark SKIPPED so observers see a clean finish while
-                    # the exception still propagates to the enclosing scope.
-                    self._mark(nid, NodeState.SKIPPED)
+                except ContinueInterrupt:
+                    skip_reason = "flow_continue() requested to skip current node"
+                    self._mark(nid, NodeState.SKIPPED, skip_reason=skip_reason)
                     metric_status = "skipped"
                     close_status = "skipped"
+                    close_error = skip_reason
+                    raise
+                except BreakInterrupt:
+                    skip_reason = "flow_break() requested to exit current loop"
+                    self._mark(nid, NodeState.SKIPPED, skip_reason=skip_reason)
+                    metric_status = "skipped"
+                    close_status = "skipped"
+                    close_error = skip_reason
+                    raise
+                except TerminateInterrupt:
+                    skip_reason = "flow_terminate() requested workflow termination"
+                    self._mark(nid, NodeState.SKIPPED, skip_reason=skip_reason)
+                    metric_status = "skipped"
+                    close_status = "skipped"
+                    close_error = skip_reason
+                    raise
+                except JumpTarget as jump:
+                    target = jump.target
+                    reason_part = (
+                        f"; reason={jump.reason}"
+                        if isinstance(jump.reason, str) and jump.reason.strip()
+                        else ""
+                    )
+                    skip_reason = f"flow_jump() requested to {target}{reason_part}"
+                    self._mark(nid, NodeState.SKIPPED, skip_reason=skip_reason)
+                    metric_status = "skipped"
+                    close_status = "skipped"
+                    close_error = skip_reason
                     raise
                 except BaseException as e:  # noqa: BLE001
                     metric_status = "failed"
@@ -2000,8 +2054,10 @@ class FlowRuntime:
                             )
                         except ContinueInterrupt:
                             iter_status = "skipped"
+                            iter_error = "flow_continue() requested to skip current iteration"
                         except BreakInterrupt:
                             iter_status = "skipped"
+                            iter_error = "flow_break() requested to exit current loop"
                             stop_loop = True
                         except Exception as e:  # noqa: BLE001
                             iter_status = "failed"
@@ -2075,8 +2131,10 @@ class FlowRuntime:
                         )
                     except ContinueInterrupt:
                         iter_status = "skipped"
+                        iter_error = "flow_continue() requested to skip current iteration"
                     except BreakInterrupt:
                         iter_status = "skipped"
+                        iter_error = "flow_break() requested to exit current loop"
                         stop_loop = True
                     except Exception as e:  # noqa: BLE001
                         iter_status = "failed"
@@ -2217,8 +2275,10 @@ class FlowRuntime:
                                 )
                             except ContinueInterrupt:
                                 iter_status = "skipped"
+                                iter_error = "flow_continue() requested to skip current iteration"
                             except BreakInterrupt:
                                 iter_status = "skipped"
+                                iter_error = "flow_break() requested to exit current loop"
                                 stop_requested["flag"] = True
                             except Exception as e:  # noqa: BLE001
                                 iter_status = "failed"

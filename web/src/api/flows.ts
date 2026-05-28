@@ -144,6 +144,8 @@ export type NodeRunInfo = {
   execution_count?: number;
   transitions: NodeRunTransition[];
   logs?: LogEntry[];
+  /** Optional human-readable reason when final_state is SKIPPED. */
+  skip_reason?: string | null;
 };
 
 export type RunFlowResponse = {

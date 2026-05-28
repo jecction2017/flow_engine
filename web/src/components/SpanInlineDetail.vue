@@ -1,6 +1,10 @@
 <template>
   <div class="sid-inline">
-    <pre v-if="span.error" class="sid-err mono">{{ span.error }}</pre>
+    <section v-if="skipReason" class="sid-skip">
+      <div class="sid-head"><span>跳过原因</span></div>
+      <p class="sid-skip-reason mono">{{ skipReason }}</p>
+    </section>
+    <pre v-if="span.error && String(span.status).toLowerCase() !== 'skipped'" class="sid-err mono">{{ span.error }}</pre>
     <section v-if="hasLogs" class="sid-block">
       <div class="sid-head">
         <span>日志（{{ logs.length }}）</span>
@@ -65,6 +69,26 @@ const hasAttrs = computed(() => {
   return a != null && Object.keys(a).length > 0;
 });
 
+const skipReason = computed(() => {
+  if (String(props.span.status).toLowerCase() !== "skipped") return "";
+  const fromError = typeof props.span.error === "string" ? props.span.error.trim() : "";
+  if (fromError) return fromError;
+  const attrs = props.span.attributes;
+  if (attrs && typeof attrs === "object") {
+    const candidates = ["skip_reason", "skipReason", "reason"];
+    for (const key of candidates) {
+      const val = (attrs as Record<string, unknown>)[key];
+      if (typeof val === "string" && val.trim()) return val.trim();
+    }
+    const cf = (attrs as Record<string, unknown>)["control_flow"];
+    if (cf && typeof cf === "object") {
+      const reason = (cf as Record<string, unknown>)["reason"];
+      if (typeof reason === "string" && reason.trim()) return reason.trim();
+    }
+  }
+  return "未提供";
+});
+
 const filteredLogs = computed(() => {
   if (levelFilter.size === 0) return logs.value;
   return logs.value.filter((e) => levelFilter.has(e.level as KnownLevel));
@@ -102,6 +126,21 @@ function formatAttrVal(v: unknown): string {
   border-radius: 6px;
   background: color-mix(in srgb, #fecaca 35%, transparent);
   color: #b91c1c;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sid-skip {
+  margin-bottom: 8px;
+}
+
+.sid-skip-reason {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, #f59e0b 28%, transparent);
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  color: #7c2d12;
   white-space: pre-wrap;
   word-break: break-word;
 }

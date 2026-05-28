@@ -79,14 +79,14 @@
         :key="`deploy-${detail.id}-${drillNodeKey}`"
         :page-size="50"
         :initial-node-id="drillNodeId"
-        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与属性（attributes），与试运行时间线一致"
+        help-tip="按父子关系嵌套展示；有日志的节点点击行可展开日志与属性（attributes），与试运行时间线一致"
       />
       <SpansExplorer
         v-else
         :test-run-id="detail.id"
         :key="`test-${detail.id}`"
         :page-size="50"
-        help-tip="按父子关系嵌套展示；有日志的节点可点数字按钮或点击行查看日志与属性（attributes），与试运行时间线一致"
+        help-tip="按父子关系嵌套展示；有日志的节点点击行可展开日志与属性（attributes），与试运行时间线一致"
       />
     </template>
 

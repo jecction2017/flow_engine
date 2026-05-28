@@ -222,11 +222,12 @@
                     :timeline-max-ms="maxMs"
                     :collapsed="collapsed"
                     :secondary-open-key="openLogsFor"
-                    :detail-on-row-click="false"
+                    :detail-on-row-click="true"
                     :log-button="true"
                     :show-node-meta="false"
                     @toggle-collapsed="toggleCollapsed"
                     @toggle-secondary="toggleLogDrawer"
+                    @row-click="onTrialRowClick"
                   >
                     <template #toolbar>
                       <button class="link" type="button" @click="expandAll">全部展开</button>
@@ -255,6 +256,10 @@
                             共 {{ logCountsByRunOrder.get(row.key) ?? 0 }} 条
                             <template v-if="levelFilter.size > 0">· 已过滤 {{ filteredLogsFor(row.key).length }} 条</template>
                           </span>
+                        </div>
+                        <div v-if="row.statusLabel === 'SKIPPED'" class="rt-skip-reason">
+                          <span class="rt-skip-reason-lbl">跳过原因</span>
+                          <span class="rt-skip-reason-val">{{ skipReasonFor(row.key) || "未提供" }}</span>
                         </div>
                         <ul v-if="filteredLogsFor(row.key).length" class="rt-logs-list mono">
                           <li
@@ -856,6 +861,13 @@ function filteredLogsFor(runOrderKey: string): LogEntry[] {
   return all.filter(entryMatchesFilter);
 }
 
+function skipReasonFor(runOrderKey: string): string | null {
+  const ord = Number(runOrderKey);
+  const run = rawRuns.value.find((r) => r.order === ord);
+  const reason = typeof run?.skip_reason === "string" ? run.skip_reason.trim() : "";
+  return reason.length > 0 ? reason : null;
+}
+
 const filteredFlowLogs = computed<LogEntry[]>(() =>
   flowLogs.value.filter(entryMatchesFilter),
 );
@@ -871,6 +883,12 @@ function clearLevelFilter(): void {
 
 function toggleLogDrawer(runOrderKey: string): void {
   openLogsFor.value = openLogsFor.value === runOrderKey ? null : runOrderKey;
+}
+
+function onTrialRowClick(row: ExecutionLinkRow): void {
+  const canOpen = row.logCount > 0 || row.statusLabel === "SKIPPED";
+  if (!canOpen) return;
+  toggleLogDrawer(row.key);
 }
 
 function toggleCollapsed(runOrderKey: string): void {
@@ -1716,6 +1734,30 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   font-size: 11px;
   color: var(--muted);
   margin: 6px 0 0;
+}
+
+.rt-skip-reason {
+  margin: 6px 0 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, #f59e0b 28%, transparent);
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rt-skip-reason-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.rt-skip-reason-val {
+  font-size: 11px;
+  color: #7c2d12;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .badge {
