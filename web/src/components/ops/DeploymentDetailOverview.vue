@@ -284,7 +284,9 @@
           </dl>
         </div>
       </div>
-      <pre v-else class="config-json mono">{{ configJsonText }}</pre>
+      <div v-else class="config-json-wrap">
+        <ReadonlyJsonEditor :model-value="configJsonText" :default-height="300" :min-height="140" />
+      </div>
     </section>
   </div>
 </template>
@@ -293,6 +295,7 @@
 import { computed, ref, watch } from "vue";
 import CollapsibleFailureCard from "@/components/CollapsibleFailureCard.vue";
 import FailureReportPanel from "@/components/FailureReportPanel.vue";
+import ReadonlyJsonEditor from "@/components/ReadonlyJsonEditor.vue";
 import { failurePreviewText } from "@/utils/formatFailureReport";
 import type { DeploymentDetail } from "@/api/deployments";
 import type { FlowRunSummary } from "@/api/flowRuns";
@@ -981,17 +984,8 @@ function messageStatusTagClass(status: string): string {
   background: var(--accent-soft);
 }
 
-.config-json {
-  margin: 0;
-  padding: 12px 14px;
-  font-size: 11px;
-  line-height: 1.45;
-  max-height: 360px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: #0b1220;
-  color: #e2e8f0;
+.config-json-wrap {
+  padding: 10px 14px 12px;
 }
 
 .config-groups {

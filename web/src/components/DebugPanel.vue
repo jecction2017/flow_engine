@@ -132,7 +132,15 @@
               </button>
             </div>
           </div>
-          <pre class="out mono" :class="{ 'out-wrap': responseViewMode === 'text' }">{{ displayedResponseText }}</pre>
+          <div class="result-json-body">
+            <JsonEditor
+              v-if="responseViewMode === 'json'"
+              :model-value="displayedResponseText"
+              :height="RESPONSE_DEFAULT_HEIGHT"
+              read-only
+            />
+            <pre v-else class="out mono out-wrap">{{ displayedResponseText }}</pre>
+          </div>
         </div>
 
         <div class="result-block">
@@ -161,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import type { LogEntry } from "@/api/flows";
 import { debugNode } from "@/api/starlark";
@@ -301,6 +309,7 @@ const failureText = computed(() => {
 
 const canToggleResponseView = computed(() => failureText.value.length > 0);
 const responseViewMode = ref<"text" | "json">("json");
+const RESPONSE_DEFAULT_HEIGHT = 220;
 
 const displayedResponseText = computed(() =>
   responseViewMode.value === "text" && canToggleResponseView.value
@@ -792,6 +801,16 @@ defineExpose({ run, pending });
 
 .result-block .lbl {
   margin-top: 0;
+}
+
+.result-json-body {
+  position: relative;
+}
+
+.result-json-body .out {
+  min-height: 56px;
+  max-height: none;
+  box-sizing: border-box;
 }
 
 .mini-strong {

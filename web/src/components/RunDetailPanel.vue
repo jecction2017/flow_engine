@@ -113,14 +113,14 @@
         <span>运行结果上下文（global_ns）</span>
         <InfoTip text="流程运行结束时的全局命名空间快照（已剔除 dictionary），与试运行结果中的 global_ns 一致。" />
       </div>
-      <pre class="ctx mono">{{ globalNsText }}</pre>
+      <ReadonlyJsonEditor :model-value="globalNsText" :default-height="240" :min-height="120" />
     </section>
 
     <section v-if="activeTab === 'context' && detail.trigger_context" class="rd-section">
       <div class="rd-section-head">
         <span>触发上下文（trigger_context）</span>
       </div>
-      <pre class="ctx mono">{{ triggerCtxText }}</pre>
+      <ReadonlyJsonEditor :model-value="triggerCtxText" :default-height="220" :min-height="120" />
     </section>
 
     <section v-if="activeTab === 'flow_logs'" class="rd-section">
@@ -139,6 +139,7 @@ import { failurePreviewText } from "@/utils/formatFailureReport";
 import FlowLogsPanel from "@/components/FlowLogsPanel.vue";
 import InfoTip from "@/components/InfoTip.vue";
 import MetricsSummary from "@/components/MetricsSummary.vue";
+import ReadonlyJsonEditor from "@/components/ReadonlyJsonEditor.vue";
 import SpansExplorer from "@/components/SpansExplorer.vue";
 import { formatDeployRunNo } from "@/utils/deployRunDisplay";
 

@@ -211,15 +211,15 @@
             <div v-if="systemDefaultPolicy" class="sys-default-body">
               <div class="sys-col">
                 <div class="sys-title">debug</div>
-                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.debug, null, 2) }}</pre>
+                <ReadonlyJsonEditor :model-value="systemDefaultJson.debug" :default-height="200" :min-height="120" />
               </div>
               <div class="sys-col">
                 <div class="sys-title">shadow</div>
-                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.shadow, null, 2) }}</pre>
+                <ReadonlyJsonEditor :model-value="systemDefaultJson.shadow" :default-height="200" :min-height="120" />
               </div>
               <div class="sys-col">
                 <div class="sys-title">production</div>
-                <pre class="sys-json mono">{{ JSON.stringify(systemDefaultPolicy.production, null, 2) }}</pre>
+                <ReadonlyJsonEditor :model-value="systemDefaultJson.production" :default-height="200" :min-height="120" />
               </div>
             </div>
             <p v-else class="muted small">内置默认未加载；离开本页再进入将重新请求。</p>
@@ -234,6 +234,7 @@
 import { computed, ref } from "vue";
 import InfoTip from "@/components/InfoTip.vue";
 import JsonEditor from "@/components/JsonEditor.vue";
+import ReadonlyJsonEditor from "@/components/ReadonlyJsonEditor.vue";
 import {
   createProfile,
   deleteProfile,
@@ -280,6 +281,11 @@ type SysDefaultPolicy = {
   production: Record<string, unknown>[];
 };
 const systemDefaultPolicy = ref<SysDefaultPolicy | null>(null);
+const systemDefaultJson = computed(() => ({
+  debug: JSON.stringify(systemDefaultPolicy.value?.debug ?? [], null, 2),
+  shadow: JSON.stringify(systemDefaultPolicy.value?.shadow ?? [], null, 2),
+  production: JSON.stringify(systemDefaultPolicy.value?.production ?? [], null, 2),
+}));
 
 function closeDialog() {
   activeDialog.value = null;

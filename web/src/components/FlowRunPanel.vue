@@ -306,9 +306,7 @@
                 </div>
 
                 <div
-                  ref="globalsPaneBlockRef"
                   class="result-block result-block--globals"
-                  :style="{ height: `${globalsPaneHeight}px` }"
                 >
                   <div class="lbl row result-block-hd">
                     <span class="lbl-row">
@@ -317,16 +315,13 @@
                     </span>
                   </div>
                   <div class="result-pane-scroll">
-                    <pre ref="globalsPreRef" class="out mono">{{ globalsText }}</pre>
+                    <JsonEditor
+                      :model-value="globalsText"
+                      :height="globalsPaneHeight"
+                      read-only
+                    />
                     <p v-if="response?.message && !responseMessageAsFailureNotice" class="msg">{{ response.message }}</p>
                   </div>
-                  <button
-                    type="button"
-                    class="pane-resize-corner"
-                    aria-label="拖动调整全局上下文区域高度"
-                    :class="{ 'pane-resize-corner--active': globalsResizeActive }"
-                    @mousedown="startGlobalsResize($event)"
-                  />
                 </div>
               </div>
             </div>
@@ -393,7 +388,6 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener("keydown", onRunEscape);
-  stopGlobalsResize();
 });
 
 const ctxText = ref("");
@@ -414,72 +408,29 @@ const openLogsFor = ref<string | null>(null);
 /** Active log-level filter. Empty set = show all. */
 const levelFilter = reactive(new Set<KnownLogLevel>());
 
-const GLOBALS_PANE_MIN = 100;
 const GLOBALS_PANE_DEFAULT = 200;
 const GLOBALS_PANE_AUTO_MAX = 380;
 const globalsPaneHeight = ref(GLOBALS_PANE_DEFAULT);
-const globalsPaneBlockRef = ref<HTMLElement | null>(null);
-const globalsPreRef = ref<HTMLElement | null>(null);
-const globalsResizeActive = ref(false);
-let globalsHeightManuallySet = false;
-
-let globalsResizeStartY = 0;
-let globalsResizeStartHeight = 0;
 
 function resetGlobalsPaneHeight() {
-  globalsHeightManuallySet = false;
   globalsPaneHeight.value = GLOBALS_PANE_DEFAULT;
 }
 
 function measureGlobalsPaneHeight(): number {
-  const block = globalsPaneBlockRef.value;
-  const pre = globalsPreRef.value;
-  if (!block || !pre) return GLOBALS_PANE_DEFAULT;
-  const header = block.querySelector<HTMLElement>(".result-block-hd");
-  const msg = block.querySelector<HTMLElement>(".msg");
-  const headerH = header?.offsetHeight ?? 0;
-  const preH = pre.scrollHeight;
-  const msgH = msg?.offsetHeight ?? 0;
-  const chrome = 20;
-  const desired = headerH + preH + msgH + chrome;
+  const lineCount = Math.max(1, globalsText.value.split("\n").length);
+  const editorH = lineCount * 18;
+  const msgH = response.value?.message && !responseMessageAsFailureNotice.value ? 26 : 0;
+  const desired = editorH + msgH;
   return Math.min(
     GLOBALS_PANE_AUTO_MAX,
-    Math.max(GLOBALS_PANE_DEFAULT, desired),
+    Math.max(GLOBALS_PANE_DEFAULT, desired + 24),
   );
 }
 
 async function syncGlobalsPaneAutoHeight() {
-  if (globalsHeightManuallySet || !response.value) return;
+  if (!response.value) return;
   await nextTick();
   globalsPaneHeight.value = measureGlobalsPaneHeight();
-}
-
-function onGlobalsResizeMove(ev: MouseEvent) {
-  const dy = ev.clientY - globalsResizeStartY;
-  globalsPaneHeight.value = Math.max(
-    GLOBALS_PANE_MIN,
-    globalsResizeStartHeight + dy,
-  );
-}
-
-function stopGlobalsResize() {
-  globalsResizeActive.value = false;
-  document.removeEventListener("mousemove", onGlobalsResizeMove);
-  document.removeEventListener("mouseup", stopGlobalsResize);
-  document.body.style.removeProperty("user-select");
-  document.body.style.removeProperty("cursor");
-}
-
-function startGlobalsResize(ev: MouseEvent) {
-  ev.preventDefault();
-  globalsHeightManuallySet = true;
-  globalsResizeActive.value = true;
-  globalsResizeStartY = ev.clientY;
-  globalsResizeStartHeight = globalsPaneHeight.value;
-  document.body.style.userSelect = "none";
-  document.body.style.cursor = "nwse-resize";
-  document.addEventListener("mousemove", onGlobalsResizeMove);
-  document.addEventListener("mouseup", stopGlobalsResize);
 }
 
 function parseJsonObject(text: string): { ok: boolean; keys: string[] } {
@@ -643,7 +594,7 @@ watch(
   () => response.value,
   (r) => {
     if (!r) {
-      if (!globalsHeightManuallySet) globalsPaneHeight.value = GLOBALS_PANE_DEFAULT;
+      globalsPaneHeight.value = GLOBALS_PANE_DEFAULT;
       return;
     }
     void syncGlobalsPaneAutoHeight();
@@ -1649,41 +1600,6 @@ input.inp-profile.trial-timeout-inp::-webkit-inner-spin-button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.pane-resize-corner {
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  z-index: 2;
-  width: 14px;
-  height: 14px;
-  padding: 0;
-  border: none;
-  border-radius: 0 0 6px 0;
-  background: transparent;
-  cursor: nwse-resize;
-  touch-action: none;
-}
-
-.pane-resize-corner::after {
-  content: "";
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid #94a3b8;
-  border-bottom: 2px solid #94a3b8;
-  border-radius: 0 0 2px 0;
-  opacity: 0.75;
-  pointer-events: none;
-}
-
-.pane-resize-corner:hover::after,
-.pane-resize-corner--active::after {
-  border-color: var(--accent);
-  opacity: 1;
 }
 
 .result-pane-scroll {

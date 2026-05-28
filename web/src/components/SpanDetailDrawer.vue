@@ -125,13 +125,16 @@
       <div class="sd-section-head">
         <span>attributes</span>
       </div>
-      <pre class="ctx mono">{{ attributesText }}</pre>
+      <div class="sd-json-wrap">
+        <ReadonlyJsonEditor :model-value="attributesText" :default-height="220" :min-height="120" />
+      </div>
     </section>
   </aside>
 </template>
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
+import ReadonlyJsonEditor from "@/components/ReadonlyJsonEditor.vue";
 import {
   getSpanChildren,
   type SpanChildSummary,
@@ -534,17 +537,8 @@ function formatTs(iso: string | null | undefined): string {
   word-break: break-word;
 }
 
-.ctx {
-  margin: 0;
-  padding: 10px 12px;
-  font-size: 11px;
-  line-height: 1.4;
-  background: #0b1220;
-  color: #e2e8f0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 240px;
-  overflow: auto;
+.sd-json-wrap {
+  padding: 8px 10px 10px;
 }
 
 .center { text-align: center; }
