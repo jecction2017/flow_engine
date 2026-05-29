@@ -23,7 +23,7 @@
 </template>
 
 <script setup lang="ts">
-import { type Component, computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { type Component, computed } from "vue";
 import FlowStudioView from "./views/FlowStudioView.vue";
 import OperationsCenterView from "./views/OperationsCenterView.vue";
 import TestCenterView from "./views/TestCenterView.vue";
@@ -32,9 +32,7 @@ import ProfileConfigView from "./views/ProfileConfigView.vue";
 import DictConfigView from "./views/DictConfigView.vue";
 import LookupConfigView from "./views/LookupConfigView.vue";
 import ScriptGuideView from "./views/ScriptGuideView.vue";
-
-const SESSION_MAIN_VIEW_KEY = "flowEngine:app:sessionMainView";
-const TAB_QUERY_KEY = "tab";
+import { useTabUrlState } from "./composables/useTabUrlState";
 
 type MainViewId = "flow" | "ops" | "test" | "starlark" | "profiles" | "dict" | "lookup" | "guide";
 
@@ -62,71 +60,11 @@ const viewComponentById: Record<MainViewId, Component> = {
 
 const allowedIds = new Set<MainViewId>(navItems.map((n) => n.id));
 
-function normalizeMainViewId(raw: string | null | undefined): MainViewId | null {
-  if (!raw) return null;
-  return allowedIds.has(raw as MainViewId) ? (raw as MainViewId) : null;
-}
-
-function readMainViewFromUrl(): MainViewId | null {
-  try {
-    const url = new URL(window.location.href);
-    return normalizeMainViewId(url.searchParams.get(TAB_QUERY_KEY));
-  } catch {
-    return null;
-  }
-}
-
-function writeMainViewToUrl(viewId: MainViewId): void {
-  try {
-    const url = new URL(window.location.href);
-    if (url.searchParams.get(TAB_QUERY_KEY) === viewId) return;
-    url.searchParams.set(TAB_QUERY_KEY, viewId);
-    window.history.replaceState(window.history.state, "", url);
-  } catch {
-    /* ignore URL API failures */
-  }
-}
-
-function readSessionMainView(): MainViewId | null {
-  try {
-    return normalizeMainViewId(sessionStorage.getItem(SESSION_MAIN_VIEW_KEY));
-  } catch {
-    /* private mode / denied */
-  }
-  return null;
-}
-
-function writeSessionMainView(viewId: MainViewId): void {
-  try {
-    sessionStorage.setItem(SESSION_MAIN_VIEW_KEY, viewId);
-  } catch {
-    /* ignore */
-  }
-}
-
-const view = ref<MainViewId>(readMainViewFromUrl() ?? readSessionMainView() ?? "flow");
-
-writeMainViewToUrl(view.value);
-writeSessionMainView(view.value);
-
-watch(view, (v) => {
-  writeMainViewToUrl(v);
-  writeSessionMainView(v);
-});
-
-function handlePopState(): void {
-  const viewFromUrl = readMainViewFromUrl();
-  if (viewFromUrl && viewFromUrl !== view.value) {
-    view.value = viewFromUrl;
-  }
-}
-
-onMounted(() => {
-  window.addEventListener("popstate", handlePopState);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("popstate", handlePopState);
+const view = useTabUrlState<MainViewId>({
+  defaultValue: "flow",
+  allowedValues: Array.from(allowedIds),
+  queryKey: "tab",
+  sessionStorageKey: "flowEngine:app:sessionMainView",
 });
 
 const activeView = computed(() => viewComponentById[view.value]);
