@@ -103,7 +103,7 @@ class DebugNodeBody(BaseModel):
     profile: str | None = None
     # /api/debug/node 是临时调试入口，``run_mode`` **始终** RunMode.DEBUG（服务端
     # 锁死，不在 schema 暴露）。如此可避免开发者从调试按钮意外触发真实生产副作用。
-    # capability_policy 仅作为高级白名单 / REDIRECT 通道，例如把 ``http_simple_get``
+    # capability_policy 仅作为高级白名单 / REDIRECT 通道，例如把 ``http_call``
     # 显式 ALLOW 到沙箱地址。空列表 = 全部副作用类 builtin SUPPRESS。
     capability_policy: list[dict[str, Any]] = Field(
         default_factory=list,

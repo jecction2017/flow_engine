@@ -11,6 +11,7 @@ import threading
 from typing import Any
 
 from flow_engine.connectors.config import ElasticsearchConfig, parse_elasticsearch_config
+from flow_engine.connectors.config_http import parse_http_config
 from flow_engine.connectors.config_kafka import parse_kafka_config
 from flow_engine.connectors.errors import ConnectorError
 from flow_engine.connectors.protocol import ConnectorBackend, ConnectorHandle
@@ -71,6 +72,7 @@ class ConnectorRegistry:
     def _register_backends(self) -> None:
         self._ensure_elasticsearch_backend()
         self._ensure_kafka_backend()
+        self._ensure_http_backend()
 
     @staticmethod
     def _aiokafka_installed() -> bool:
@@ -88,6 +90,18 @@ class ConnectorRegistry:
             logger.debug("kafka backend not available", exc_info=True)
             return False
 
+    def _ensure_http_backend(self) -> bool:
+        if "http" in self._backends:
+            return True
+        try:
+            from flow_engine.connectors.backends.http.backend import HttpBackend
+
+            self._backends["http"] = HttpBackend()
+            return True
+        except ImportError:
+            logger.debug("http backend not available", exc_info=True)
+            return False
+
     @property
     def elasticsearch_available(self) -> bool:
         return self._ensure_elasticsearch_backend()
@@ -95,6 +109,10 @@ class ConnectorRegistry:
     @property
     def kafka_available(self) -> bool:
         return self._ensure_kafka_backend()
+
+    @property
+    def http_available(self) -> bool:
+        return self._ensure_http_backend()
 
     @staticmethod
     def integration_unavailable_message(kind: str = "elasticsearch") -> str:
@@ -109,6 +127,8 @@ class ConnectorRegistry:
                 f"aiokafka is not installed ({exe}). "
                 "Run: pip install aiokafka, or pip install -e \".[kafka]\"."
             )
+        if kind == "http":
+            return f"HTTP backend failed to load in this process ({exe}). Restart flow worker."
         if ConnectorRegistry._elasticsearch_package_installed():
             return (
                 f"Elasticsearch backend failed to load in this process ({exe}). "
@@ -132,7 +152,8 @@ class ConnectorRegistry:
 
         es_raw = middleware.get("elasticsearch")
         kafka_raw = middleware.get("kafka")
-        config_hash = _hash_config({"elasticsearch": es_raw, "kafka": kafka_raw})
+        http_raw = middleware.get("http")
+        config_hash = _hash_config({"elasticsearch": es_raw, "kafka": kafka_raw, "http": http_raw})
 
         with _LOCK:
             stale_empty = (
@@ -141,6 +162,7 @@ class ConnectorRegistry:
                 and (
                     (es_raw is not None and not any(k == "elasticsearch" for k, _ in self._handles))
                     or (kafka_raw is not None and not any(k == "kafka" for k, _ in self._handles))
+                    or (http_raw is not None and not any(k == "http" for k, _ in self._handles))
                 )
             )
             if config_hash == self._bind_hash and profile == self._profile and not stale_empty:
@@ -197,6 +219,28 @@ class ConnectorRegistry:
             elif kafka_raw is None:
                 logger.debug(
                     "no middleware.kafka in dictionary for profile=%s",
+                    profile,
+                )
+
+            if http_raw is not None and self._ensure_http_backend():
+                resolved_h = resolve_secret_references(http_raw, profile=profile)
+                hcfg = parse_http_config(resolved_h)
+                if hcfg is not None:
+                    if not hcfg.instances:
+                        logger.warning(
+                            "middleware.http has no instances; "
+                            "module_code must be middleware.http"
+                        )
+                    backend = self._backends["http"]
+                    defaults = hcfg.defaults.model_dump()
+                    instances = {
+                        iid: inst.model_dump() for iid, inst in hcfg.instances.items()
+                    }
+                    for iid, handle in backend.bind_instances(instances, defaults=defaults).items():
+                        self._handles[("http", iid)] = handle
+            elif http_raw is None:
+                logger.debug(
+                    "no middleware.http in dictionary for profile=%s",
                     profile,
                 )
 

@@ -13,7 +13,7 @@ flow_engine 使用 **Starlark**（一种受 Python 启发但刻意精简、可�
 
 - 语法更像 Python，但**禁用**大量 Python 特性（`import`、`while`、`try`、f-string 等）。
 - **不能**在模块顶层写 `if` / `for`，必须包在函数里。
-- **不能**直接访问文件、网络、系统时钟；需要的能力由引擎以 **builtin 函数** 形式注入（如 `resolve`、`kafka_receive`、`log_info`）。
+- **不能**直接访问文件、网络、系统时钟；需要的能力由引擎以 **builtin 函数** 形式注入（如 `resolve`、`kafka_receive`、`http_call`、`log_info`）。
 
 语法约束由测试锁定：`tests/test_starlark_dialect_syntax.py`。修改方言或文档示例后建议运行：
 
@@ -177,7 +177,7 @@ for x in items[:]:
 脚本内不能 `open()`、不能自行连 Kafka/HTTP。请使用引擎提供的 builtin，例如：
 
 - `resolve("$.global.path")` — 读流程上下文
-- `kafka_receive(...)` / 其它集成 builtin
+- `kafka_receive(...)`、`http_call(...)` / 其它集成 builtin
 - `log_info(...)` 等 — 写日志
 
 ### 5.6 错误处理

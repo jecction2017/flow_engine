@@ -156,7 +156,7 @@ export type DebugNodeResponse = {
 /**
  * 节点 / 用户脚本调试入口 —— 服务端硬编码 RunMode.DEBUG，副作用类 builtin
  * 默认全部 SUPPRESS。``capabilityPolicy`` 仅作为 **白名单 / REDIRECT** 高级通道：
- * 例如 `{builtin_name: "http_simple_get", action: "allow"}` 显式放行某个 builtin。
+ * 例如 `{builtin_name: "http_call", action: "allow"}` 显式放行某个 builtin。
  * 这里没有 ``runMode`` 选项是有意为之 —— 临时调试不应能切换到 production 模式。
  */
 export type DebugNodeOptions = {

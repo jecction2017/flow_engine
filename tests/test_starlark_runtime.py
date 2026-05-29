@@ -4,6 +4,7 @@ import pytest
 import starlark as sl
 
 from flow_engine.engine.context import ContextStack
+from flow_engine.stores.data_dict import dictionary_scope
 from flow_engine.starlark_sdk.loader import clear_loader_cache
 from flow_engine.starlark_sdk.registry_data import load_registry
 from flow_engine.starlark_sdk.runtime import (
@@ -20,6 +21,9 @@ def test_registry_includes_declarative_python_builtins() -> None:
     names = {f["starlark_name"] for f in reg["python_functions"]}
     assert "dict_get" in names
     assert "lookup_query" in names
+    assert "http_call" in names
+    assert "http_simple_get" not in names
+    assert "http_request" not in names
     for flow_name in ("flow_jump", "flow_continue", "flow_break", "flow_terminate"):
         assert flow_name in names
     assert "regex_match" in names
@@ -218,3 +222,54 @@ def test_user_script_update_invalidates_loader_cache_immediately() -> None:
     store.put_script(tenant, rel_path, "def value():\n    return 2\n")
     second, _ = eval_task_script(script, ContextStack(), {})
     assert second == {"v": 2}
+
+
+class _HttpFakeResponse:
+    def __init__(self, *, status: int, body: str, content_type: str = "application/json") -> None:
+        self.status = status
+        self._body = body.encode("utf-8")
+        self.headers = {"Content-Type": content_type}
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _HttpFakeResponse:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        return None
+
+
+def test_http_call_builtin_uses_connector_dictionary(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_urlopen(req, timeout=0, context=None):  # noqa: ANN001, ARG001
+        assert req.get_method() == "GET"
+        assert req.full_url == "https://api.example.com/ping"
+        return _HttpFakeResponse(status=200, body='{"pong": true}')
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    dictionary = {
+        "middleware": {
+            "http": {
+                "instances": {
+                    "main": {
+                        "services": {
+                            "svc": {
+                                "base_url": "https://api.example.com",
+                                "endpoints": {
+                                    "ping": {"path": "/ping", "method": "GET"},
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    with dictionary_scope(dictionary):
+        result, logs = eval_task_script(
+            'r = http_call("svc", "ping")\n{"ok": r["success"], "pong": r["data"]["pong"]}',
+            ContextStack(),
+            {},
+        )
+    assert result == {"ok": True, "pong": True}
+    assert logs == []

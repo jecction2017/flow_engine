@@ -350,7 +350,7 @@
 
         <section id="cap-faq" class="card">
           <h2>8) 常见问题</h2>
-          <h3>Q: 为什么调试时 http_simple_get 返回 status=0？</h3>
+          <h3>Q: 为什么调试时 http_call 没有真实发请求？</h3>
           <p class="muted">
             多为命中 suppress 后的占位返回值。调试入口固定为调试模式，integration 等副作用类内置函数默认会被抑制。
             联调沙箱请在「本次附加策略」或节点「节点能力策略」中配置 allow / redirect。
@@ -474,32 +474,32 @@ const sampleRowExpect = `{
 
 const sampleSuppressedOut = `# 示例：当副作用 builtin 被 SUPPRESS
 {
-  "status": 0,
-  "body": null,
-  "_suppressed": true
+  "success": false,
+  "error_code": "SUPPRESSED",
+  "meta": {"_suppressed": true}
 }`;
 
 const sampleRuleShape = `{
   "builtin_category": "integration",     // 可选：按类目匹配
-  "builtin_name": "http_simple_get",     // 可选：按 builtin 精确匹配（优先级更高）
+  "builtin_name": "http_call",           // 可选：按 builtin 精确匹配（优先级更高）
   "action": "suppress|allow|redirect",   // 必填
   "redirect_params": { "url": "..." }    // 仅 redirect 时需要
 }`;
 
 const sampleRuleAllow = `[
-  { "builtin_name": "http_simple_get", "action": "allow" }
+  { "builtin_name": "http_call", "action": "allow" }
 ]`;
 
 const sampleRuleRedirect = `[
   {
-    "builtin_name": "http_simple_get",
+    "builtin_name": "http_call",
     "action": "redirect",
     "redirect_params": { "url": "https://sandbox.example/api" }
   }
 ]`;
 
 const sampleProbeScript = `# 任意任务脚本 / 用户脚本里都可以这样写：
-r = http_simple_get("https://prod.example/api/ping")
+r = http_call("user_service", "health")
 {"probe": r}
 
 # 在临时调试入口默认会被抑制（SUPPRESS），输出里会有 _suppressed=true

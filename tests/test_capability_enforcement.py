@@ -137,7 +137,7 @@ def test_default_debug_policy_suppresses_integration_category() -> None:
     no real builtin used → suppress never fired in DEBUG mode.
     """
     with run_mode_scope(RunMode.DEBUG, []):
-        action, _ = check_capability("integration", "http_simple_get")
+        action, _ = check_capability("integration", "http_call")
         assert action == CapabilityAction.SUPPRESS
 
 
@@ -218,7 +218,7 @@ def test_process_worker_supports_load_directive() -> None:
 def test_debug_task_script_opens_capability_scope() -> None:
     """Debug API path now plumbs ``run_mode`` so DEBUG suppresses integrations."""
     _reset_calls()
-    out, _ = debug_task_script(
+    out, _, _ = debug_task_script(
         'r = cap_probe()\n{"called": r["called"]}',
         {},
         run_mode=RunMode.DEBUG,
@@ -237,7 +237,7 @@ def test_debug_task_script_no_scope_when_no_args() -> None:
     (no scope opened — capability defaults to whatever caller already set up).
     """
     _reset_calls()
-    out, _ = debug_task_script('r = cap_probe()\n{"called": r["called"]}', {})
+    out, _, _ = debug_task_script('r = cap_probe()\n{"called": r["called"]}', {})
     # No scope active → ALLOW fallback → real call happens.
     assert out == {"called": True}
     assert len(_REAL_CALLS) == 1
@@ -278,7 +278,7 @@ def test_profile_rules_outrank_system_default() -> None:
         CapabilityRule(builtin_category="integration", action=CapabilityAction.ALLOW),
     ]
     with run_mode_scope(RunMode.DEBUG, [], profile_rules):
-        action, _ = check_capability("integration", "http_simple_get")
+        action, _ = check_capability("integration", "http_call")
         assert action == CapabilityAction.ALLOW
 
 
@@ -401,11 +401,10 @@ def test_http_debug_node_default_suppresses_integration() -> None:
     debug request never reaches network / DB integrations.
     """
     client = _make_test_client()
-    # http_simple_get is registered in ``integration`` category with
-    # ``side_effects="network"`` and ``suppress_result={"status":0,"body":None,
-    # "_suppressed":True}``. Under DEBUG default it must be suppressed.
+    # http_call is registered in ``integration`` category with
+    # a dedicated suppress_result. Under DEBUG default it must be suppressed.
     body = {
-        "script": 'r = http_simple_get("http://example.invalid")\n{"r": r}',
+        "script": 'r = http_call("svc", "ep")\n{"r": r}',
         "initial_context": {},
         "capability_policy": [],
     }
@@ -415,8 +414,8 @@ def test_http_debug_node_default_suppresses_integration() -> None:
     assert payload["ok"] is True
     out = payload["result"]["r"]
     assert isinstance(out, dict)
-    assert out.get("_suppressed") is True
-    assert out.get("status") == 0
+    assert out.get("error_code") == "SUPPRESSED"
+    assert out.get("meta", {}).get("_suppressed") is True
 
 
 def test_http_run_flow_is_locked_to_debug_mode() -> None:
