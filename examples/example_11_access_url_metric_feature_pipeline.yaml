@@ -1,0 +1,202 @@
+display_name: example_11_access_url_metric_feature_pipeline
+version: "1.0.0"
+
+initial_context:
+  es_instance: "main"
+  es_index: "access-log-*"
+  subject_type: "subject_account"
+  scene_detail: "access_url_detail_v1"
+  scene_subject: "access_url_subject_v1"
+  alarm:
+    object_url_pattern: []
+    object_url: []
+  query_window:
+    gte: "now-2h"
+    lte: "now"
+
+strategies:
+  default_sync:
+    name: default_sync
+    mode: sync
+
+nodes:
+  - name: run_access_url_metric_feature_pipeline
+    id: run_access_url_metric_feature_pipeline
+    type: task
+    strategy_ref: default_sync
+    script: |
+      load("user://default/security/access_url/normalize.star", "build_dataset")
+
+      def _unwrap_data(resp):
+        if type(resp) != "dict":
+          return {}
+        if "ok" in resp and resp["ok"] and type(resp.get("data")) == "dict":
+          return resp["data"]
+        return {}
+
+      def _safe_source(hit):
+        if type(hit) != "dict":
+          return {}
+        src = hit.get("_source")
+        return src if type(src) == "dict" else {}
+
+      def _collect_unique_values(hits, field_name):
+        out = []
+        seen = {}
+        for hit in hits:
+          src = _safe_source(hit)
+          value = src.get(field_name)
+          if value == None:
+            continue
+          key = str(value)
+          if key in seen:
+            continue
+          seen[key] = 1
+          out.append(key)
+        return out
+
+      def _collect_unique_xff_ips(hits):
+        out = []
+        seen = {}
+        for hit in hits:
+          src = _safe_source(hit)
+          xff_map = src.get("xff_freq_dict")
+          if type(xff_map) != "dict":
+            continue
+          for ip, _ in xff_map.items():
+            key = str(ip)
+            if key in seen:
+              continue
+            seen[key] = 1
+            out.append(key)
+        return out
+
+      def _merge_unique(values, extra_values):
+        out = []
+        seen = {}
+        for v in values:
+          key = str(v)
+          if key in seen:
+            continue
+          seen[key] = 1
+          out.append(key)
+        for v in (extra_values or []):
+          key = str(v)
+          if key in seen:
+            continue
+          seen[key] = 1
+          out.append(key)
+        return out
+
+      def _fetch_terms_hits(index_name, term_field, values, source_fields):
+        if len(values) == 0:
+          return []
+        hits = []
+        batch = []
+        for value in values:
+          batch = batch + [value]
+          if len(batch) >= 5000:
+            resp = es_search(
+              resolve("$.global.es_instance"),
+              index_name,
+              body={"_source": source_fields},
+              query={"terms": {term_field: batch}},
+              size=1000000,
+            )
+            data = _unwrap_data(resp)
+            for one in ((((data.get("hits") or {}).get("hits")) or [])):
+              hits.append(one)
+            batch = []
+        if len(batch) > 0:
+          resp = es_search(
+            resolve("$.global.es_instance"),
+            index_name,
+            body={"_source": source_fields},
+            query={"terms": {term_field: batch}},
+            size=1000000,
+          )
+          data = _unwrap_data(resp)
+          for one in ((((data.get("hits") or {}).get("hits")) or [])):
+            hits.append(one)
+        return hits
+
+      def _build_main_query():
+        must_filters = [
+          {"range": {"@timestamp": {"gte": resolve("$.global.query_window.gte"), "lte": resolve("$.global.query_window.lte")}}}
+        ]
+        alarm = resolve("$.global.alarm")
+        subject_field = resolve("$.global.subject_type")
+        if type(alarm) == "dict":
+          subject_value = alarm.get(subject_field)
+          if subject_value != None and str(subject_value) != "":
+            must_filters.append({"term": {subject_field: subject_value}})
+        return {"bool": {"filter": must_filters}}
+
+      def run():
+        q = _build_main_query()
+        # Memory-oriented layout:
+        # - keep large payload in local vars, avoid writing full datasets to global context.
+        # - only final findings and diagnostics are exported.
+        scroll_resp = es_scroll(
+          resolve("$.global.es_instance"),
+          resolve("$.global.es_index"),
+          body={
+            "_source": [
+              resolve("$.global.subject_type"),
+              "url_pattern",
+              "count",
+              "status_freq_dict",
+              "method_freq_dict",
+              "xff_freq_dict",
+              "is_intranet",
+              "response_length_max",
+              "high_worth_api_type",
+              "attack_hw_target",
+              "ai_app_type",
+            ]
+          },
+          query=q,
+          size=5000,
+          scroll_ttl="2m",
+        )
+        scroll_data = _unwrap_data(scroll_resp)
+        if scroll_data.get("_scroll_truncated", False):
+          fail("es_scroll truncated: source data is incomplete, please increase connector max_scroll_pages or narrow query window")
+        hits = (((scroll_data.get("hits") or {}).get("hits")) or [])
+        urls = _collect_unique_values(hits, "url_pattern")
+        alarm = resolve("$.global.alarm")
+        if type(alarm) == "dict":
+          urls = _merge_unique(urls, alarm.get("object_url_pattern"))
+        xff_ips = _collect_unique_xff_ips(hits)
+
+        url_info_hits = _fetch_terms_hits(
+          "t_url_info",
+          "url_pattern",
+          urls,
+          ["url_pattern", "latest_7d_resp_size_avg", "latest_7d_count", "latest_24h_count", "ip_7d_dc", "top_methods", "top_status_codes", "create_time", "app_id"],
+        )
+        dmz_hits = _fetch_terms_hits(
+          "t_int_ip_info",
+          "ip",
+          xff_ips,
+          ["ip", "network_area"],
+        )
+
+        dataset = build_dataset(scroll_data, resolve("$.global.subject_type"), resolve("$.global.alarm"), url_info_hits, dmz_hits)
+        detail_output = metric_feature_pipeline(dataset, dictionary_name=resolve("$.global.scene_detail"))
+        subject_output = metric_feature_pipeline(dataset, dictionary_name=resolve("$.global.scene_subject"))
+        findings = detail_output.get("matches", []) + subject_output.get("matches", [])
+        return {
+          "findings": findings,
+          "scroll_pages_fetched": scroll_data.get("pages_fetched", 0),
+          "scroll_truncated": scroll_data.get("_scroll_truncated", False),
+          "source_hit_count": len(hits),
+        }
+
+      run()
+    boundary:
+      outputs:
+        findings: "$.global.findings"
+        scroll_pages_fetched: "$.global.scroll_pages_fetched"
+        scroll_truncated: "$.global.scroll_truncated"
+        source_hit_count: "$.global.source_hit_count"

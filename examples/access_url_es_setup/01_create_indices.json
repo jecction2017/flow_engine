@@ -1,0 +1,81 @@
+# Kibana Dev Tools / Elasticsearch 控制台脚本
+# 用法：逐段复制执行，或: curl -H "Content-Type: application/json" -X PUT "localhost:9200/INDEX" -d @mapping.json
+#
+# 对应 example_11 使用的索引:
+#   - access-log-*  (主 scroll 索引，示例写入 access-log-demo)
+#   - t_url_info    (URL 基线 side 查询)
+#   - t_int_ip_info (DMZ IP side 查询)
+
+# ---------- 1) access-log-demo（匹配 access-log-*）----------
+PUT access-log-demo
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "@timestamp": { "type": "date" },
+      "subject_account": { "type": "keyword" },
+      "subject_ip": { "type": "keyword" },
+      "url_pattern": { "type": "keyword" },
+      "count": { "type": "long" },
+      "status_freq_dict": { "type": "object", "enabled": true },
+      "method_freq_dict": { "type": "object", "enabled": true },
+      "xff_freq_dict": { "type": "object", "enabled": true },
+      "is_intranet": { "type": "keyword" },
+      "response_length_max": { "type": "double" },
+      "high_worth_api_type": { "type": "keyword" },
+      "attack_hw_target": { "type": "keyword" },
+      "ai_app_type": { "type": "keyword" },
+      "appid": { "type": "keyword" }
+    }
+  }
+}
+
+# ---------- 2) t_url_info ----------
+PUT t_url_info
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "url_pattern": { "type": "keyword" },
+      "latest_7d_resp_size_avg": { "type": "double" },
+      "latest_7d_count": { "type": "double" },
+      "latest_24h_count": { "type": "double" },
+      "ip_7d_dc": { "type": "double" },
+      "top_methods": { "type": "text" },
+      "top_status_codes": { "type": "text" },
+      "create_time": { "type": "date" },
+      "app_id": { "type": "keyword" }
+    }
+  }
+}
+
+# ---------- 3) t_int_ip_info ----------
+PUT t_int_ip_info
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "ip": { "type": "keyword" },
+      "network_area": { "type": "keyword" }
+    }
+  }
+}
+
+# 注意：bulk 写入时 @timestamp / create_time 必须是 ISO8601 实值；
+#       "now" / "now-7d" 仅查询 DSL 可用，直接 index 会 mapper_parsing_exception。
+#       请用 setup.ps1 / setup.sh 自动替换时间戳，或手动写成例如:
+#       "@timestamp": "2026-06-10T08:00:00.000Z"
+
+# ---------- 可选：删除重建（慎用）----------
+# DELETE access-log-demo
+# DELETE t_url_info
+# DELETE t_int_ip_info

@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Index, String, UniqueConstraint, func, text
@@ -28,7 +28,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
 # Python-side timestamp 默认值（MySQL 生产使用 server_default；测试 SQLite 使用此 callable）
-_utcnow = datetime.utcnow
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 # 所有 fe_ 业务表共用的 MySQL 表级选项
 _FE_TABLE_OPTS: dict[str, str] = {

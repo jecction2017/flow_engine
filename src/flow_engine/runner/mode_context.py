@@ -39,11 +39,13 @@ from flow_engine.runner.models import (
 
 _SYSTEM_DEFAULT_POLICY: dict[RunMode, list[CapabilityRule]] = {
     RunMode.DEBUG: [
+        CapabilityRule(builtin_category="db_read", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="db_write", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="mq_publish", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="integration", action=CapabilityAction.SUPPRESS),
     ],
     RunMode.SHADOW: [
+        CapabilityRule(builtin_category="db_read", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="db_write", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="mq_publish", action=CapabilityAction.SUPPRESS),
         CapabilityRule(builtin_category="integration", action=CapabilityAction.SUPPRESS),

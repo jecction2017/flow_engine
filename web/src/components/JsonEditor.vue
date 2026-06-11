@@ -3,6 +3,8 @@
     class="json-editor"
     :class="{ 'is-invalid': invalid }"
     :style="fill ? undefined : { height: `${currentHeight}px` }"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
   >
     <CodeEditor
       :model-value="modelValue"
@@ -50,7 +52,11 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
+const emit = defineEmits<{
+  (e: "update:modelValue", value: string): void;
+  (e: "focus"): void;
+  (e: "blur"): void;
+}>();
 const currentHeight = ref(props.height);
 const resizeActive = ref(false);
 let resizeStartY = 0;
@@ -67,6 +73,17 @@ watch(
 
 function onUpdate(value: string): void {
   emit("update:modelValue", value);
+}
+
+function onFocusIn(): void {
+  emit("focus");
+}
+
+function onFocusOut(ev: FocusEvent): void {
+  const root = ev.currentTarget as HTMLElement | null;
+  const next = ev.relatedTarget;
+  if (root && next instanceof Node && root.contains(next)) return;
+  emit("blur");
 }
 
 function onResizeMove(ev: MouseEvent) {

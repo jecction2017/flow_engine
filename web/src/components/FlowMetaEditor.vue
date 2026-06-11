@@ -25,13 +25,19 @@
           <input class="form-inp mono" value="由全局环境配置决定" disabled />
         </label>
 
-        <label class="form-field full">
+        <div class="form-field full">
           <span class="lbl-row">
             上下文内容 (JSON)
             <InfoTip wide text="流程启动前注入的全局上下文。顶层字段会被写入 $.global，可在节点 Starlark 中直接读写。" />
           </span>
-          <JsonEditor v-model="ctx" :height="180" />
-        </label>
+          <JsonEditor
+            v-model="ctxText"
+            :height="180"
+            :invalid="!ctxJsonValid"
+            @focus="onCtxEditorFocus"
+            @blur="onCtxEditorBlur"
+          />
+        </div>
       </div>
     </section>
 
@@ -194,7 +200,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch, ref, onMounted } from "vue";
+import { computed, reactive, watch, ref, onMounted, onUnmounted } from "vue";
 import type { ExecutionStrategy, FlowHooks } from "@/types/flow";
 import { useFlowStudioStore } from "@/stores/flowStudio";
 import { useStarlarkRegistryCache } from "@/composables/useStarlarkRegistryCache";
@@ -287,15 +293,93 @@ const displayName = computed({
   set: (v: string) => store.setFlowMeta({ display_name: v }),
 });
 
-const ctx = computed({
-  get: () => JSON.stringify(store.doc.initial_context ?? {}, null, 2),
-  set: (v: string) => {
-    try {
-      store.setInitialContextJson(v);
-    } catch {
-      // 允许编辑过程中的临时非法 JSON
+const ctxText = ref("{}");
+const ctxEditorFocused = ref(false);
+let ctxCommitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function formatInitialContext(): string {
+  return JSON.stringify(store.doc.initial_context ?? {}, null, 2);
+}
+
+const ctxJsonValid = computed(() => {
+  const raw = ctxText.value.trim();
+  if (!raw) return true;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+});
+
+/** 切换流程时从 store 同步；编辑过程用本地文本，避免非法 JSON 中间态被 computed 回写冲掉。 */
+watch(
+  () => [store.activeFlowId, store.pendingNewFlowId] as const,
+  () => {
+    if (ctxCommitTimer) {
+      clearTimeout(ctxCommitTimer);
+      ctxCommitTimer = null;
     }
+    ctxText.value = formatInitialContext();
   },
+  { immediate: true },
+);
+
+watch(ctxText, (v) => {
+  const raw = v.trim();
+  if (ctxCommitTimer) clearTimeout(ctxCommitTimer);
+  if (ctxEditorFocused.value) return;
+  if (!raw) {
+    store.setInitialContextJson("");
+    return;
+  }
+  if (!ctxJsonValid.value) return;
+  scheduleContextCommit(raw);
+});
+
+function commitInitialContext(raw: string) {
+  try {
+    const parsed = raw ? JSON.parse(raw) : null;
+    const current = store.doc.initial_context ?? null;
+    if (JSON.stringify(parsed) === JSON.stringify(current)) return;
+    store.setInitialContextJson(raw);
+  } catch {
+    // 允许编辑过程中的临时非法 JSON
+  }
+}
+
+function scheduleContextCommit(raw: string) {
+  if (ctxCommitTimer) clearTimeout(ctxCommitTimer);
+  ctxCommitTimer = setTimeout(() => {
+    ctxCommitTimer = null;
+    commitInitialContext(raw);
+  }, 220);
+}
+
+function onCtxEditorFocus() {
+  ctxEditorFocused.value = true;
+  if (ctxCommitTimer) {
+    clearTimeout(ctxCommitTimer);
+    ctxCommitTimer = null;
+  }
+}
+
+function onCtxEditorBlur() {
+  ctxEditorFocused.value = false;
+  const raw = ctxText.value.trim();
+  if (!raw) {
+    store.setInitialContextJson("");
+    return;
+  }
+  if (!ctxJsonValid.value) return;
+  scheduleContextCommit(raw);
+}
+
+onUnmounted(() => {
+  if (ctxCommitTimer) {
+    clearTimeout(ctxCommitTimer);
+    ctxCommitTimer = null;
+  }
 });
 
 function startAddStrategy() {

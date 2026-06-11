@@ -1,0 +1,17 @@
+# 数据字典片段：注册 ES 实例 id=main（与 example_11 的 es_instance 对应）
+# 导入方式取决于你的 flow-engine 数据字典管理界面 / API；也可合并进现有 profile 字典。
+middleware:
+  elasticsearch:
+    defaults:
+      request_timeout: 30
+      max_result_window: 1000000
+    protection:
+      max_search_size: 1000000
+      max_scroll_pages: 100
+    instances:
+      main:
+        hosts:
+          - "http://127.0.0.1:9200"
+        # 若 ES 开启认证，按需补充:
+        # username: elastic
+        # password: secret://es_password

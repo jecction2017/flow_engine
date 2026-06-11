@@ -40,6 +40,10 @@ integrations = [
   "elasticsearch[async]>=7.17,<8",
   "aiokafka>=0.10",
 ]
+behavior = [
+  "pandas>=2.2",
+  "polars>=1.6",
+]
 
 [project.scripts]
 flow-api = "flow_engine.http_api:main"

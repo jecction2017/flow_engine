@@ -1,0 +1,347 @@
+metric_feature:
+  scenarios:
+    access_url_detail_v1:
+      context:
+        feature_schema_version: "v1"
+        rule_set_id: "access_url_detail_v1"
+      metric_dsl:
+        rows:
+          - group_by: ["subject", "url_pattern"]
+            name: "url_access_count"
+            op: "count"
+          - name: "status_2xx_total"
+            op: "sum"
+            field: "status_2xx_count"
+          - name: "status_4xx_total"
+            op: "sum"
+            field: "status_4xx_count"
+          - name: "status_5xx_total"
+            op: "sum"
+            field: "status_5xx_count"
+          - name: "status_500_total"
+            op: "sum"
+            field: "status_500_count"
+          - name: "status_401_403_total"
+            op: "sum"
+            field: "status_401_403_count"
+          - name: "status_404_total"
+            op: "sum"
+            field: "status_404_count"
+          - name: "status_413_429_421_total"
+            op: "sum"
+            field: "status_413_429_421_count"
+          - name: "post_total"
+            op: "sum"
+            field: "post_count"
+          - name: "put_delete_total"
+            op: "sum"
+            field: "put_delete_count"
+          - name: "get_post_mix_total"
+            op: "sum"
+            field: "get_post_mix"
+          - name: "fake_xff_total"
+            op: "sum"
+            field: "fake_xff_count"
+          - name: "alarm_url_consistent_weight"
+            op: "count"
+            where:
+              is_alarm_url_consistent: 1
+          - name: "baseline_top_method_post_max"
+            op: "max"
+            field: "baseline_top_method_post"
+          - name: "baseline_status_500_common_max"
+            op: "max"
+            field: "baseline_status_500_common"
+          - name: "resp_size_candidate_weight"
+            op: "count"
+            where:
+              resp_size_candidate: 1
+          - name: "resp_size_max"
+            op: "max"
+            field: "response_length_max"
+          - name: "resp_size_baseline_avg"
+            op: "avg"
+            field: "latest_7d_resp_size_avg"
+          - name: "url_baseline_avg"
+            op: "avg"
+            field: "url_baseline_2h"
+          - name: "batch_crawl_weight"
+            op: "count"
+            where:
+              is_batch_crawl_url: 1
+          - name: "jalor_weight"
+            op: "count"
+            where:
+              is_jalor_url: 1
+          - name: "high_worth_count"
+            op: "count"
+            where:
+              has_high_worth: 1
+          - name: "attack_target_count"
+            op: "count"
+            where:
+              has_attack_target: 1
+      feature_dsl:
+        rows:
+          - name: "is_batch_crawl_like"
+            expression: "batch_crawl_weight >= 80"
+          - name: "is_alarm_url_consistent_like"
+            expression: "alarm_url_consistent_weight > 0"
+          - name: "is_resp_spike_like"
+            expression: "resp_size_candidate_weight > 0 and resp_size_baseline_avg > 0 and (resp_size_max / resp_size_baseline_avg) >= 5 and (high_worth_count > 0 or attack_target_count > 0 or url_access_count > 1000 or is_alarm_url_consistent_like or (url_baseline_avg > 0 and url_access_count > url_baseline_avg))"
+          - name: "is_status_jump_like"
+            expression: "status_2xx_total > 0 and status_4xx_total > 0"
+          - name: "is_status_pressure_like"
+            expression: "(status_401_403_total + status_404_total + status_413_429_421_total + status_500_total) >= 10"
+          - name: "is_high_post_with_5xx_like"
+            expression: "post_total >= 5 and status_500_total > 0 and not (baseline_top_method_post_max > 0 and baseline_status_500_common_max > 0)"
+          - name: "is_method_conflict_like"
+            expression: "put_delete_total > 0 and get_post_mix_total > 0"
+          - name: "is_fake_xff_like"
+            expression: "fake_xff_total > 0"
+          - name: "is_hotter_than_baseline_like"
+            expression: "url_baseline_avg > 0 and url_access_count > url_baseline_avg"
+      rule_dsl:
+        rows:
+          - rule_id: "detail_batch_crawl_like"
+            enabled: true
+            severity: "medium"
+            score: 1.0
+            all:
+              - field: "is_batch_crawl_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_resp_spike_like"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "is_resp_spike_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_status_jump_like"
+            enabled: true
+            severity: "medium"
+            score: 1.5
+            all:
+              - field: "is_status_jump_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_status_pressure_like"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "is_status_pressure_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_high_post_5xx_like"
+            enabled: true
+            severity: "high"
+            score: 2.5
+            all:
+              - field: "is_high_post_with_5xx_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_method_conflict_like"
+            enabled: true
+            severity: "medium"
+            score: 1.5
+            all:
+              - field: "is_method_conflict_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_fake_xff_like"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "is_fake_xff_like"
+                op: "=="
+                value: true
+          - rule_id: "detail_hotter_than_baseline_like"
+            enabled: true
+            severity: "medium"
+            score: 1.0
+            all:
+              - field: "is_hotter_than_baseline_like"
+                op: "=="
+                value: true
+
+    access_url_subject_v1:
+      context:
+        feature_schema_version: "v1"
+        rule_set_id: "access_url_subject_v1"
+      metric_dsl:
+        rows:
+          - group_by: ["subject"]
+            name: "total_access_count"
+            op: "count"
+          - name: "high_worth_access_count"
+            op: "sum"
+            field: "weighted_has_high_worth"
+          - name: "attack_target_access_count"
+            op: "sum"
+            field: "weighted_has_attack_target"
+          - name: "status_4xx_total"
+            op: "sum"
+            field: "status_4xx_count"
+          - name: "status_5xx_total"
+            op: "sum"
+            field: "status_5xx_count"
+          - name: "status_500_total"
+            op: "sum"
+            field: "status_500_count"
+          - name: "status_401_403_total"
+            op: "sum"
+            field: "status_401_403_count"
+          - name: "status_404_total"
+            op: "sum"
+            field: "status_404_count"
+          - name: "status_413_429_421_total"
+            op: "sum"
+            field: "status_413_429_421_count"
+          - name: "url_covered_count"
+            op: "distinct_count"
+            field: "url_pattern"
+          - name: "post_total"
+            op: "sum"
+            field: "post_count"
+          - name: "put_delete_total"
+            op: "sum"
+            field: "put_delete_count"
+          - name: "fake_xff_total"
+            op: "sum"
+            field: "fake_xff_count"
+          - name: "external_ai_access_count"
+            op: "sum"
+            field: "is_external_ai"
+          - name: "intranet_ai_access_count"
+            op: "sum"
+            field: "is_intranet_ai"
+          - name: "external_ai_non_third_ring_count"
+            op: "sum"
+            field: "is_external_ai_non_third_ring"
+          - name: "jalor_access_count"
+            op: "sum"
+            field: "is_jalor_url"
+          - name: "batch_crawl_weight"
+            op: "count"
+            where:
+              is_batch_crawl_url: 1
+      feature_dsl:
+        rows:
+          - name: "high_worth_ratio"
+            expression: "high_worth_access_count / total_access_count"
+          - name: "attack_target_ratio"
+            expression: "attack_target_access_count / total_access_count"
+          - name: "status_pressure_ratio"
+            expression: "(status_401_403_total + status_404_total + status_413_429_421_total + status_500_total) / total_access_count"
+          - name: "has_status_pressure"
+            expression: "url_covered_count >= 5 and (status_401_403_total + status_404_total + status_413_429_421_total + status_500_total) >= 10"
+          - name: "has_high_post_with_5xx"
+            expression: "post_total >= 5 and status_500_total > 0"
+          - name: "has_method_conflict"
+            expression: "put_delete_total > 0 and post_total > 0"
+          - name: "has_fake_xff"
+            expression: "fake_xff_total > 0"
+          - name: "has_external_ai_access"
+            expression: "external_ai_access_count > 0"
+          - name: "has_intranet_ai_access"
+            expression: "intranet_ai_access_count > 0"
+          - name: "has_external_ai_non_third_ring_access"
+            expression: "external_ai_non_third_ring_count > 0"
+          - name: "has_jalor_access"
+            expression: "jalor_access_count > 0"
+          - name: "has_batch_crawl"
+            expression: "batch_crawl_weight >= 80"
+      rule_dsl:
+        rows:
+          - rule_id: "subject_high_worth_ratio"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "high_worth_ratio"
+                op: ">="
+                value: 0.3
+          - rule_id: "subject_attack_target_ratio"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "attack_target_ratio"
+                op: ">="
+                value: 0.2
+          - rule_id: "subject_status_pressure"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "has_status_pressure"
+                op: "=="
+                value: true
+          - rule_id: "subject_high_post_5xx"
+            enabled: true
+            severity: "high"
+            score: 2.5
+            all:
+              - field: "has_high_post_with_5xx"
+                op: "=="
+                value: true
+          - rule_id: "subject_method_conflict"
+            enabled: true
+            severity: "medium"
+            score: 1.5
+            all:
+              - field: "has_method_conflict"
+                op: "=="
+                value: true
+          - rule_id: "subject_fake_xff"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "has_fake_xff"
+                op: "=="
+                value: true
+          - rule_id: "subject_external_ai_access"
+            enabled: true
+            severity: "medium"
+            score: 1.0
+            all:
+              - field: "has_external_ai_access"
+                op: "=="
+                value: true
+          - rule_id: "subject_intranet_ai_access"
+            enabled: true
+            severity: "medium"
+            score: 1.0
+            all:
+              - field: "has_intranet_ai_access"
+                op: "=="
+                value: true
+          - rule_id: "subject_external_ai_non_third_ring_access"
+            enabled: true
+            severity: "medium"
+            score: 1.5
+            all:
+              - field: "has_external_ai_non_third_ring_access"
+                op: "=="
+                value: true
+          - rule_id: "subject_jalor_access"
+            enabled: true
+            severity: "high"
+            score: 2.0
+            all:
+              - field: "has_jalor_access"
+                op: "=="
+                value: true
+          - rule_id: "subject_batch_crawl"
+            enabled: true
+            severity: "medium"
+            score: 1.0
+            all:
+              - field: "has_batch_crawl"
+                op: "=="
+                value: true
