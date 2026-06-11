@@ -17,6 +17,14 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import func, select
 
+from flow_engine.guide.service import (
+    GuideError,
+    GuideNotFoundError,
+    GuidePathError,
+    build_guide_tree,
+    read_guide_doc,
+    search_guide_docs,
+)
 from flow_engine.db.models import (
     FeDeployRun,
     FeFlowDeployment,
@@ -527,6 +535,37 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # -----------------------------------------------------------------------
+    # Help guide (docs/guide)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/guide/tree")
+    def guide_tree() -> dict[str, Any]:
+        try:
+            return build_guide_tree()
+        except GuideError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/guide/doc")
+    def guide_doc(path: str = Query(..., min_length=1)) -> dict[str, Any]:
+        try:
+            return read_guide_doc(path)
+        except GuidePathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except GuideNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except GuideError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/guide/search")
+    def guide_search(
+        q: str = Query("", alias="q"),
+        limit: int = Query(30, ge=1, le=100),
+    ) -> dict[str, Any]:
+        query = q.strip()
+        results = search_guide_docs(query, limit=limit)
+        return {"query": query, "results": results}
 
     # -----------------------------------------------------------------------
     # Capabilities (policy transparency)

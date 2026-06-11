@@ -1,0 +1,11 @@
+{
+  "title": "基础概念",
+  "order": 10,
+  "entries": {
+    "index.md": { "title": "概述", "order": 0 },
+    "what-is-flow-engine.md": { "title": "平台简介", "order": 1 },
+    "core-concepts.md": { "title": "核心概念", "order": 2 },
+    "glossary.md": { "title": "术语表", "order": 3 },
+    "ui-navigation.md": { "title": "界面与文档对照", "order": 4 }
+  }
+}

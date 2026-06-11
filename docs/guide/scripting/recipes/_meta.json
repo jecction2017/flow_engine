@@ -1,0 +1,8 @@
+{
+  "title": "场景模板",
+  "order": 10,
+  "entries": {
+    "soc-alert-handling.md": { "title": "SOC 告警处置", "order": 1 },
+    "http-and-lookup.md": { "title": "HTTP 与 Lookup", "order": 2 }
+  }
+}

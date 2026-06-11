@@ -1,0 +1,20 @@
+{
+  "title": "帮助文档",
+  "order": 0,
+  "entries": {
+    "index.md": { "title": "首页", "order": 0 },
+    "overview": { "title": "基础概念", "order": 10 },
+    "getting-started": { "title": "快速上手", "order": 20 },
+    "flow-studio": { "title": "Flow Studio", "order": 30 },
+    "capability-center": { "title": "能力与脚本", "order": 40 },
+    "scripting": { "title": "Starlark 脚本", "order": 50 },
+    "capability-policy": { "title": "能力策略", "order": 60 },
+    "test-center": { "title": "测试中心", "order": 70 },
+    "operations-center": { "title": "运行中心", "order": 80 },
+    "profiles": { "title": "环境配置", "order": 90 },
+    "data-dictionary": { "title": "数据字典", "order": 100 },
+    "lookup": { "title": "Lookup", "order": 110 },
+    "integrations": { "title": "集成能力", "order": 120 },
+    "faq": { "title": "常见问题", "order": 130 }
+  }
+}
