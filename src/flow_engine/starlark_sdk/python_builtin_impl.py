@@ -209,6 +209,112 @@ def runtime_log_debug(*args: Any) -> None:
     return sdk_runtime.runtime_log_debug(*args)
 
 
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/cache_get",
+        starlark_name="cache_get",
+        category="runtime",
+        summary="读取脚本级缓存；未命中返回 default",
+        signature=(
+            BuiltinArgSpec(name="key", type="any"),
+            BuiltinArgSpec(name="default", type="any", required=False),
+            BuiltinArgSpec(name="namespace", type="str", required=False),
+        ),
+        returns="any",
+        side_effects="none",
+    )
+)
+def runtime_cache_get(key: Any, default: Any = None, namespace: str = "default") -> Any:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_cache_get(key, default, namespace=namespace)
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/cache_set",
+        starlark_name="cache_set",
+        category="runtime",
+        summary="写入脚本级缓存（支持 ttl/max_entries/threshold_ms）并返回 value",
+        signature=(
+            BuiltinArgSpec(name="key", type="any"),
+            BuiltinArgSpec(name="value", type="any"),
+            BuiltinArgSpec(name="ttl", type="float", required=False),
+            BuiltinArgSpec(name="max_entries", type="int", required=False),
+            BuiltinArgSpec(name="threshold_ms", type="int", required=False),
+            BuiltinArgSpec(name="elapsed_ms", type="int", required=False),
+            BuiltinArgSpec(name="namespace", type="str", required=False),
+        ),
+        returns="any",
+        side_effects="none",
+    )
+)
+def runtime_cache_set(
+    key: Any,
+    value: Any,
+    ttl: float | None = None,
+    max_entries: int | None = None,
+    threshold_ms: int = 0,
+    elapsed_ms: int = 0,
+    namespace: str = "default",
+) -> Any:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_cache_set(
+        key,
+        value,
+        ttl=ttl,
+        max_entries=max_entries,
+        threshold_ms=threshold_ms,
+        elapsed_ms=elapsed_ms,
+        namespace=namespace,
+    )
+
+
+@register_builtin(
+    PythonBuiltinSpec(
+        id="python://runtime/cache_remember",
+        starlark_name="cache_remember",
+        category="runtime",
+        summary="读取命中则返回缓存；未命中按阈值写入后返回 value",
+        signature=(
+            BuiltinArgSpec(name="key", type="any"),
+            BuiltinArgSpec(name="value", type="any"),
+            BuiltinArgSpec(name="default", type="any", required=False),
+            BuiltinArgSpec(name="ttl", type="float", required=False),
+            BuiltinArgSpec(name="max_entries", type="int", required=False),
+            BuiltinArgSpec(name="threshold_ms", type="int", required=False),
+            BuiltinArgSpec(name="elapsed_ms", type="int", required=False),
+            BuiltinArgSpec(name="namespace", type="str", required=False),
+        ),
+        returns="any",
+        side_effects="none",
+    )
+)
+def runtime_cache_remember(
+    key: Any,
+    value: Any,
+    default: Any = None,
+    ttl: float | None = None,
+    max_entries: int | None = None,
+    threshold_ms: int = 0,
+    elapsed_ms: int = 0,
+    namespace: str = "default",
+) -> Any:
+    from flow_engine.starlark_sdk import runtime as sdk_runtime
+
+    return sdk_runtime.runtime_cache_remember(
+        key,
+        value,
+        default=default,
+        ttl=ttl,
+        max_entries=max_entries,
+        threshold_ms=threshold_ms,
+        elapsed_ms=elapsed_ms,
+        namespace=namespace,
+    )
+
+
 # starlark_name -> callable
 PYTHON_BUILTINS: dict[str, Any] = builtin_map()
 

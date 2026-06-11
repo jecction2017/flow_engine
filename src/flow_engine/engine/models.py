@@ -89,6 +89,15 @@ class Boundary(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
 
 
+class TaskCacheConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cache_key: str | None = None
+    ttl: float | None = Field(default=None, gt=0)
+    max_entries: int | None = Field(default=None, ge=1)
+    threshold_ms: int = Field(default=0, ge=0)
+
+
 class ExecutionStrategy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -144,6 +153,8 @@ class TaskNode(BaseNode):
     # 与系统默认；None / 空列表 = 无覆盖。
     # 现有 YAML 不含此字段，反序列化保持 None，向后兼容。
     capability_overrides: list[CapabilityRule] | None = None
+    # 节点结果缓存配置。为空表示不启用缓存。
+    cache: TaskCacheConfig | None = None
 
     @model_validator(mode="after")
     def _task_requires_display_name(self) -> "TaskNode":

@@ -770,6 +770,21 @@ function trialTone(st: string): string {
   return "info";
 }
 
+function cacheBadgeForRun(run: NodeRunInfo): { label: string; title?: string } | null {
+  if (run.cache_hit === true) {
+    return { label: "CACHE_HIT", title: "命中节点缓存，本次未执行脚本" };
+  }
+  const evt = (run.cache_event ?? "").trim();
+  if (!evt) return null;
+  if (evt === "write") {
+    return { label: "CACHE_WRITE", title: "本次执行结果已写入缓存" };
+  }
+  if (evt === "skip_write_threshold") {
+    return { label: "CACHE_SKIP", title: "未达到 threshold_ms，跳过缓存写入" };
+  }
+  return { label: `CACHE_${evt.toUpperCase()}`, title: `缓存事件: ${evt}` };
+}
+
 const trialLinkRows = computed<ExecutionLinkRow[]>(() => {
   const m = maxMs.value;
   let prevStartedMs: number | null = null;
@@ -789,6 +804,8 @@ const trialLinkRows = computed<ExecutionLinkRow[]>(() => {
     else if (tr.execution_count && tr.execution_count > 1) {
       badges.push({ label: `×${tr.execution_count}`, title: "执行次数" });
     }
+    const cacheBadge = cacheBadgeForRun(tr);
+    if (cacheBadge) badges.push(cacheBadge);
     const logCount = filteredLogsFor(String(tr.order)).length;
     return {
       key: String(tr.order),

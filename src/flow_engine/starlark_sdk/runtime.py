@@ -32,6 +32,7 @@ from flow_engine.starlark_sdk.builtin_registry import (
     list_registered_builtins,
 )
 from flow_engine.starlark_sdk.loader import build_file_loader, dialect_with_load, loader_stats, warmup_modules
+from flow_engine.cache import CacheSetOptions, get_runtime_cache_backend
 
 
 def _globals_main() -> sl.Globals:
@@ -319,6 +320,88 @@ def runtime_log_debug(*args: Any) -> None:
         return None
     coll.append("debug", _format_log_args(args))
     return None
+
+
+def _script_cache_namespace(namespace: str | None) -> str:
+    ns = (namespace or "").strip()
+    if not ns:
+        return "starlark:default"
+    return f"starlark:{ns}"
+
+
+def runtime_cache_get(
+    key: Any,
+    default: Any = None,
+    *,
+    namespace: str = "default",
+) -> Any:
+    key_text = str(starlark_to_python(key)).strip()
+    if not key_text:
+        return default
+    backend = get_runtime_cache_backend()
+    try:
+        value = backend.get(_script_cache_namespace(namespace), key_text)
+    except Exception:  # noqa: BLE001
+        return default
+    if value is None:
+        return default
+    return value
+
+
+def runtime_cache_set(
+    key: Any,
+    value: Any,
+    *,
+    ttl: float | None = None,
+    max_entries: int | None = None,
+    threshold_ms: int = 0,
+    elapsed_ms: int = 0,
+    namespace: str = "default",
+) -> Any:
+    key_text = str(starlark_to_python(key)).strip()
+    if not key_text:
+        return value
+    if int(threshold_ms) > 0 and int(elapsed_ms) < int(threshold_ms):
+        return value
+    backend = get_runtime_cache_backend()
+    try:
+        backend.set(
+            _script_cache_namespace(namespace),
+            key_text,
+            starlark_to_python(value),
+            options=CacheSetOptions(ttl_seconds=ttl, max_entries=max_entries),
+        )
+    except Exception:  # noqa: BLE001
+        return value
+    return value
+
+
+def runtime_cache_remember(
+    key: Any,
+    value: Any,
+    *,
+    default: Any = None,
+    ttl: float | None = None,
+    max_entries: int | None = None,
+    threshold_ms: int = 0,
+    elapsed_ms: int = 0,
+    namespace: str = "default",
+) -> Any:
+    cached = runtime_cache_get(key, default=None, namespace=namespace)
+    if cached is not None:
+        return cached
+    stored = runtime_cache_set(
+        key,
+        value,
+        ttl=ttl,
+        max_entries=max_entries,
+        threshold_ms=threshold_ms,
+        elapsed_ms=elapsed_ms,
+        namespace=namespace,
+    )
+    if stored is None:
+        return default
+    return stored
 
 
 # ---------------------------------------------------------------------------

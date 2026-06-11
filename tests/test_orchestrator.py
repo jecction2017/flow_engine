@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -1109,3 +1110,138 @@ async def test_subflow_on_error_ignore() -> None:
     assert res.state == FlowState.COMPLETED
     by_id = {r.node_id: r for r in res.node_runs}
     assert by_id["sf"].final_state == NodeState.SUCCESS.value
+
+
+@pytest.mark.asyncio
+async def test_task_cache_reuses_result_between_runs() -> None:
+    flow = _flow(
+        """
+        name: cache_hit
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: expensive
+            id: expensive
+            type: task
+            strategy_ref: default_sync
+            cache:
+              ttl: 60
+              max_entries: 128
+              threshold_ms: 0
+            script: |
+              {"stamp": time_now_ts(unit="ms")}
+            boundary:
+              outputs:
+                stamp: "$.global.stamp"
+        """
+    )
+    r1 = await FlowRuntime(flow).run()
+    await asyncio.sleep(0.01)
+    r2 = await FlowRuntime(flow).run()
+    assert r1.state == FlowState.COMPLETED
+    assert r2.state == FlowState.COMPLETED
+    assert r1.context.global_ns["stamp"] == r2.context.global_ns["stamp"]
+    assert any(rr.cache_hit is False for rr in r1.node_runs if rr.node_id == "expensive")
+    assert any(rr.cache_hit is True for rr in r2.node_runs if rr.node_id == "expensive")
+
+
+@pytest.mark.asyncio
+async def test_task_cache_threshold_controls_write() -> None:
+    flow = _flow(
+        """
+        name: cache_threshold
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        nodes:
+          - name: expensive
+            id: expensive
+            type: task
+            strategy_ref: default_sync
+            cache:
+              ttl: 60
+              max_entries: 128
+              threshold_ms: 500
+            script: |
+              {"stamp": time_now_ts(unit="ms")}
+            boundary:
+              outputs:
+                stamp: "$.global.stamp"
+        """
+    )
+    r1 = await FlowRuntime(flow).run()
+    await asyncio.sleep(0.01)
+    r2 = await FlowRuntime(flow).run()
+    assert r1.state == FlowState.COMPLETED
+    assert r2.state == FlowState.COMPLETED
+    assert r1.context.global_ns["stamp"] != r2.context.global_ns["stamp"]
+    assert any(rr.cache_event == "skip_write_threshold" for rr in r1.node_runs if rr.node_id == "expensive")
+
+
+@pytest.mark.asyncio
+async def test_task_cache_does_not_store_exceptions() -> None:
+    flow_fail = _flow(
+        """
+        name: cache_error_path
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          fail: true
+        nodes:
+          - name: expensive
+            id: expensive
+            type: task
+            strategy_ref: default_sync
+            cache:
+              ttl: 60
+              threshold_ms: 0
+            script: |
+              def build():
+                  if resolve("$.global.fail"):
+                      return {"x": 1 // 0}
+                  return {"x": 1}
+              build()
+            boundary:
+              outputs:
+                x: "$.global.x"
+        """
+    )
+    res_fail = await FlowRuntime(flow_fail).run()
+    assert res_fail.state == FlowState.FAILED
+
+    flow_ok = _flow(
+        """
+        name: cache_error_path
+        strategies:
+          default_sync:
+            name: default_sync
+            mode: sync
+        initial_context:
+          fail: false
+        nodes:
+          - name: expensive
+            id: expensive
+            type: task
+            strategy_ref: default_sync
+            cache:
+              ttl: 60
+              threshold_ms: 0
+            script: |
+              def build():
+                  if resolve("$.global.fail"):
+                      return {"x": 1 // 0}
+                  return {"x": 7}
+              build()
+            boundary:
+              outputs:
+                x: "$.global.x"
+        """
+    )
+    res_ok = await FlowRuntime(flow_ok).run()
+    assert res_ok.state == FlowState.COMPLETED
+    assert res_ok.context.global_ns["x"] == 7

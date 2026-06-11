@@ -128,6 +128,89 @@
           />
         </section>
 
+        <section v-if="node.type === 'task'" class="card card-cache-config">
+          <div class="sec-title">
+            <span>节点结果缓存</span>
+            <InfoTip
+              wide
+              text="命中后直接复用该节点结果并跳过脚本执行。cache_key 为 Starlark 表达式（可引用 inputs 变量）；threshold_ms 表示仅当本次执行耗时达到阈值才写缓存。"
+            />
+          </div>
+          <div class="grid">
+            <label class="field check full">
+              <input
+                type="checkbox"
+                :checked="taskCacheEnabled"
+                @change="onTaskCacheToggle(($event.target as HTMLInputElement).checked)"
+              />
+              <span class="lbl-row">启用节点缓存</span>
+            </label>
+
+            <template v-if="taskCacheEnabled">
+              <label class="field full">
+                <span class="lbl-row">
+                  cache_key
+                  <InfoTip text="可选。Starlark 表达式；为空时引擎自动按 node_id + 输入哈希生成 key。" />
+                </span>
+                <input
+                  :value="taskCacheConfig?.cache_key ?? ''"
+                  class="inp mono"
+                  placeholder='例如：user_id + ":" + biz_date'
+                  @input="onTaskCacheKeyInput(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+
+              <label class="field">
+                <span class="lbl-row">
+                  ttl（秒）
+                  <InfoTip text="缓存有效期。为空表示不过期（由容量淘汰控制）。" />
+                </span>
+                <input
+                  :value="taskCacheConfig?.ttl ?? ''"
+                  class="inp mono"
+                  type="number"
+                  min="0.001"
+                  step="0.1"
+                  placeholder="例如：120"
+                  @input="onTaskCacheTtlInput(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+
+              <label class="field">
+                <span class="lbl-row">
+                  max_entries
+                  <InfoTip text="命名空间最大条目（LRU 淘汰）。为空时使用后端默认值。" />
+                </span>
+                <input
+                  :value="taskCacheConfig?.max_entries ?? ''"
+                  class="inp mono"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="例如：1000"
+                  @input="onTaskCacheMaxEntriesInput(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+
+              <label class="field">
+                <span class="lbl-row">
+                  threshold_ms
+                  <InfoTip text="仅当本次执行耗时 >= 阈值才写入缓存；命中读取不受影响。" />
+                </span>
+                <input
+                  :value="taskCacheConfig?.threshold_ms ?? 0"
+                  class="inp mono"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="例如：200"
+                  @input="onTaskCacheThresholdInput(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </template>
+          </div>
+        </section>
+
         <section v-if="node.type === 'task'" class="card">
           <div class="sec-title">
             <span>执行钩子（可选）</span>
@@ -391,6 +474,7 @@ import type {
   NodeHooks,
   OnErrorConfig,
   SubflowNode,
+  TaskCacheConfig,
   TaskNode,
 } from "@/types/flow";
 import { nodeId } from "@/types/flow";
@@ -710,6 +794,76 @@ function onCapabilityOverridesChange(rules: CapabilityRule[]) {
   commit();
 }
 
+const taskCacheEnabled = computed<boolean>(() => {
+  if (!node.value || node.value.type !== "task") return false;
+  return !!(node.value as TaskNode).cache;
+});
+
+const taskCacheConfig = computed<TaskCacheConfig | null>(() => {
+  if (!node.value || node.value.type !== "task") return null;
+  return (node.value as TaskNode).cache ?? null;
+});
+
+function ensureTaskCacheConfig(): TaskCacheConfig | null {
+  if (!node.value || node.value.type !== "task") return null;
+  const t = node.value as TaskNode;
+  if (!t.cache) {
+    t.cache = { threshold_ms: 0 };
+  }
+  return t.cache;
+}
+
+function onTaskCacheToggle(on: boolean) {
+  if (!node.value || node.value.type !== "task") return;
+  const t = node.value as TaskNode;
+  t.cache = on ? { threshold_ms: 0 } : null;
+  commit();
+}
+
+function onTaskCacheKeyInput(raw: string) {
+  const cfg = ensureTaskCacheConfig();
+  if (!cfg) return;
+  const v = raw.trim();
+  cfg.cache_key = v ? v : null;
+  commit();
+}
+
+function onTaskCacheTtlInput(raw: string) {
+  const cfg = ensureTaskCacheConfig();
+  if (!cfg) return;
+  const v = raw.trim();
+  if (!v) {
+    cfg.ttl = null;
+    commit();
+    return;
+  }
+  const parsed = Number(v);
+  cfg.ttl = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  commit();
+}
+
+function onTaskCacheMaxEntriesInput(raw: string) {
+  const cfg = ensureTaskCacheConfig();
+  if (!cfg) return;
+  const v = raw.trim();
+  if (!v) {
+    cfg.max_entries = null;
+    commit();
+    return;
+  }
+  const parsed = Number(v);
+  cfg.max_entries = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : null;
+  commit();
+}
+
+function onTaskCacheThresholdInput(raw: string) {
+  const cfg = ensureTaskCacheConfig();
+  if (!cfg) return;
+  const parsed = Number(raw.trim() || "0");
+  cfg.threshold_ms = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+  commit();
+}
+
 function commit() {
   if (!node.value) return;
   store.updateNodeDraft(props.path, JSON.parse(JSON.stringify(node.value)) as FlowNode);
@@ -802,6 +956,11 @@ function commit() {
 .card-cap-rules {
   background: linear-gradient(180deg, #fafbfd 0%, #f4f7fb 100%);
   border-color: color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.card-cache-config {
+  background: linear-gradient(180deg, #fbfffb 0%, #f3faf5 100%);
+  border-color: color-mix(in srgb, #22c55e 20%, var(--border));
 }
 
 .script-sec-head-left {

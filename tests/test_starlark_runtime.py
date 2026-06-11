@@ -38,6 +38,8 @@ def test_registry_includes_declarative_python_builtins() -> None:
         "time_diff",
     ):
         assert time_name in names
+    for cache_name in ("cache_get", "cache_set", "cache_remember"):
+        assert cache_name in names
 
     by_name = {f["starlark_name"]: f for f in reg["python_functions"]}
     assert by_name["flow_jump"]["attach_mode"] == "flow_control"
@@ -273,3 +275,31 @@ def test_http_call_builtin_uses_connector_dictionary(monkeypatch: pytest.MonkeyP
         )
     assert result == {"ok": True, "pong": True}
     assert logs == []
+
+
+def test_starlark_cache_builtins_roundtrip() -> None:
+    ctx = ContextStack()
+    script = """
+v1 = cache_get("k", default=None, namespace="unit")
+cache_set("k", {"n": 1}, ttl=60, max_entries=16, namespace="unit")
+v2 = cache_get("k", default=None, namespace="unit")
+{"before": v1, "after": v2}
+""".strip()
+    out, logs = eval_task_script(script, ctx, {})
+    assert out["before"] is None
+    assert out["after"] == {"n": 1}
+    assert logs == []
+
+
+def test_starlark_cache_threshold_write() -> None:
+    ctx = ContextStack()
+    script = """
+cache_set("t", {"ok": 1}, threshold_ms=100, elapsed_ms=50, namespace="th")
+v1 = cache_get("t", default=None, namespace="th")
+cache_set("t", {"ok": 2}, threshold_ms=100, elapsed_ms=120, namespace="th")
+v2 = cache_get("t", default=None, namespace="th")
+{"v1": v1, "v2": v2}
+""".strip()
+    out, _logs = eval_task_script(script, ctx, {})
+    assert out["v1"] is None
+    assert out["v2"] == {"ok": 2}

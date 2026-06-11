@@ -15,6 +15,13 @@ export interface Boundary {
   outputs: Record<string, string>;
 }
 
+export interface TaskCacheConfig {
+  cache_key?: string | null;
+  ttl?: number | null;
+  max_entries?: number | null;
+  threshold_ms?: number;
+}
+
 /**
  * Capability action — 与后端 ``CapabilityAction`` 枚举一致：
  *   - allow:    放行
@@ -106,6 +113,7 @@ export interface TaskNode {
    * 与系统默认；null / undefined / [] = 无覆盖。
    */
   capability_overrides?: CapabilityRule[] | null;
+  cache?: TaskCacheConfig | null;
   hooks?: NodeHooks | null;
   on_error?: OnErrorConfig | null;
 }

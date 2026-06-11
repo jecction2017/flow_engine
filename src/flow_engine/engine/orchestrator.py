@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -46,6 +48,7 @@ from flow_engine.engine.models import (
     StrategyMode,
     SubflowNode,
     TaskNode,
+    TaskCacheConfig,
 )
 from flow_engine.engine.observability import (
     SPAN_UNSAMPLED,
@@ -84,6 +87,7 @@ from flow_engine.runner.models import (
     RunOptions,
 )
 from flow_engine.stores.data_dict import dictionary_scope, tree_copy
+from flow_engine.cache import CacheSetOptions, get_runtime_cache_backend
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +160,12 @@ class NodeRunInfo:
     logs: list[dict[str, Any]] = field(default_factory=list)
     #: Optional human-readable reason when the row ends in ``SKIPPED``.
     skip_reason: str | None = None
+    #: ``True`` when this node pass returned from cache; ``False`` when cache
+    #: was enabled but this pass executed live; ``None`` when cache disabled or
+    #: cache state unavailable.
+    cache_hit: bool | None = None
+    #: Optional cache stage marker (e.g. hit/miss/write/skip_write_threshold).
+    cache_event: str | None = None
 
     @property
     def duration_ms(self) -> int | None:
@@ -207,6 +217,8 @@ class NodeRunInfo:
             "transitions": list(self.transitions),
             "logs": list(self.logs),
             "skip_reason": self.skip_reason,
+            "cache_hit": self.cache_hit,
+            "cache_event": self.cache_event,
         }
 
 
@@ -221,6 +233,15 @@ class FlowRunResult:
     # Flow-level hook logs (on_start / on_complete / on_failure). These
     # don't belong to any single node so we surface them separately.
     flow_logs: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class _TaskCachePlan:
+    namespace: str
+    key: str
+    ttl: float | None
+    max_entries: int | None
+    threshold_ms: int
 
 
 class FlowRuntime:
@@ -271,6 +292,7 @@ class FlowRuntime:
         self.flow_code: str = flow_code or ""
         self._primary_failure: FailureReport | None = None
         self._node_name_by_id: dict[str, str] = self._build_node_name_map(flow)
+        self._cache_backend = get_runtime_cache_backend()
 
     @staticmethod
     def _build_node_name_map(flow: FlowDefinition) -> dict[str, str]:
@@ -1278,6 +1300,187 @@ class FlowRuntime:
         )
         self._raise_flow_error(report)
 
+    async def _build_task_cache_plan(
+        self,
+        node: TaskNode,
+        ctx: ContextStack,
+    ) -> _TaskCachePlan | None:
+        cfg: TaskCacheConfig | None = node.cache
+        if cfg is None:
+            return None
+        nid = self._nid(node)
+        try:
+            if cfg.cache_key:
+                key = await asyncio.to_thread(
+                    eval_key_expr,
+                    cfg.cache_key,
+                    ctx,
+                    node.boundary.inputs,
+                )
+            else:
+                key = self._default_task_cache_key(nid, ctx, node.boundary.inputs)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("task cache key evaluation failed: node=%s", nid)
+            self._emit_cache_event(nid, "warn", "key_eval_failed", detail=str(exc))
+            self._set_node_cache_state(nid, cache_event="key_eval_failed")
+            return None
+        key_text = str(key).strip()
+        if not key_text:
+            self._emit_cache_event(nid, "warn", "empty_key")
+            self._set_node_cache_state(nid, cache_event="empty_key")
+            return None
+        return _TaskCachePlan(
+            namespace=f"task:{nid}",
+            key=key_text,
+            ttl=cfg.ttl,
+            max_entries=cfg.max_entries,
+            threshold_ms=cfg.threshold_ms,
+        )
+
+    @staticmethod
+    def _default_task_cache_key(
+        nid: str,
+        ctx: ContextStack,
+        boundary_inputs: dict[str, str],
+    ) -> str:
+        flat = _serialize_inputs(ctx, boundary_inputs)
+        canonical = json.dumps(
+            [nid, sorted(flat.items())],
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:40]
+
+    def _emit_cache_event(
+        self,
+        node_id: str,
+        level: str,
+        event: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        try:
+            handle = _current_span_handle.get()
+            msg = f"[task_cache] {event}"
+            if detail:
+                msg = f"{msg}: {detail}"
+            self.obs.emit_log(
+                handle,
+                LogEntry(
+                    level=level.upper(),
+                    msg=msg,
+                    source=node_id,
+                    t_ms=self._now_ms(),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("emit cache event failed", exc_info=True)
+
+    def _set_node_cache_state(
+        self,
+        node_id: str,
+        *,
+        cache_hit: bool | None = None,
+        cache_event: str | None = None,
+    ) -> None:
+        with self._runs_lock:
+            info = self._latest_run_for_nid_unlocked(node_id)
+            if info is None:
+                return
+            if cache_hit is not None:
+                info.cache_hit = bool(cache_hit)
+            if cache_event is not None:
+                info.cache_event = cache_event
+
+    def _read_task_cache(
+        self,
+        node_id: str,
+        plan: _TaskCachePlan,
+    ) -> dict[str, Any] | None:
+        try:
+            cached = self._cache_backend.get(plan.namespace, plan.key)
+        except Exception:  # noqa: BLE001
+            logger.exception("task cache read failed: node=%s", node_id)
+            self._emit_cache_event(node_id, "warn", "read_error")
+            return None
+        if cached is None:
+            self._emit_cache_event(node_id, "info", "miss")
+            self._set_node_cache_state(node_id, cache_hit=False, cache_event="miss")
+            return None
+        if not isinstance(cached, dict):
+            self._emit_cache_event(node_id, "warn", "invalid_payload")
+            self._set_node_cache_state(node_id, cache_hit=False, cache_event="invalid_payload")
+            return None
+        self._emit_cache_event(node_id, "info", "hit")
+        self._set_node_cache_state(node_id, cache_hit=True, cache_event="hit")
+        return cached
+
+    def _write_task_cache(
+        self,
+        node_id: str,
+        plan: _TaskCachePlan,
+        result: dict[str, Any],
+    ) -> None:
+        try:
+            self._cache_backend.set(
+                plan.namespace,
+                plan.key,
+                result,
+                options=CacheSetOptions(
+                    ttl_seconds=plan.ttl,
+                    max_entries=plan.max_entries,
+                ),
+            )
+            self._emit_cache_event(node_id, "info", "write")
+            self._set_node_cache_state(node_id, cache_event="write")
+        except Exception:  # noqa: BLE001
+            logger.exception("task cache write failed: node=%s", node_id)
+            self._emit_cache_event(node_id, "warn", "write_error")
+            self._set_node_cache_state(node_id, cache_event="write_error")
+
+    async def _run_task_with_cache(
+        self,
+        node: TaskNode,
+        ctx: ContextStack,
+        st: ExecutionStrategy,
+    ) -> tuple[dict[str, Any], _TaskCachePlan | None, bool, int]:
+        plan = await self._build_task_cache_plan(node, ctx)
+        nid = self._nid(node)
+        get_or_compute = getattr(self._cache_backend, "get_or_compute", None)
+        if plan is not None and callable(get_or_compute):
+            elapsed_ms = 0
+
+            async def _compute() -> dict[str, Any]:
+                nonlocal elapsed_ms
+                started = time.monotonic()
+                out = await self._run_with_retries(node, ctx, st)
+                elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+                return out
+
+            result, from_cache = await get_or_compute(
+                plan.namespace,
+                plan.key,
+                _compute,
+                options=None,
+            )
+            if from_cache:
+                self._emit_cache_event(nid, "info", "hit")
+                self._set_node_cache_state(nid, cache_hit=True, cache_event="hit")
+            else:
+                self._emit_cache_event(nid, "info", "miss")
+                self._set_node_cache_state(nid, cache_hit=False, cache_event="miss")
+            return result, plan, bool(from_cache), elapsed_ms
+
+        if plan is not None:
+            cached = self._read_task_cache(nid, plan)
+            if cached is not None:
+                return cached, plan, True, 0
+        started = time.monotonic()
+        result = await self._run_with_retries(node, ctx, st)
+        elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+        return result, plan, False, elapsed_ms
+
     async def _execute_task_node(
         self,
         node: TaskNode,
@@ -1301,7 +1504,9 @@ class FlowRuntime:
             close_error: str | None = None
             try:
                 try:
-                    result = await self._run_with_retries(node, ctx, st)
+                    result, cache_plan, cache_hit, elapsed_ms = await self._run_task_with_cache(
+                        node, ctx, st
+                    )
                 except ContinueInterrupt:
                     skip_reason = "flow_continue() requested to skip current node"
                     self._mark(nid, NodeState.SKIPPED, skip_reason=skip_reason)
@@ -1357,6 +1562,17 @@ class FlowRuntime:
                     if isinstance(e, FlowEngineError) and e.report is not None:
                         self._record_failure(e.report)
                     raise
+                if cache_plan is not None and not cache_hit:
+                    if elapsed_ms >= cache_plan.threshold_ms:
+                        self._write_task_cache(nid, cache_plan, result)
+                    else:
+                        self._emit_cache_event(
+                            nid,
+                            "info",
+                            "skip_write_threshold",
+                            detail=f"{elapsed_ms}<{cache_plan.threshold_ms}",
+                        )
+                        self._set_node_cache_state(nid, cache_event="skip_write_threshold")
                 self._mark(nid, NodeState.SUCCESS)
             finally:
                 # Span/metric emission MUST happen in finally so that
@@ -1389,7 +1605,9 @@ class FlowRuntime:
             close_error: str | None = None
             try:
                 try:
-                    result = await self._run_with_retries(node, ctx, st)
+                    result, cache_plan, cache_hit, elapsed_ms = await self._run_task_with_cache(
+                        node, ctx, st
+                    )
                 except (TerminateInterrupt, JumpTarget, ContinueInterrupt, BreakInterrupt):
                     # Surface control-flow from background tasks at the next
                     # barrier. We DO mark FAILED here so that observers can
@@ -1422,6 +1640,17 @@ class FlowRuntime:
                     if isinstance(e, FlowEngineError) and e.report is not None:
                         self._record_failure(e.report)
                     raise
+                if cache_plan is not None and not cache_hit:
+                    if elapsed_ms >= cache_plan.threshold_ms:
+                        self._write_task_cache(nid, cache_plan, result)
+                    else:
+                        self._emit_cache_event(
+                            nid,
+                            "info",
+                            "skip_write_threshold",
+                            detail=f"{elapsed_ms}<{cache_plan.threshold_ms}",
+                        )
+                        self._set_node_cache_state(nid, cache_event="skip_write_threshold")
                 self._mark(nid, NodeState.SUCCESS)
             finally:
                 if span_token is not None:

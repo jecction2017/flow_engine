@@ -17,6 +17,7 @@ import flow_engine.lookup.lookup_store as _lookup_mod
 import flow_engine.stores.data_dict as _data_dict_mod
 import flow_engine.stores.profile_store as _profile_mod
 import flow_engine.stores.secret_store as _secret_mod
+from flow_engine.cache import reset_runtime_cache_backend
 from flow_engine.db.models import Base
 
 
@@ -92,6 +93,7 @@ def _fresh_db(monkeypatch: pytest.MonkeyPatch) -> None:
     _profile_mod._store_cache = None
     _secret_mod.invalidate_store_cache()
     _lookup_mod._store_cache = None
+    reset_runtime_cache_backend()
 
     import flow_engine.starlark_sdk.user_script_store as _uss_mod
     _uss_mod._store_cache = None

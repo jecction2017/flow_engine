@@ -146,6 +146,10 @@ export type NodeRunInfo = {
   logs?: LogEntry[];
   /** Optional human-readable reason when final_state is SKIPPED. */
   skip_reason?: string | null;
+  /** True when this node pass returned from cache. */
+  cache_hit?: boolean | null;
+  /** Cache stage marker emitted by runtime. */
+  cache_event?: string | null;
 };
 
 export type RunFlowResponse = {
